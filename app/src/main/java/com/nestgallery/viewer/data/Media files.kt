@@ -79,18 +79,46 @@ private fun volumeDir(volume: StorageVolume): File? =
  */
 fun listFolder(dir: File, hideAux: Boolean): List<File> {
     val children = dir.listFiles() ?: return emptyList()
-    return children
-        .asSequence()
-        .filter { !it.name.startsWith(".") }
-        .filter { it.isDirectory || !hideAux || !isAuxName(it.name) }
-        .sortedWith(compareByDescending<File> { it.isDirectory }.thenBy { it.name.lowercase() })
-        .toList()
+
+    // Partition first so we only sort actual directory/file groups. This avoids
+    // comparator work across the whole mixed collection.
+    val folders = ArrayList<File>()
+    val files = ArrayList<File>()
+
+    for (child in children) {
+        if (child.name.startsWith(".")) continue
+        if (!child.isDirectory && hideAux && isAuxName(child.name)) continue
+
+        if (child.isDirectory) folders += child else files += child
+    }
+
+    val byName = Comparator<File> { a, b ->
+        a.name.compareTo(b.name, ignoreCase = true)
+    }
+    folders.sortWith(byName)
+    files.sortWith(byName)
+
+    return ArrayList<File>(folders.size + files.size).apply {
+        addAll(folders)
+        addAll(files)
+    }
 }
 
-private fun isAuxName(name: String): Boolean {
-    val n = name.lowercase()
-    return n.contains("_thumb") || n.contains("_locked")
-}
+/**
+ * Counts browsable children without sorting them.
+ *
+ * For large folders this is substantially cheaper than listFolder().size:
+ * counting does not need alphabetical ordering.
+ */
+fun countChildren(dir: File, hideAux: Boolean): Int {
+    val children = dir.listFiles() ?: return 0
+    var count = 0
 
-/** Number of browsable children directly inside [dir] (single fast listing). */
-fun countChildren(dir: File, hideAux: Boolean): Int = listFolder(dir, hideAux).size
+    for (child in children) {
+        if (child.name.startsWith(".")) continue
+        if (!child.isDirectory && hideAux && isAuxName(child.name)) continue
+        count++
+    }
+
+    return count
+}

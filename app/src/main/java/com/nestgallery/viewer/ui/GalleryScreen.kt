@@ -1,6 +1,5 @@
 package com.nestgallery.viewer.ui
 
-import android.content.Context
 import android.text.format.Formatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -56,8 +55,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
-import coil.video.videoFrameMillis
 import com.nestgallery.viewer.data.GalleryCache
 import com.nestgallery.viewer.data.StorageRoot
 import com.nestgallery.viewer.data.countChildren
@@ -119,7 +116,19 @@ fun GalleryScreen(
     val rootLabel: (File) -> String = { file ->
         roots?.firstOrNull { it.file == file }?.label ?: file.displayName()
     }
-    val mediaOnly = remember(shownEntries) { shownEntries.orEmpty().filter { it.isMediaFile() } }
+    val mediaOnly = remember(shownEntries) {
+        shownEntries.orEmpty().filter { it.isMediaFile() }
+    }
+
+    // Avoid O(n) mediaOnly.indexOf(entry) for every visible item. With 50,000
+    // files, repeated linear searches can dominate composition time.
+    val mediaIndexByPath = remember(mediaOnly) {
+        HashMap<String, Int>(mediaOnly.size).also { map ->
+            mediaOnly.forEachIndexed { index, file ->
+                map[file.absolutePath] = index
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -182,7 +191,7 @@ fun GalleryScreen(
                             onClick = { onOpenFolder(entry) }
                         )
                         entry.isMediaFile() -> {
-                            val index = mediaOnly.indexOf(entry)
+                            val index = mediaIndexByPath[entry.absolutePath] ?: 0
                             ImageRow(entry = entry, onClick = { onOpenMedia(mediaOnly, index) })
                         }
                         else -> FileRow(entry = entry)
@@ -203,7 +212,7 @@ fun GalleryScreen(
                             onClick = { onOpenFolder(entry) }
                         )
                         entry.isMediaFile() -> {
-                            val index = mediaOnly.indexOf(entry)
+                            val index = mediaIndexByPath[entry.absolutePath] ?: 0
                             ImageTile(entry = entry, onClick = { onOpenMedia(mediaOnly, index) })
                         }
                         else -> FileTile(entry = entry)
@@ -334,17 +343,11 @@ private fun FileRow(entry: File) {
     }
 }
 
-/** Files load directly; videos grab the frame at 1s so black first-frames are avoided. */
-private fun thumbnailModel(context: Context, entry: File): Any =
-    if (entry.isVideoFile()) {
-        ImageRequest.Builder(context).data(entry).videoFrameMillis(1000).build()
-    } else {
-        entry
-    }
+/** Coil's shared ImageLoader handles both image files and video frames. */
+private fun thumbnailModel(entry: File): Any = entry
 
 @Composable
 private fun ImageRow(entry: File, onClick: () -> Unit) {
-    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -353,7 +356,7 @@ private fun ImageRow(entry: File, onClick: () -> Unit) {
     ) {
         Box(Modifier.fillMaxWidth()) {
             AsyncImage(
-                model = thumbnailModel(context, entry),
+                model = thumbnailModel(entry),
                 contentDescription = entry.name,
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier
@@ -442,7 +445,6 @@ private fun FileTile(entry: File) {
 
 @Composable
 private fun ImageTile(entry: File, onClick: () -> Unit) {
-    val context = LocalContext.current
     Box(
         modifier = Modifier
             .padding(2.dp)
@@ -451,7 +453,7 @@ private fun ImageTile(entry: File, onClick: () -> Unit) {
             .clickable(onClick = onClick)
     ) {
         AsyncImage(
-            model = thumbnailModel(context, entry),
+            model = thumbnailModel(entry),
             contentDescription = entry.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
