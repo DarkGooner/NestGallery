@@ -1,6 +1,7 @@
 package com.nestgallery.viewer.ui
 
-import android.net.Uri
+import android.content.Context
+import android.text.format.Formatter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -25,8 +26,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.Visibility
@@ -55,55 +56,81 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.nestgallery.viewer.data.DocEntry
+import coil.request.ImageRequest
+import coil.video.videoFrameMillis
 import com.nestgallery.viewer.data.GalleryCache
-import com.nestgallery.viewer.data.countMediaFast
-import com.nestgallery.viewer.data.listFolderFast
+import com.nestgallery.viewer.data.StorageRoot
+import com.nestgallery.viewer.data.countChildren
+import com.nestgallery.viewer.data.displayName
+import com.nestgallery.viewer.data.isMediaFile
+import com.nestgallery.viewer.data.isVideoFile
+import com.nestgallery.viewer.data.listFolder
+import com.nestgallery.viewer.data.storageRoots
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryScreen(
-    treeUri: Uri,
-    pathStack: List<DocEntry>,
+    pathStack: List<File>,              // empty = the "Storages" root screen
     hideAux: Boolean,
     listMode: Boolean,
     onToggleViewMode: () -> Unit,
     onToggleHideAux: () -> Unit,
-    onOpenFolder: (DocEntry) -> Unit,
+    onOpenFolder: (File) -> Unit,
     onBreadcrumbClick: (Int) -> Unit,
-    onPickNewFolder: () -> Unit,
-    onOpenImage: (List<DocEntry>, Int) -> Unit,
+    onOpenMedia: (List<File>, Int) -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
 ) {
     val context = LocalContext.current
-    val current = pathStack.last()
-    val cacheKey = remember(current.documentId, hideAux) { "${current.documentId}|hideAux=$hideAux" }
+    val atRoot = pathStack.isEmpty()
+    val current: File? = pathStack.lastOrNull()
 
-    // Seed straight from cache so revisiting a folder (e.g. backing out of the
-    // image viewer) never shows a spinner or redoes the SAF listing.
-    var entries by remember(cacheKey) { mutableStateOf(GalleryCache.getEntries(cacheKey)) }
+    // Storage volumes are only a system-service lookup (no disk listing),
+    // so the root screen doesn't need the disk cache.
+    var roots by remember { mutableStateOf<List<StorageRoot>?>(null) }
+
+    // Seed straight from cache so revisiting a folder (e.g. backing out of
+    // the media viewer) never shows a spinner or redoes the directory scan.
+    val cacheKey = remember(current?.absolutePath, hideAux) {
+        if (atRoot) "" else "${current!!.absolutePath}|hideAux=$hideAux"
+    }
+    var entries by remember(cacheKey) {
+        mutableStateOf(if (atRoot) null else GalleryCache.getEntries(cacheKey))
+    }
+
+    LaunchedEffect(atRoot) {
+        if (atRoot) {
+            roots = withContext(Dispatchers.IO) { storageRoots(context) }
+        }
+    }
 
     LaunchedEffect(cacheKey) {
-        if (GalleryCache.getEntries(cacheKey) == null) {
-            val loaded = withContext(Dispatchers.IO) {
-                listFolderFast(context, treeUri, current, hideAux)
-            }
+        if (!atRoot && GalleryCache.getEntries(cacheKey) == null) {
+            val loaded = withContext(Dispatchers.IO) { listFolder(current!!, hideAux) }
             GalleryCache.putEntries(cacheKey, loaded)
             entries = loaded
         }
     }
 
-    val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
+    val shownEntries: List<File>? = if (atRoot) roots?.map { it.file } else entries
+    val rootLabel: (File) -> String = { file ->
+        roots?.firstOrNull { it.file == file }?.label ?: file.displayName()
+    }
+    val mediaOnly = remember(shownEntries) { shownEntries.orEmpty().filter { it.isMediaFile() } }
 
     Scaffold(
         topBar = {
             Column {
                 TopAppBar(
                     title = {
-                        Text(current.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            if (atRoot) "Storages" else current!!.displayName(),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     },
                     navigationIcon = {
                         if (canGoBack) {
@@ -125,16 +152,13 @@ fun GalleryScreen(
                                 contentDescription = "Toggle view mode"
                             )
                         }
-                        IconButton(onClick = onPickNewFolder) {
-                            Icon(Icons.Default.FolderOpen, contentDescription = "Pick a different root folder")
-                        }
                     }
                 )
                 Breadcrumb(pathStack = pathStack, onClick = onBreadcrumbClick)
             }
         }
     ) { padding ->
-        val currentEntries = entries
+        val currentEntries = shownEntries
         if (currentEntries == null) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -148,12 +172,20 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                items(currentEntries, key = { it.documentId }) { entry ->
-                    if (entry.isDirectory) {
-                        FolderRow(treeUri = treeUri, entry = entry, onClick = { onOpenFolder(entry) })
-                    } else {
-                        val index = imagesOnly.indexOf(entry)
-                        ImageRow(entry = entry, onClick = { onOpenImage(imagesOnly, index) })
+                items(currentEntries, key = { it.absolutePath }) { entry ->
+                    when {
+                        entry.isDirectory -> FolderRow(
+                            entry = entry,
+                            hideAux = hideAux,
+                            showCount = !atRoot,
+                            label = rootLabel(entry),
+                            onClick = { onOpenFolder(entry) }
+                        )
+                        entry.isMediaFile() -> {
+                            val index = mediaOnly.indexOf(entry)
+                            ImageRow(entry = entry, onClick = { onOpenMedia(mediaOnly, index) })
+                        }
+                        else -> FileRow(entry = entry)
                     }
                 }
             }
@@ -163,12 +195,18 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(4.dp)
             ) {
-                gridItems(currentEntries, key = { it.documentId }) { entry ->
-                    if (entry.isDirectory) {
-                        FolderTile(entry = entry, onClick = { onOpenFolder(entry) })
-                    } else {
-                        val index = imagesOnly.indexOf(entry)
-                        ImageTile(entry = entry, onClick = { onOpenImage(imagesOnly, index) })
+                gridItems(currentEntries, key = { it.absolutePath }) { entry ->
+                    when {
+                        entry.isDirectory -> FolderTile(
+                            entry = entry,
+                            label = rootLabel(entry),
+                            onClick = { onOpenFolder(entry) }
+                        )
+                        entry.isMediaFile() -> {
+                            val index = mediaOnly.indexOf(entry)
+                            ImageTile(entry = entry, onClick = { onOpenMedia(mediaOnly, index) })
+                        }
+                        else -> FileTile(entry = entry)
                     }
                 }
             }
@@ -177,7 +215,7 @@ fun GalleryScreen(
 }
 
 @Composable
-private fun Breadcrumb(pathStack: List<DocEntry>, onClick: (Int) -> Unit) {
+private fun Breadcrumb(pathStack: List<File>, onClick: (Int) -> Unit) {
     val scroll = rememberScrollState()
     Row(
         modifier = Modifier
@@ -187,36 +225,52 @@ private fun Breadcrumb(pathStack: List<DocEntry>, onClick: (Int) -> Unit) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        pathStack.forEachIndexed { index, entry ->
-            val isLast = index == pathStack.lastIndex
+        if (pathStack.isEmpty()) {
             Text(
-                text = entry.name,
+                "Storages",
                 style = MaterialTheme.typography.labelSmall,
-                fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
-                color = if (isLast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable(enabled = !isLast) { onClick(index) }
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
             )
-            if (!isLast) {
+        } else {
+            pathStack.forEachIndexed { index, file ->
+                val isLast = index == pathStack.lastIndex
                 Text(
-                    "  /  ",
+                    text = file.displayName(),
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
+                    color = if (isLast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.clickable(enabled = !isLast) { onClick(index) }
                 )
+                if (!isLast) {
+                    Text(
+                        "  /  ",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun FolderRow(treeUri: Uri, entry: DocEntry, onClick: () -> Unit) {
-    val context = LocalContext.current
-    val cacheKey = remember(entry.documentId) { entry.documentId }
-    var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
+private fun FolderRow(
+    entry: File,
+    hideAux: Boolean,
+    showCount: Boolean,
+    label: String,
+    onClick: () -> Unit
+) {
+    val countKey = remember(entry.absolutePath, hideAux) {
+        "${entry.absolutePath}|hideAux=$hideAux"
+    }
+    var count by remember(countKey) { mutableStateOf(GalleryCache.getCount(countKey)) }
 
-    LaunchedEffect(cacheKey) {
-        if (GalleryCache.getCount(cacheKey) == null) {
-            val computed = withContext(Dispatchers.IO) { countMediaFast(context, treeUri, entry) }
-            GalleryCache.putCount(cacheKey, computed)
+    LaunchedEffect(countKey) {
+        if (showCount && GalleryCache.getCount(countKey) == null) {
+            val computed = withContext(Dispatchers.IO) { countChildren(entry, hideAux) }
+            GalleryCache.putCount(countKey, computed)
             count = computed
         }
     }
@@ -230,15 +284,15 @@ private fun FolderRow(treeUri: Uri, entry: DocEntry, onClick: () -> Unit) {
     ) {
         Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(16.dp))
-        Column(Modifier.padding(0.dp)) {
+        Column {
             Text(
-                entry.name,
+                label,
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             val c = count
-            if (c != null && c > 0) {
+            if (showCount && c != null && c > 0) {
                 Text(
                     "$c items",
                     style = MaterialTheme.typography.bodyMedium,
@@ -250,7 +304,47 @@ private fun FolderRow(treeUri: Uri, entry: DocEntry, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ImageRow(entry: DocEntry, onClick: () -> Unit) {
+private fun FileRow(entry: File) {
+    val context = LocalContext.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Default.InsertDriveFile,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(16.dp))
+        Column {
+            Text(
+                entry.name,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                Formatter.formatShortFileSize(context, entry.length()),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** Files load directly; videos grab the frame at 1s so black first-frames are avoided. */
+private fun thumbnailModel(context: Context, entry: File): Any =
+    if (entry.isVideoFile()) {
+        ImageRequest.Builder(context).data(entry).videoFrameMillis(1000).build()
+    } else {
+        entry
+    }
+
+@Composable
+private fun ImageRow(entry: File, onClick: () -> Unit) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -259,14 +353,14 @@ private fun ImageRow(entry: DocEntry, onClick: () -> Unit) {
     ) {
         Box(Modifier.fillMaxWidth()) {
             AsyncImage(
-                model = entry.uri,
+                model = thumbnailModel(context, entry),
                 contentDescription = entry.name,
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(0.dp))
             )
-            if (entry.isVideo) {
+            if (entry.isVideoFile()) {
                 Icon(
                     Icons.Filled.PlayCircle,
                     contentDescription = "Video",
@@ -289,7 +383,7 @@ private fun ImageRow(entry: DocEntry, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
+private fun FolderTile(entry: File, label: String, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .padding(4.dp)
@@ -307,6 +401,36 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
             Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         }
         Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun FileTile(entry: File) {
+    Column(
+        modifier = Modifier.padding(4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.InsertDriveFile,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Text(
             entry.name,
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
@@ -317,7 +441,8 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ImageTile(entry: DocEntry, onClick: () -> Unit) {
+private fun ImageTile(entry: File, onClick: () -> Unit) {
+    val context = LocalContext.current
     Box(
         modifier = Modifier
             .padding(2.dp)
@@ -326,12 +451,12 @@ private fun ImageTile(entry: DocEntry, onClick: () -> Unit) {
             .clickable(onClick = onClick)
     ) {
         AsyncImage(
-            model = entry.uri,
+            model = thumbnailModel(context, entry),
             contentDescription = entry.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
-        if (entry.isVideo) {
+        if (entry.isVideoFile()) {
             Icon(
                 Icons.Filled.PlayCircle,
                 contentDescription = "Video",
