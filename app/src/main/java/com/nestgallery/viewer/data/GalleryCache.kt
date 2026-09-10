@@ -7,15 +7,11 @@ package com.nestgallery.viewer.data
  * Caching by URI here means a revisit is instant.
  */
 object GalleryCache {
-    private const val MAX_CACHED_FOLDERS = 12
-    private val entries = object : LinkedHashMap<String, List<FileEntry>>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<FileEntry>>?): Boolean =
-            size > MAX_CACHED_FOLDERS
-    }
+    private val entries = mutableMapOf<String, List<DocEntry>>()
     private val counts = mutableMapOf<String, Int>()
 
-    fun getEntries(key: String): List<FileEntry>? = entries[key]
-    fun putEntries(key: String, value: List<FileEntry>) {
+    fun getEntries(key: String): List<DocEntry>? = entries[key]
+    fun putEntries(key: String, value: List<DocEntry>) {
         entries[key] = value
     }
 

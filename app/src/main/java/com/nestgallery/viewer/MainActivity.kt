@@ -28,14 +28,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
 import coil.Coil
 import coil.ImageLoader
-import coil.disk.DiskCache
-import coil.memory.MemoryCache
 import coil.decode.GifDecoder
 import coil.decode.VideoFrameDecoder
-import com.nestgallery.viewer.data.FileEntry
+import com.nestgallery.viewer.data.DocEntry
+import com.nestgallery.viewer.data.rootDocEntry
 import com.nestgallery.viewer.ui.GalleryScreen
 import com.nestgallery.viewer.ui.ImageViewerScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
@@ -46,7 +44,7 @@ private const val KEY_ROOT_URI = "root_uri"
 private sealed class Screen {
     data object Picker : Screen()
     data object Browser : Screen()
-    data class Viewer(val images: List<FileEntry>, val startIndex: Int) : Screen()
+    data class Viewer(val images: List<DocEntry>, val startIndex: Int) : Screen()
 }
 
 class MainActivity : ComponentActivity() {
@@ -58,19 +56,6 @@ class MainActivity : ComponentActivity() {
         // animated GIFs and pull a preview frame out of video files.
         Coil.setImageLoader(
             ImageLoader.Builder(applicationContext)
-                .memoryCache {
-                    MemoryCache.Builder(applicationContext)
-                        .maxSizePercent(0.25)
-                        .build()
-                }
-                .diskCache {
-                    DiskCache.Builder()
-                        .directory(applicationContext.cacheDir.resolve("nestgallery_images"))
-                        .maxSizeBytes(256L * 1024L * 1024L)
-                        .build()
-                }
-                .respectCacheHeaders(false)
-                .crossfade(false)
                 .components {
                     add(GifDecoder.Factory())
                     add(VideoFrameDecoder.Factory())
@@ -91,12 +76,12 @@ private fun NestGalleryApp() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences(PREFS, 0) }
 
-    var rootUri by remember {
+    var treeUri by remember {
         mutableStateOf(prefs.getString(KEY_ROOT_URI, null)?.let { Uri.parse(it) })
     }
-    var pathStack by remember { mutableStateOf(listOf<DocumentFile>()) }
+    var pathStack by remember { mutableStateOf(listOf<DocEntry>()) }
     var screen by remember {
-        mutableStateOf<Screen>(if (rootUri == null) Screen.Picker else Screen.Browser)
+        mutableStateOf<Screen>(if (treeUri == null) Screen.Picker else Screen.Browser)
     }
     var hideAux by remember { mutableStateOf(true) }
     var listMode by remember { mutableStateOf(true) }
@@ -110,20 +95,16 @@ private fun NestGalleryApp() {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
             prefs.edit().putString(KEY_ROOT_URI, uri.toString()).apply()
-            rootUri = uri
-            val doc = DocumentFile.fromTreeUri(context, uri)
-            if (doc != null) {
-                pathStack = listOf(doc)
-                screen = Screen.Browser
-            }
+            treeUri = uri
+            pathStack = listOf(rootDocEntry(context, uri))
+            screen = Screen.Browser
         }
     }
 
-    LaunchedEffect(rootUri) {
-        val uri = rootUri
+    LaunchedEffect(treeUri) {
+        val uri = treeUri
         if (uri != null && pathStack.isEmpty()) {
-            val doc = DocumentFile.fromTreeUri(context, uri)
-            if (doc != null) pathStack = listOf(doc)
+            pathStack = listOf(rootDocEntry(context, uri))
         }
     }
 
@@ -131,17 +112,16 @@ private fun NestGalleryApp() {
         when (s) {
             is Screen.Picker -> FolderPickerPrompt { pickFolder.launch(null) }
             is Screen.Browser -> {
-                if (pathStack.isEmpty()) return@Crossfade
+                val uri = treeUri
+                if (uri == null || pathStack.isEmpty()) return@Crossfade
                 GalleryScreen(
+                    treeUri = uri,
                     pathStack = pathStack,
                     hideAux = hideAux,
                     listMode = listMode,
                     onToggleViewMode = { listMode = !listMode },
                     onToggleHideAux = { hideAux = !hideAux },
-                    onOpenFolder = { uri ->
-                        val folder = DocumentFile.fromSingleUri(context, uri)
-                        if (folder != null) pathStack = pathStack + folder
-                    },
+                    onOpenFolder = { folder -> pathStack = pathStack + folder },
                     onBreadcrumbClick = { index -> pathStack = pathStack.subList(0, index + 1) },
                     onPickNewFolder = { pickFolder.launch(null) },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index) },

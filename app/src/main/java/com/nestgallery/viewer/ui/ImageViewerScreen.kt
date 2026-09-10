@@ -40,13 +40,13 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
-import com.nestgallery.viewer.data.FileEntry
+import com.nestgallery.viewer.data.DocEntry
 import kotlin.math.max
 import kotlin.math.min
 
 @Composable
 fun ImageViewerScreen(
-    images: List<FileEntry>,
+    images: List<DocEntry>,
     startIndex: Int,
     onDismiss: () -> Unit
 ) {
@@ -95,7 +95,7 @@ fun ImageViewerScreen(
 }
 
 @Composable
-private fun ZoomableImage(entry: FileEntry, onTap: () -> Unit) {
+private fun ZoomableImage(entry: DocEntry, onTap: () -> Unit) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 

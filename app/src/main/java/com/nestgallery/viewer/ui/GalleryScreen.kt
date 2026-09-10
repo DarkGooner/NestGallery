@@ -1,5 +1,6 @@
 package com.nestgallery.viewer.ui
 
+import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -49,36 +50,37 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
 import coil.compose.AsyncImage
-import com.nestgallery.viewer.data.FileEntry
+import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.GalleryCache
-import com.nestgallery.viewer.data.listEntriesFast
+import com.nestgallery.viewer.data.countMediaFast
+import com.nestgallery.viewer.data.listFolderFast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryScreen(
-    pathStack: List<DocumentFile>,
+    treeUri: Uri,
+    pathStack: List<DocEntry>,
     hideAux: Boolean,
     listMode: Boolean,
     onToggleViewMode: () -> Unit,
     onToggleHideAux: () -> Unit,
-    onOpenFolder: (android.net.Uri) -> Unit,
+    onOpenFolder: (DocEntry) -> Unit,
     onBreadcrumbClick: (Int) -> Unit,
     onPickNewFolder: () -> Unit,
-    onOpenImage: (List<FileEntry>, Int) -> Unit,
+    onOpenImage: (List<DocEntry>, Int) -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
 ) {
     val context = LocalContext.current
     val current = pathStack.last()
-    val cacheKey = remember(current, hideAux) { "${current.uri}|hideAux=$hideAux" }
+    val cacheKey = remember(current.documentId, hideAux) { "${current.documentId}|hideAux=$hideAux" }
 
     // Seed straight from cache so revisiting a folder (e.g. backing out of the
     // image viewer) never shows a spinner or redoes the SAF listing.
@@ -86,23 +88,22 @@ fun GalleryScreen(
 
     LaunchedEffect(cacheKey) {
         if (GalleryCache.getEntries(cacheKey) == null) {
-            val loaded = withContext(Dispatchers.IO) { current.listEntriesFast(context, hideAux) }
+            val loaded = withContext(Dispatchers.IO) {
+                listFolderFast(context, treeUri, current, hideAux)
+            }
             GalleryCache.putEntries(cacheKey, loaded)
             entries = loaded
         }
     }
 
     val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
-    val imageIndexByUri = remember(imagesOnly) {
-        imagesOnly.mapIndexed { index, entry -> entry.uri to index }.toMap()
-    }
 
     Scaffold(
         topBar = {
             Column {
                 TopAppBar(
                     title = {
-                        Text(current.name ?: "Gallery", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(current.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     },
                     navigationIcon = {
                         if (canGoBack) {
@@ -147,11 +148,11 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                items(currentEntries, key = { it.uri }) { entry ->
+                items(currentEntries, key = { it.documentId }) { entry ->
                     if (entry.isDirectory) {
-                        FolderRowFast(entry = entry, onClick = { onOpenFolder(entry.uri) })
+                        FolderRow(treeUri = treeUri, entry = entry, onClick = { onOpenFolder(entry) })
                     } else {
-                        val index = imageIndexByUri[entry.uri] ?: 0
+                        val index = imagesOnly.indexOf(entry)
                         ImageRow(entry = entry, onClick = { onOpenImage(imagesOnly, index) })
                     }
                 }
@@ -162,11 +163,11 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(4.dp)
             ) {
-                gridItems(currentEntries, key = { it.uri }) { entry ->
+                gridItems(currentEntries, key = { it.documentId }) { entry ->
                     if (entry.isDirectory) {
-                        FolderTile(entry = entry, onClick = { onOpenFolder(entry.uri) })
+                        FolderTile(entry = entry, onClick = { onOpenFolder(entry) })
                     } else {
-                        val index = imageIndexByUri[entry.uri] ?: 0
+                        val index = imagesOnly.indexOf(entry)
                         ImageTile(entry = entry, onClick = { onOpenImage(imagesOnly, index) })
                     }
                 }
@@ -176,7 +177,7 @@ fun GalleryScreen(
 }
 
 @Composable
-private fun Breadcrumb(pathStack: List<DocumentFile>, onClick: (Int) -> Unit) {
+private fun Breadcrumb(pathStack: List<DocEntry>, onClick: (Int) -> Unit) {
     val scroll = rememberScrollState()
     Row(
         modifier = Modifier
@@ -186,10 +187,10 @@ private fun Breadcrumb(pathStack: List<DocumentFile>, onClick: (Int) -> Unit) {
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        pathStack.forEachIndexed { index, doc ->
+        pathStack.forEachIndexed { index, entry ->
             val isLast = index == pathStack.lastIndex
             Text(
-                text = doc.name ?: "root",
+                text = entry.name,
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
                 color = if (isLast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -207,7 +208,19 @@ private fun Breadcrumb(pathStack: List<DocumentFile>, onClick: (Int) -> Unit) {
 }
 
 @Composable
-private fun FolderRowFast(entry: FileEntry, onClick: () -> Unit) {
+private fun FolderRow(treeUri: Uri, entry: DocEntry, onClick: () -> Unit) {
+    val context = LocalContext.current
+    val cacheKey = remember(entry.documentId) { entry.documentId }
+    var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
+
+    LaunchedEffect(cacheKey) {
+        if (GalleryCache.getCount(cacheKey) == null) {
+            val computed = withContext(Dispatchers.IO) { countMediaFast(context, treeUri, entry) }
+            GalleryCache.putCount(cacheKey, computed)
+            count = computed
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -217,17 +230,27 @@ private fun FolderRowFast(entry: FileEntry, onClick: () -> Unit) {
     ) {
         Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(16.dp))
-        Text(
-            entry.name,
-            style = MaterialTheme.typography.titleMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Column(Modifier.padding(0.dp)) {
+            Text(
+                entry.name,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val c = count
+            if (c != null && c > 0) {
+                Text(
+                    "$c items",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun ImageRow(entry: FileEntry, onClick: () -> Unit) {
+private fun ImageRow(entry: DocEntry, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -266,7 +289,7 @@ private fun ImageRow(entry: FileEntry, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FolderTile(entry: FileEntry, onClick: () -> Unit) {
+private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .padding(4.dp)
@@ -294,7 +317,7 @@ private fun FolderTile(entry: FileEntry, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ImageTile(entry: FileEntry, onClick: () -> Unit) {
+private fun ImageTile(entry: DocEntry, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .padding(2.dp)
