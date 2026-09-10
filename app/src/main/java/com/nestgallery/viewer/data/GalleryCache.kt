@@ -9,10 +9,16 @@ package com.nestgallery.viewer.data
 object GalleryCache {
     private val entries = mutableMapOf<String, List<DocEntry>>()
     private val counts = mutableMapOf<String, Int>()
+    private val scrollPositions = mutableMapOf<String, Pair<Int, Int>>()
 
     fun getEntries(key: String): List<DocEntry>? = entries[key]
     fun putEntries(key: String, value: List<DocEntry>) {
         entries[key] = value
+    }
+
+    fun getScroll(key: String): Pair<Int, Int>? = scrollPositions[key]
+    fun putScroll(key: String, index: Int, offset: Int) {
+        scrollPositions[key] = index to offset
     }
 
     fun getCount(key: String): Int? = counts[key]
@@ -24,10 +30,12 @@ object GalleryCache {
     fun invalidate(key: String) {
         entries.remove(key)
         counts.remove(key)
+        scrollPositions.remove(key)
     }
 
     fun clearAll() {
         entries.clear()
         counts.clear()
+        scrollPositions.clear()
     }
 }

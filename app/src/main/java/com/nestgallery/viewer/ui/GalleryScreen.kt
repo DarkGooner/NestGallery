@@ -18,7 +18,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,6 +43,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -96,6 +99,29 @@ fun GalleryScreen(
 
     val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
 
+    // Scroll position survives navigating to the image viewer and back, or
+    // between folders, the same way the entries themselves do above.
+    val scrollKey = remember(cacheKey, listMode) { "$cacheKey|mode=$listMode" }
+    val savedScroll = remember(scrollKey) { GalleryCache.getScroll(scrollKey) }
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = savedScroll?.first ?: 0,
+        initialFirstVisibleItemScrollOffset = savedScroll?.second ?: 0
+    )
+    val gridState = rememberLazyGridState(
+        initialFirstVisibleItemIndex = savedScroll?.first ?: 0,
+        initialFirstVisibleItemScrollOffset = savedScroll?.second ?: 0
+    )
+
+    DisposableEffect(scrollKey) {
+        onDispose {
+            if (listMode) {
+                GalleryCache.putScroll(scrollKey, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+            } else {
+                GalleryCache.putScroll(scrollKey, gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset)
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             Column {
@@ -149,6 +175,7 @@ fun GalleryScreen(
             }
         } else if (listMode) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
@@ -163,6 +190,7 @@ fun GalleryScreen(
             }
         } else {
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Adaptive(minSize = 108.dp),
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(4.dp)
