@@ -4,13 +4,12 @@ package com.nestgallery.viewer.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -22,6 +21,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -29,41 +29,37 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.layout.weight
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
-import com.nestgallery.viewer.data.isVideoFile
-import java.io.File
+import com.nestgallery.viewer.data.DocEntry
+import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 @Composable
 fun ImageViewerScreen(
-    media: List<File>,
+    images: List<DocEntry>,
     startIndex: Int,
     onDismiss: () -> Unit
 ) {
-    val pagerState = rememberPagerState(initialPage = startIndex) { media.size }
+    val pagerState = rememberPagerState(initialPage = startIndex) { images.size }
     var chromeVisible by remember { mutableStateOf(true) }
-    val currentEntry = media[pagerState.currentPage]
+    val currentEntry = images[pagerState.currentPage]
 
     Box(
         modifier = Modifier
@@ -71,9 +67,9 @@ fun ImageViewerScreen(
             .background(Color.Black)
     ) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-            val entry = media[page]
-            if (entry.isVideoFile()) {
-                VideoPlayer(file = entry)
+            val entry = images[page]
+            if (entry.isVideo) {
+                VideoPlayer(entry = entry)
             } else {
                 ZoomableImage(
                     entry = entry,
@@ -93,7 +89,7 @@ fun ImageViewerScreen(
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                 }
                 Text(
-                    text = "${pagerState.currentPage + 1} / ${media.size}  ·  ${currentEntry.name}",
+                    text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",
                     color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier
@@ -106,13 +102,13 @@ fun ImageViewerScreen(
 }
 
 @Composable
-private fun ZoomableImage(entry: File, onTap: () -> Unit) {
+private fun ZoomableImage(entry: DocEntry, onTap: () -> Unit) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         AsyncImage(
-            model = entry,
+            model = entry.file,
             contentDescription = entry.name,
             contentScale = ContentScale.Fit,
             modifier = Modifier
@@ -123,13 +119,13 @@ private fun ZoomableImage(entry: File, onTap: () -> Unit) {
                     translationX = offset.x,
                     translationY = offset.y
                 )
-                .pointerInput(entry) {
+                .pointerInput(entry.file) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale = max(1f, min(scale * zoom, 5f))
                         offset = if (scale == 1f) Offset.Zero else offset + pan
                     }
                 }
-                .pointerInput(entry) {
+                .pointerInput(entry.file) {
                     detectTapGestures(
                         onTap = { onTap() },
                         onDoubleTap = {
@@ -143,18 +139,16 @@ private fun ZoomableImage(entry: File, onTap: () -> Unit) {
 }
 
 /**
- * Plays a video file full-screen with the standard Media3 controls.
- *
- * Double-tap left half = -10s, right half = +10s. Single taps are NOT
- * consumed by the overlay (see [detectDoubleTapSeek]), so the ExoPlayer
- * controller keeps working normally: play/pause, seek bar, tap-to-hide.
+ * Full-screen video playback with the standard Media3 controls, plus
+ * double-tap zones on the left/right half of the screen to seek 10s back
+ * or forward (tap once to show/hide the controller, same as most players).
  */
 @Composable
-private fun VideoPlayer(file: File) {
+private fun VideoPlayer(entry: DocEntry) {
     val context = LocalContext.current
-    val exoPlayer = remember(file) {
+    val exoPlayer = remember(entry.file) {
         ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
+            setMediaItem(MediaItem.fromUri(entry.file.toUri()))
             prepare()
             playWhenReady = true
         }
@@ -164,10 +158,15 @@ private fun VideoPlayer(file: File) {
         onDispose { exoPlayer.release() }
     }
 
-    val scope = rememberCoroutineScope()
-    // null = hidden, true = "+10s" (forward), false = "-10s" (backward)
-    var seekFeedback by remember { mutableStateOf<Boolean?>(null) }
-    var feedbackJob by remember { mutableStateOf<Job?>(null) }
+    var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
+    var seekFeedback by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffectHideFeedback(seekFeedback) { seekFeedback = null }
+
+    fun seekBy(deltaMs: Long) {
+        val duration = if (exoPlayer.duration != C.TIME_UNSET) exoPlayer.duration else Long.MAX_VALUE
+        exoPlayer.seekTo((exoPlayer.currentPosition + deltaMs).coerceIn(0, duration))
+    }
 
     Box(Modifier.fillMaxSize()) {
         AndroidView(
@@ -176,77 +175,68 @@ private fun VideoPlayer(file: File) {
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = true
+                    playerViewRef = this
                 }
             }
         )
 
-        Box(
-            Modifier
-                .fillMaxSize()
-                .pointerInput(file) {
-                    detectDoubleTapSeek { position ->
-                        val forward = position.x > size.width / 2f
-                        val delta = if (forward) 10_000L else -10_000L
-                        val duration = exoPlayer.duration
-                        val target = exoPlayer.currentPosition + delta
-                        exoPlayer.seekTo(
-                            if (duration > 0) target.coerceIn(0L, duration)
-                            else target.coerceAtLeast(0L)
+        Row(Modifier.fillMaxSize()) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .pointerInput(entry.file) {
+                        detectTapGestures(
+                            onTap = { playerViewRef?.showController() },
+                            onDoubleTap = {
+                                seekBy(-10_000)
+                                seekFeedback = "⟲ 10s"
+                            }
                         )
-                        seekFeedback = forward
-                        feedbackJob?.cancel()
-                        feedbackJob = scope.launch {
-                            delay(700)
-                            seekFeedback = null
-                        }
                     }
-                }
-        )
-
-        seekFeedback?.let { forward ->
-            Text(
-                text = if (forward) "+10s" else "-10s",
-                color = Color.White,
-                style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier
-                    .align(if (forward) Alignment.CenterEnd else Alignment.CenterStart)
-                    .padding(horizontal = 48.dp)
-                    .background(Color(0x66000000), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .pointerInput(entry.file) {
+                        detectTapGestures(
+                            onTap = { playerViewRef?.showController() },
+                            onDoubleTap = {
+                                seekBy(10_000)
+                                seekFeedback = "10s ⟳"
+                            }
+                        )
+                    }
             )
         }
-    }
-}
 
-/**
- * Double-tap-only gesture detector that never consumes single taps or
- * drags, so both the ExoPlayer controller underneath and the surrounding
- * HorizontalPager keep receiving them. Only a confirmed double tap's
- * events are consumed.
- */
-private suspend fun PointerInputScope.detectDoubleTapSeek(
-    onDoubleTap: (Offset) -> Unit
-) {
-    awaitEachGesture {
-        awaitFirstDown()
-        val firstUp = waitForUpOrCancellation() ?: return@awaitEachGesture
-
-        // Second tap must arrive within the platform double-tap timeout...
-        val secondDown = withTimeoutOrNull(
-            viewConfiguration.doubleTapTimeoutMillis.toLong()
-        ) {
-            awaitFirstDown()
-        } ?: return@awaitEachGesture
-
-        // ...and land close to the first one.
-        val maxDistance = viewConfiguration.touchSlop * 2f
-        if ((secondDown.position - firstUp.position).getDistance() > maxDistance) {
-            return@awaitEachGesture
+        seekFeedback?.let { text ->
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Text(
+                        text,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                    )
+                }
+            }
         }
-
-        // Confirmed double tap: this event pair is ours.
-        secondDown.consume()
-        waitForUpOrCancellation()?.consume()
-        onDoubleTap(secondDown.position)
     }
 }
+
+@Composable
+private fun LaunchedEffectHideFeedback(key: String?, onExpire: () -> Unit) {
+    androidx.compose.runtime.LaunchedEffect(key) {
+        if (key != null) {
+            delay(500)
+            onExpire()
+        }
+    }
+}
+
+private fun java.io.File.toUri(): android.net.Uri = android.net.Uri.fromFile(this)
