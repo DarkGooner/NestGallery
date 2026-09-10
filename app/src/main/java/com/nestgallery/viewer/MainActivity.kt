@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             NestGalleryTheme {
-                NestGalleryApp()
+                NestGalleryContent()
             }
         }
     }
@@ -94,7 +94,7 @@ private fun hasFileAccess(context: Context): Boolean =
     }
 
 @Composable
-private fun NestGalleryApp() {
+private fun NestGalleryContent() {
     val context = LocalContext.current
 
     var hasAccess by remember { mutableStateOf(hasFileAccess(context)) }

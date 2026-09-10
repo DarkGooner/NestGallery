@@ -18,6 +18,12 @@ fun File.isImageFile(): Boolean = extension() in imageExtensions
 fun File.isVideoFile(): Boolean = extension() in videoExtensions
 fun File.isMediaFile(): Boolean = isImageFile() || isVideoFile()
 
+/** Auxiliary files that should normally stay hidden in gallery browsing. */
+fun isAuxName(name: String): Boolean {
+    val lower = name.lowercase()
+    return lower.contains("_thumb") || lower.contains("_locked")
+}
+
 /**
  * Human-friendly folder name. The primary shared storage is reported by the
  * OS as a path ending in "0", which reads terribly in titles and breadcrumbs.
