@@ -56,10 +56,10 @@ import androidx.documentfile.provider.DocumentFile
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.FileEntry
 import com.nestgallery.viewer.data.GalleryCache
-import com.nestgallery.viewer.data.countMedia
-import com.nestgallery.viewer.data.listEntries
+import com.nestgallery.viewer.data.listEntriesFast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.platform.LocalContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,13 +69,14 @@ fun GalleryScreen(
     listMode: Boolean,
     onToggleViewMode: () -> Unit,
     onToggleHideAux: () -> Unit,
-    onOpenFolder: (DocumentFile) -> Unit,
+    onOpenFolder: (android.net.Uri) -> Unit,
     onBreadcrumbClick: (Int) -> Unit,
     onPickNewFolder: () -> Unit,
     onOpenImage: (List<FileEntry>, Int) -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
 ) {
+    val context = LocalContext.current
     val current = pathStack.last()
     val cacheKey = remember(current, hideAux) { "${current.uri}|hideAux=$hideAux" }
 
@@ -85,13 +86,16 @@ fun GalleryScreen(
 
     LaunchedEffect(cacheKey) {
         if (GalleryCache.getEntries(cacheKey) == null) {
-            val loaded = withContext(Dispatchers.IO) { current.listEntries(hideAux) }
+            val loaded = withContext(Dispatchers.IO) { current.listEntriesFast(context, hideAux) }
             GalleryCache.putEntries(cacheKey, loaded)
             entries = loaded
         }
     }
 
     val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
+    val imageIndexByUri = remember(imagesOnly) {
+        imagesOnly.mapIndexed { index, entry -> entry.uri to index }.toMap()
+    }
 
     Scaffold(
         topBar = {
@@ -143,11 +147,11 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                items(currentEntries, key = { it.doc.uri.toString() }) { entry ->
+                items(currentEntries, key = { it.uri }) { entry ->
                     if (entry.isDirectory) {
-                        FolderRow(entry = entry, onClick = { onOpenFolder(entry.doc) })
+                        FolderRowFast(entry = entry, onClick = { onOpenFolder(entry.uri) })
                     } else {
-                        val index = imagesOnly.indexOf(entry)
+                        val index = imageIndexByUri[entry.uri] ?: 0
                         ImageRow(entry = entry, onClick = { onOpenImage(imagesOnly, index) })
                     }
                 }
@@ -158,11 +162,11 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(4.dp)
             ) {
-                gridItems(currentEntries, key = { it.doc.uri.toString() }) { entry ->
+                gridItems(currentEntries, key = { it.uri }) { entry ->
                     if (entry.isDirectory) {
-                        FolderTile(entry = entry, onClick = { onOpenFolder(entry.doc) })
+                        FolderTile(entry = entry, onClick = { onOpenFolder(entry.uri) })
                     } else {
-                        val index = imagesOnly.indexOf(entry)
+                        val index = imageIndexByUri[entry.uri] ?: 0
                         ImageTile(entry = entry, onClick = { onOpenImage(imagesOnly, index) })
                     }
                 }
@@ -203,18 +207,7 @@ private fun Breadcrumb(pathStack: List<DocumentFile>, onClick: (Int) -> Unit) {
 }
 
 @Composable
-private fun FolderRow(entry: FileEntry, onClick: () -> Unit) {
-    val cacheKey = remember(entry.doc.uri) { entry.doc.uri.toString() }
-    var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
-
-    LaunchedEffect(cacheKey) {
-        if (GalleryCache.getCount(cacheKey) == null) {
-            val computed = withContext(Dispatchers.IO) { countMedia(entry.doc) }
-            GalleryCache.putCount(cacheKey, computed)
-            count = computed
-        }
-    }
-
+private fun FolderRowFast(entry: FileEntry, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -224,22 +217,12 @@ private fun FolderRow(entry: FileEntry, onClick: () -> Unit) {
     ) {
         Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(16.dp))
-        Column(Modifier.padding(0.dp)) {
-            Text(
-                entry.name,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            val c = count
-            if (c != null && c > 0) {
-                Text(
-                    "$c items",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
+        Text(
+            entry.name,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -253,7 +236,7 @@ private fun ImageRow(entry: FileEntry, onClick: () -> Unit) {
     ) {
         Box(Modifier.fillMaxWidth()) {
             AsyncImage(
-                model = entry.doc.uri,
+                model = entry.uri,
                 contentDescription = entry.name,
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier
@@ -320,7 +303,7 @@ private fun ImageTile(entry: FileEntry, onClick: () -> Unit) {
             .clickable(onClick = onClick)
     ) {
         AsyncImage(
-            model = entry.doc.uri,
+            model = entry.uri,
             contentDescription = entry.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

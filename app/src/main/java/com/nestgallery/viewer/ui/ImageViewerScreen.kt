@@ -62,7 +62,7 @@ fun ImageViewerScreen(
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
             val entry = images[page]
             if (entry.isVideo) {
-                VideoPlayer(uri = entry.doc.uri.toString())
+                VideoPlayer(uri = entry.uri.toString())
             } else {
                 ZoomableImage(
                     entry = entry,
@@ -101,7 +101,7 @@ private fun ZoomableImage(entry: FileEntry, onTap: () -> Unit) {
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         AsyncImage(
-            model = entry.doc.uri,
+            model = entry.uri,
             contentDescription = entry.name,
             contentScale = ContentScale.Fit,
             modifier = Modifier
@@ -112,13 +112,13 @@ private fun ZoomableImage(entry: FileEntry, onTap: () -> Unit) {
                     translationX = offset.x,
                     translationY = offset.y
                 )
-                .pointerInput(entry.doc.uri) {
+                .pointerInput(entry.uri) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale = max(1f, min(scale * zoom, 5f))
                         offset = if (scale == 1f) Offset.Zero else offset + pan
                     }
                 }
-                .pointerInput(entry.doc.uri) {
+                .pointerInput(entry.uri) {
                     detectTapGestures(
                         onTap = { onTap() },
                         onDoubleTap = {

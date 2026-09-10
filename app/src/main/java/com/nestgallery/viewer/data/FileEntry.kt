@@ -1,54 +1,121 @@
 package com.nestgallery.viewer.data
 
+import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 
 /**
- * A single row in the browser: either a folder or a media file (image, gif,
- * or video), backed directly by its DocumentFile so no separate lookups are
- * needed later.
+ * Deliberately stores only the URI + metadata.
+ *
+ * Creating 50,000 DocumentFile objects is surprisingly expensive and also
+ * creates a large object graph. DocumentFile is now created only when a folder
+ * is actually opened.
  */
 data class FileEntry(
-    val doc: DocumentFile,
+    val uri: Uri,
     val name: String,
     val isDirectory: Boolean,
     val size: Long,
     val isVideo: Boolean
 )
 
-private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic")
+fun FileEntry.document(context: Context): DocumentFile? =
+    DocumentFile.fromSingleUri(context, uri)
+
+private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif", "avif")
 private val videoExtensions = setOf("mp4", "mkv", "webm", "mov", "3gp", "m4v", "avi")
 
-private fun String?.extension(): String =
-    this?.lowercase()?.substringAfterLast('.', "") ?: ""
+private fun String.extension(): String = lowercase().substringAfterLast('.', "")
+fun String.isImageName(): Boolean = extension() in imageExtensions
+fun String.isVideoName(): Boolean = extension() in videoExtensions
+fun String.isMediaName(): Boolean = isImageName() || isVideoName()
 
-fun DocumentFile.isImageFile(): Boolean = isFile && name.extension() in imageExtensions
-fun DocumentFile.isVideoFile(): Boolean = isFile && name.extension() in videoExtensions
+fun DocumentFile.isImageFile(): Boolean = isFile && (name?.isImageName() == true)
+fun DocumentFile.isVideoFile(): Boolean = isFile && (name?.isVideoName() == true)
 fun DocumentFile.isMediaFile(): Boolean = isImageFile() || isVideoFile()
 
 /**
- * Lists the folders and media files directly inside this DocumentFile,
- * folders first, alphabetically. When [hideAux] is true, files whose name
- * contains "_thumb" or "_locked" are filtered out.
+ * Single-provider-call directory enumeration. No DocumentFile is created per
+ * child, and no per-file length()/isFile()/name calls are made through SAF.
  */
-fun DocumentFile.listEntries(hideAux: Boolean): List<FileEntry> {
-    val children = listFiles().filter { it.isDirectory || it.isMediaFile() }
-    val filtered = if (hideAux) {
-        children.filter {
-            val n = it.name?.lowercase() ?: ""
-            it.isDirectory || (!n.contains("_thumb") && !n.contains("_locked"))
+fun DocumentFile.listEntriesFast(context: Context, hideAux: Boolean): List<FileEntry> {
+    val resolver = context.contentResolver
+    val treeUri = uri
+    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+        treeUri,
+        DocumentsContract.getTreeDocumentId(treeUri)
+    )
+    val projection = arrayOf(
+        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+        DocumentsContract.Document.COLUMN_MIME_TYPE,
+        DocumentsContract.Document.COLUMN_SIZE
+    )
+    val result = ArrayList<FileEntry>()
+
+    resolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+        val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+        val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+        val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+        val sizeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+
+        while (cursor.moveToNext()) {
+            val id = cursor.getString(idCol) ?: continue
+            val name = cursor.getString(nameCol) ?: "unnamed"
+            val mime = cursor.getString(mimeCol) ?: ""
+            val isDirectory = mime == DocumentsContract.Document.MIME_TYPE_DIR
+
+            if (!isDirectory && !name.isMediaName() &&
+                !mime.startsWith("image/") && !mime.startsWith("video/")) continue
+
+            if (hideAux && !isDirectory) {
+                val lower = name.lowercase()
+                if ("_thumb" in lower || "_locked" in lower) continue
+            }
+
+            val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+            val size = if (sizeCol >= 0 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else -1L
+            result.add(
+                FileEntry(
+                    uri = childUri,
+                    name = name,
+                    isDirectory = isDirectory,
+                    size = size,
+                    isVideo = name.isVideoName() || mime.startsWith("video/")
+                )
+            )
         }
-    } else {
-        children
     }
 
-    return filtered
-        .map { FileEntry(it, it.name ?: "unnamed", it.isDirectory, it.length(), it.isVideoFile()) }
-        .sortedWith(
-            compareByDescending<FileEntry> { it.isDirectory }
-                .thenBy { it.name.lowercase() }
-        )
+    // Cache the normalized lowercase name in the comparator rather than
+    // allocating it repeatedly while sorting tens of thousands of entries.
+    result.sortWith(compareByDescending<FileEntry> { it.isDirectory }
+        .thenBy { it.name.lowercase() })
+    return result
 }
 
-/** Counts images + videos directly inside [folder] (not recursive). */
-fun countMedia(folder: DocumentFile): Int =
-    folder.listFiles().count { it.isMediaFile() }
+/** Compatibility fallback for callers that still need the old API. */
+fun DocumentFile.listEntries(hideAux: Boolean): List<FileEntry> =
+    listFiles().asSequence()
+        .filter { it.isDirectory || it.isMediaFile() }
+        .filter {
+            if (!hideAux || it.isDirectory) true
+            else {
+                val n = it.name?.lowercase() ?: ""
+                !n.contains("_thumb") && !n.contains("_locked")
+            }
+        }
+        .map {
+            FileEntry(
+                uri = it.uri,
+                name = it.name ?: "unnamed",
+                isDirectory = it.isDirectory,
+                size = -1L,
+                isVideo = it.isVideoFile()
+            )
+        }
+        .sortedWith(compareByDescending<FileEntry> { it.isDirectory }.thenBy { it.name.lowercase() })
+        .toList()
+
+fun countMedia(folder: DocumentFile): Int = folder.listFiles().count { it.isMediaFile() }

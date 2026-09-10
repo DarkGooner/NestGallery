@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import coil.Coil
 import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import coil.decode.GifDecoder
 import coil.decode.VideoFrameDecoder
 import com.nestgallery.viewer.data.FileEntry
@@ -56,6 +58,19 @@ class MainActivity : ComponentActivity() {
         // animated GIFs and pull a preview frame out of video files.
         Coil.setImageLoader(
             ImageLoader.Builder(applicationContext)
+                .memoryCache {
+                    MemoryCache.Builder(applicationContext)
+                        .maxSizePercent(0.25)
+                        .build()
+                }
+                .diskCache {
+                    DiskCache.Builder()
+                        .directory(applicationContext.cacheDir.resolve("nestgallery_images"))
+                        .maxSizeBytes(256L * 1024L * 1024L)
+                        .build()
+                }
+                .respectCacheHeaders(false)
+                .crossfade(false)
                 .components {
                     add(GifDecoder.Factory())
                     add(VideoFrameDecoder.Factory())
@@ -123,7 +138,10 @@ private fun NestGalleryApp() {
                     listMode = listMode,
                     onToggleViewMode = { listMode = !listMode },
                     onToggleHideAux = { hideAux = !hideAux },
-                    onOpenFolder = { folder -> pathStack = pathStack + folder },
+                    onOpenFolder = { uri ->
+                        val folder = DocumentFile.fromSingleUri(context, uri)
+                        if (folder != null) pathStack = pathStack + folder
+                    },
                     onBreadcrumbClick = { index -> pathStack = pathStack.subList(0, index + 1) },
                     onPickNewFolder = { pickFolder.launch(null) },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index) },

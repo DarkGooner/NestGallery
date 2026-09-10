@@ -69,3 +69,25 @@ future launches.
   project locally, either let Android Studio generate one for you
   (File → "Create Gradle Wrapper" prompt), or ignore it — the GitHub Actions
   workflow doesn't need it since it installs Gradle directly.
+
+
+## Performance improvements for very large folders
+
+This version is optimized for folders containing thousands to tens of thousands of media files:
+
+- Uses a direct `DocumentsContract` child-document query instead of `DocumentFile.listFiles()` plus per-file `length()` calls. This drastically reduces SAF provider/Binder work.
+- Avoids calculating media counts for every visible folder row. Those counts caused additional directory scans and could make large folder screens much slower.
+- Uses a URI → image-index map instead of calling `imagesOnly.indexOf()` for every composed item (which was O(n) per item).
+- Keeps folder listings in the process cache so returning to a folder does not rescan it.
+- Adds Coil memory/disk caching and disables crossfade for faster scrolling.
+- Thumbnail decoding remains constrained by the Compose grid item's size, so the gallery does not need to decode every original-resolution image just to display a thumbnail.
+
+## 50K-image performance
+
+The fast build is designed for very large Android SAF folders (10,000-50,000+ files):
+- enumerates children with one `DocumentsContract` query instead of `DocumentFile.listFiles()` metadata calls;
+- keeps only `Uri` + primitive metadata for each child and creates `DocumentFile` only when a folder is opened;
+- uses lazy Compose lists/grids so only visible thumbnails are composed;
+- uses a process-lifetime LRU cache for recently visited folders;
+- uses Coil memory/disk caching with crossfade disabled for fast scrolling;
+- avoids per-folder media-count scans.
