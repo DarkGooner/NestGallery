@@ -1,0 +1,13 @@
+*.iml
+.gradle/
+/local.properties
+.idea/
+.DS_Store
+/build
+/app/build
+/app/release
+captures/
+.externalNativeBuild/
+.cxx/
+# Note: app/keystore/release.keystore is intentionally committed so the
+# GitHub Actions workflow can sign builds with zero setup. See README.
