@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,7 +37,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +54,8 @@ import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.FileEntry
 import com.nestgallery.viewer.data.countImages
 import com.nestgallery.viewer.data.listEntries
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,8 +73,15 @@ fun GalleryScreen(
     canGoBack: Boolean
 ) {
     val current = pathStack.last()
-    val entries = remember(current, hideAux) { current.listEntries(hideAux) }
-    val imagesOnly = remember(entries) { entries.filter { !it.isDirectory } }
+    var entries by remember(current, hideAux) { mutableStateOf<List<FileEntry>?>(null) }
+
+    LaunchedEffect(current, hideAux) {
+        entries = null
+        val loaded = withContext(Dispatchers.IO) { current.listEntries(hideAux) }
+        entries = loaded
+    }
+
+    val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
 
     Scaffold(
         topBar = {
@@ -105,7 +119,12 @@ fun GalleryScreen(
             }
         }
     ) { padding ->
-        if (entries.isEmpty()) {
+        val currentEntries = entries
+        if (currentEntries == null) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else if (currentEntries.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Text("Nothing here", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -114,7 +133,7 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                items(entries, key = { it.doc.uri.toString() }) { entry ->
+                items(currentEntries, key = { it.doc.uri.toString() }) { entry ->
                     if (entry.isDirectory) {
                         FolderRow(entry = entry, onClick = { onOpenFolder(entry.doc) })
                     } else {
@@ -129,7 +148,7 @@ fun GalleryScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 contentPadding = PaddingValues(4.dp)
             ) {
-                gridItems(entries, key = { it.doc.uri.toString() }) { entry ->
+                gridItems(currentEntries, key = { it.doc.uri.toString() }) { entry ->
                     if (entry.isDirectory) {
                         FolderTile(entry = entry, onClick = { onOpenFolder(entry.doc) })
                     } else {
@@ -175,7 +194,10 @@ private fun Breadcrumb(pathStack: List<DocumentFile>, onClick: (Int) -> Unit) {
 
 @Composable
 private fun FolderRow(entry: FileEntry, onClick: () -> Unit) {
-    val count = remember(entry.doc.uri) { countImages(entry.doc) }
+    var count by remember(entry.doc.uri) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(entry.doc.uri) {
+        count = withContext(Dispatchers.IO) { countImages(entry.doc) }
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -192,9 +214,10 @@ private fun FolderRow(entry: FileEntry, onClick: () -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (count > 0) {
+            val c = count
+            if (c != null && c > 0) {
                 Text(
-                    "$count images",
+                    "$c images",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
