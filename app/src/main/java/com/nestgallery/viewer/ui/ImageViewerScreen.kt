@@ -20,6 +20,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,7 +33,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.FileEntry
 import kotlin.math.max
@@ -46,6 +52,7 @@ fun ImageViewerScreen(
 ) {
     val pagerState = rememberPagerState(initialPage = startIndex) { images.size }
     var chromeVisible by remember { mutableStateOf(true) }
+    val currentEntry = images[pagerState.currentPage]
 
     Box(
         modifier = Modifier
@@ -53,10 +60,15 @@ fun ImageViewerScreen(
             .background(Color.Black)
     ) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-            ZoomableImage(
-                entry = images[page],
-                onTap = { chromeVisible = !chromeVisible }
-            )
+            val entry = images[page]
+            if (entry.isVideo) {
+                VideoPlayer(uri = entry.doc.uri.toString())
+            } else {
+                ZoomableImage(
+                    entry = entry,
+                    onTap = { chromeVisible = !chromeVisible }
+                )
+            }
         }
 
         if (chromeVisible) {
@@ -70,7 +82,7 @@ fun ImageViewerScreen(
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                 }
                 Text(
-                    text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${images[pagerState.currentPage].name}",
+                    text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",
                     color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier
@@ -117,4 +129,31 @@ private fun ZoomableImage(entry: FileEntry, onTap: () -> Unit) {
                 }
         )
     }
+}
+
+/** Plays a video (from a content:// URI) full-screen with the standard Media3 controls. */
+@Composable
+private fun VideoPlayer(uri: String) {
+    val context = LocalContext.current
+    val exoPlayer = remember(uri) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(uri))
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    DisposableEffect(exoPlayer) {
+        onDispose { exoPlayer.release() }
+    }
+
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                player = exoPlayer
+                useController = true
+            }
+        }
+    )
 }

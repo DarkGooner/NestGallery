@@ -29,6 +29,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
+import coil.Coil
+import coil.ImageLoader
+import coil.decode.GifDecoder
+import coil.decode.VideoFrameDecoder
 import com.nestgallery.viewer.data.FileEntry
 import com.nestgallery.viewer.ui.GalleryScreen
 import com.nestgallery.viewer.ui.ImageViewerScreen
@@ -47,6 +51,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Register decoders once so every AsyncImage in the app can render
+        // animated GIFs and pull a preview frame out of video files.
+        Coil.setImageLoader(
+            ImageLoader.Builder(applicationContext)
+                .components {
+                    add(GifDecoder.Factory())
+                    add(VideoFrameDecoder.Factory())
+                }
+                .build()
+        )
+
         setContent {
             NestGalleryTheme {
                 NestGalleryApp()

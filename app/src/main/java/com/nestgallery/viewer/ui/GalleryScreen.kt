@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -45,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,7 +55,8 @@ import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.FileEntry
-import com.nestgallery.viewer.data.countImages
+import com.nestgallery.viewer.data.GalleryCache
+import com.nestgallery.viewer.data.countMedia
 import com.nestgallery.viewer.data.listEntries
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -73,12 +77,18 @@ fun GalleryScreen(
     canGoBack: Boolean
 ) {
     val current = pathStack.last()
-    var entries by remember(current, hideAux) { mutableStateOf<List<FileEntry>?>(null) }
+    val cacheKey = remember(current, hideAux) { "${current.uri}|hideAux=$hideAux" }
 
-    LaunchedEffect(current, hideAux) {
-        entries = null
-        val loaded = withContext(Dispatchers.IO) { current.listEntries(hideAux) }
-        entries = loaded
+    // Seed straight from cache so revisiting a folder (e.g. backing out of the
+    // image viewer) never shows a spinner or redoes the SAF listing.
+    var entries by remember(cacheKey) { mutableStateOf(GalleryCache.getEntries(cacheKey)) }
+
+    LaunchedEffect(cacheKey) {
+        if (GalleryCache.getEntries(cacheKey) == null) {
+            val loaded = withContext(Dispatchers.IO) { current.listEntries(hideAux) }
+            GalleryCache.putEntries(cacheKey, loaded)
+            entries = loaded
+        }
     }
 
     val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
@@ -194,10 +204,17 @@ private fun Breadcrumb(pathStack: List<DocumentFile>, onClick: (Int) -> Unit) {
 
 @Composable
 private fun FolderRow(entry: FileEntry, onClick: () -> Unit) {
-    var count by remember(entry.doc.uri) { mutableStateOf<Int?>(null) }
-    LaunchedEffect(entry.doc.uri) {
-        count = withContext(Dispatchers.IO) { countImages(entry.doc) }
+    val cacheKey = remember(entry.doc.uri) { entry.doc.uri.toString() }
+    var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
+
+    LaunchedEffect(cacheKey) {
+        if (GalleryCache.getCount(cacheKey) == null) {
+            val computed = withContext(Dispatchers.IO) { countMedia(entry.doc) }
+            GalleryCache.putCount(cacheKey, computed)
+            count = computed
+        }
     }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -217,7 +234,7 @@ private fun FolderRow(entry: FileEntry, onClick: () -> Unit) {
             val c = count
             if (c != null && c > 0) {
                 Text(
-                    "$c images",
+                    "$c items",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -234,14 +251,26 @@ private fun ImageRow(entry: FileEntry, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(bottom = 12.dp)
     ) {
-        AsyncImage(
-            model = entry.doc.uri,
-            contentDescription = entry.name,
-            contentScale = ContentScale.FillWidth,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(0.dp))
-        )
+        Box(Modifier.fillMaxWidth()) {
+            AsyncImage(
+                model = entry.doc.uri,
+                contentDescription = entry.name,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(0.dp))
+            )
+            if (entry.isVideo) {
+                Icon(
+                    Icons.Filled.PlayCircle,
+                    contentDescription = "Video",
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(56.dp)
+                )
+            }
+        }
         Text(
             entry.name,
             style = MaterialTheme.typography.bodyMedium,
@@ -296,5 +325,15 @@ private fun ImageTile(entry: FileEntry, onClick: () -> Unit) {
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
+        if (entry.isVideo) {
+            Icon(
+                Icons.Filled.PlayCircle,
+                contentDescription = "Video",
+                tint = Color.White,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(32.dp)
+            )
+        }
     }
 }
