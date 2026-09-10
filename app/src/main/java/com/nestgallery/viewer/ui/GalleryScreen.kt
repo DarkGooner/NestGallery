@@ -3,6 +3,10 @@ package com.nestgallery.viewer.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.pullrefresh.PullRefreshIndicator
+import androidx.compose.material.pullrefresh.pullRefresh
+import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -48,6 +52,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,9 +68,10 @@ import com.nestgallery.viewer.data.GalleryCache
 import com.nestgallery.viewer.data.countMediaFast
 import com.nestgallery.viewer.data.listFolderFast
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
 fun GalleryScreen(
     pathStack: List<DocEntry>,
@@ -122,6 +128,24 @@ fun GalleryScreen(
         }
     }
 
+    var refreshing by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+    val pullRefreshState = rememberPullRefreshState(
+        refreshing = refreshing,
+        onRefresh = {
+            coroutineScope.launch {
+                refreshing = true
+                val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideAux) }
+                GalleryCache.putEntries(cacheKey, loaded)
+                // Also clear cached item counts for the folders shown here, so
+                // a pull-to-refresh picks up any changes inside them too.
+                loaded.filter { it.isDirectory }.forEach { GalleryCache.invalidate(it.file.absolutePath) }
+                entries = loaded
+                refreshing = false
+            }
+        }
+    )
+
     Scaffold(
         topBar = {
             Column {
@@ -165,45 +189,58 @@ fun GalleryScreen(
         }
     ) { padding ->
         val currentEntries = entries
-        if (currentEntries == null) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        } else if (currentEntries.isEmpty()) {
-            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("Nothing here", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        } else if (listMode) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = PaddingValues(bottom = 24.dp)
-            ) {
-                items(currentEntries, key = { it.file.absolutePath }) { entry ->
-                    if (entry.isDirectory) {
-                        FolderRow(entry = entry, onClick = { onOpenFolder(entry) })
-                    } else {
-                        val index = imagesOnly.indexOf(entry)
-                        ImageRow(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .pullRefresh(pullRefreshState)
+        ) {
+            if (currentEntries == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (currentEntries.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Nothing here", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else if (listMode) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 24.dp)
+                ) {
+                    items(currentEntries, key = { it.file.absolutePath }) { entry ->
+                        if (entry.isDirectory) {
+                            FolderRow(entry = entry, onClick = { onOpenFolder(entry) })
+                        } else {
+                            val index = imagesOnly.indexOf(entry)
+                            ImageRow(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
+                        }
+                    }
+                }
+            } else {
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Adaptive(minSize = 108.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(4.dp)
+                ) {
+                    gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
+                        if (entry.isDirectory) {
+                            FolderTile(entry = entry, onClick = { onOpenFolder(entry) })
+                        } else {
+                            val index = imagesOnly.indexOf(entry)
+                            ImageTile(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
+                        }
                     }
                 }
             }
-        } else {
-            LazyVerticalGrid(
-                state = gridState,
-                columns = GridCells.Adaptive(minSize = 108.dp),
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = PaddingValues(4.dp)
-            ) {
-                gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
-                    if (entry.isDirectory) {
-                        FolderTile(entry = entry, onClick = { onOpenFolder(entry) })
-                    } else {
-                        val index = imagesOnly.indexOf(entry)
-                        ImageTile(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
-                    }
-                }
-            }
+
+            PullRefreshIndicator(
+                refreshing = refreshing,
+                state = pullRefreshState,
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }
