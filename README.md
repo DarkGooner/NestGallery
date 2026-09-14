@@ -17,9 +17,21 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   folder at a time.
 - **List or grid view**, toggle in the top bar. List view renders each
   image full width with the filename underneath it.
-- **Filename toggle** in the top bar — hide filenames entirely for a
-  cleaner, image-only look, in both list and grid view.
-- Optional filter to hide `*_thumb.*` / `*_locked.*` variant files.
+- **Hidden items toggle** (eye icon) — hides dotfiles/dotfolders (the
+  standard "hidden" convention), same as any file explorer.
+- **Fast-scroll bar** on the right edge of long lists/grids — drag it to
+  jump through thousands of items quickly. Fades out automatically when
+  idle.
+- **Recursive explorer** — the tree icon (on the top bar, or on any
+  individual folder row/tile) scans that folder and every folder beneath
+  it and flattens all the media into one continuous, infinitely-scrolling
+  view. Results stream in as they're found rather than waiting for the
+  whole tree to finish, so it stays responsive even on folders with tens
+  of thousands of nested files. With filenames toggled on, each item also
+  shows its path relative to the folder you started the scan from.
+- **Filename toggle** in the top bar — hide filenames (and, in the
+  recursive explorer, relative paths) entirely for a cleaner, image-only
+  look, in both list and grid view.
 - **Videos and animated GIFs**: thumbnails show a play badge on videos;
   tap one to play with standard Media3 controls, plus **double-tap the
   left/right half of the screen to seek back/forward 10 seconds** (with a

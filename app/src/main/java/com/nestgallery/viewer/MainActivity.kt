@@ -41,6 +41,7 @@ import coil.decode.GifDecoder
 import coil.decode.VideoFrameDecoder
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.storageRootEntry
+import com.nestgallery.viewer.ui.ExploreScreen
 import com.nestgallery.viewer.ui.GalleryScreen
 import com.nestgallery.viewer.ui.ImageViewerScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
@@ -48,7 +49,8 @@ import com.nestgallery.viewer.ui.theme.NestGalleryTheme
 private sealed class Screen {
     data object NeedsPermission : Screen()
     data object Browser : Screen()
-    data class Viewer(val images: List<DocEntry>, val startIndex: Int) : Screen()
+    data class Explore(val root: DocEntry) : Screen()
+    data class Viewer(val images: List<DocEntry>, val startIndex: Int, val returnTo: Screen) : Screen()
 }
 
 private fun hasStorageAccess(): Boolean {
@@ -109,7 +111,7 @@ private fun NestGalleryApp() {
     var screen by remember {
         mutableStateOf<Screen>(if (granted) Screen.Browser else Screen.NeedsPermission)
     }
-    var hideAux by remember { mutableStateOf(true) }
+    var hideHidden by remember { mutableStateOf(true) }
     var listMode by remember { mutableStateOf(true) }
     var showNames by remember { mutableStateOf(true) }
 
@@ -148,6 +150,11 @@ private fun NestGalleryApp() {
             pathStack = pathStack.dropLast(1)
         }
     }
+    if (screen is Screen.Explore) {
+        BackHandler {
+            screen = Screen.Browser
+        }
+    }
 
     Crossfade(targetState = screen, label = "screen") { s ->
         when (s) {
@@ -156,25 +163,39 @@ private fun NestGalleryApp() {
                 if (pathStack.isEmpty()) return@Crossfade
                 GalleryScreen(
                     pathStack = pathStack,
-                    hideAux = hideAux,
+                    hideHidden = hideHidden,
                     listMode = listMode,
                     showNames = showNames,
                     onToggleViewMode = { listMode = !listMode },
-                    onToggleHideAux = { hideAux = !hideAux },
+                    onToggleHideHidden = { hideHidden = !hideHidden },
                     onToggleShowNames = { showNames = !showNames },
                     onOpenFolder = { folder -> pathStack = pathStack + folder },
                     onBreadcrumbClick = { index -> pathStack = pathStack.subList(0, index + 1) },
                     onGoHome = { pathStack = listOf(storageRootEntry()) },
-                    onOpenImage = { images, index -> screen = Screen.Viewer(images, index) },
+                    onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
+                    onExploreFolder = { folder -> screen = Screen.Explore(folder) },
                     onBack = { if (pathStack.size > 1) pathStack = pathStack.dropLast(1) },
                     canGoBack = pathStack.size > 1
+                )
+            }
+            is Screen.Explore -> {
+                ExploreScreen(
+                    root = s.root,
+                    hideHidden = hideHidden,
+                    showNames = showNames,
+                    listMode = listMode,
+                    onToggleViewMode = { listMode = !listMode },
+                    onToggleHideHidden = { hideHidden = !hideHidden },
+                    onToggleShowNames = { showNames = !showNames },
+                    onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
+                    onBack = { screen = Screen.Browser }
                 )
             }
             is Screen.Viewer -> {
                 ImageViewerScreen(
                     images = s.images,
                     startIndex = s.startIndex,
-                    onDismiss = { screen = Screen.Browser }
+                    onDismiss = { screen = s.returnTo }
                 )
             }
         }

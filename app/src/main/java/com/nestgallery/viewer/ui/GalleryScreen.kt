@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
@@ -75,21 +76,22 @@ import kotlinx.coroutines.withContext
 @Composable
 fun GalleryScreen(
     pathStack: List<DocEntry>,
-    hideAux: Boolean,
+    hideHidden: Boolean,
     listMode: Boolean,
     showNames: Boolean,
     onToggleViewMode: () -> Unit,
-    onToggleHideAux: () -> Unit,
+    onToggleHideHidden: () -> Unit,
     onToggleShowNames: () -> Unit,
     onOpenFolder: (DocEntry) -> Unit,
     onBreadcrumbClick: (Int) -> Unit,
     onGoHome: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
+    onExploreFolder: (DocEntry) -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
 ) {
     val current = pathStack.last()
-    val cacheKey = remember(current.file.absolutePath, hideAux) { "${current.file.absolutePath}|hideAux=$hideAux" }
+    val cacheKey = remember(current.file.absolutePath, hideHidden) { "${current.file.absolutePath}|hidden=$hideHidden" }
 
     // Seed straight from cache so revisiting a folder (e.g. backing out of the
     // image viewer) never shows a spinner or re-lists the directory.
@@ -97,7 +99,7 @@ fun GalleryScreen(
 
     LaunchedEffect(cacheKey) {
         if (GalleryCache.getEntries(cacheKey) == null) {
-            val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideAux) }
+            val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden) }
             GalleryCache.putEntries(cacheKey, loaded)
             entries = loaded
         }
@@ -135,7 +137,7 @@ fun GalleryScreen(
         onRefresh = {
             coroutineScope.launch {
                 refreshing = true
-                val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideAux) }
+                val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden) }
                 GalleryCache.putEntries(cacheKey, loaded)
                 // Also clear cached item counts for the folders shown here, so
                 // a pull-to-refresh picks up any changes inside them too.
@@ -161,16 +163,19 @@ fun GalleryScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { onExploreFolder(current) }) {
+                            Icon(Icons.Default.AccountTree, contentDescription = "Browse all media in this folder recursively")
+                        }
                         IconButton(onClick = onToggleShowNames) {
                             Icon(
                                 if (showNames) Icons.Default.Label else Icons.Default.LabelOff,
                                 contentDescription = "Toggle filenames"
                             )
                         }
-                        IconButton(onClick = onToggleHideAux) {
+                        IconButton(onClick = onToggleHideHidden) {
                             Icon(
-                                if (hideAux) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = "Toggle _thumb / _locked files"
+                                if (hideHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "Toggle hidden items"
                             )
                         }
                         IconButton(onClick = onToggleViewMode) {
@@ -211,13 +216,29 @@ fun GalleryScreen(
                 ) {
                     items(currentEntries, key = { it.file.absolutePath }) { entry ->
                         if (entry.isDirectory) {
-                            FolderRow(entry = entry, onClick = { onOpenFolder(entry) })
+                            FolderRow(
+                                entry = entry,
+                                onClick = { onOpenFolder(entry) },
+                                onExplore = { onExploreFolder(entry) }
+                            )
                         } else {
                             val index = imagesOnly.indexOf(entry)
                             ImageRow(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
                         }
                     }
                 }
+                FastScrollbar(
+                    itemCount = currentEntries.size,
+                    visibleCount = listState.layoutInfo.visibleItemsInfo.size,
+                    firstVisibleIndex = listState.firstVisibleItemIndex,
+                    isScrolling = listState.isScrollInProgress,
+                    onDragToIndex = { index ->
+                        coroutineScope.launch { listState.scrollToItem(index) }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxSize()
+                )
             } else {
                 LazyVerticalGrid(
                     state = gridState,
@@ -227,13 +248,29 @@ fun GalleryScreen(
                 ) {
                     gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
                         if (entry.isDirectory) {
-                            FolderTile(entry = entry, onClick = { onOpenFolder(entry) })
+                            FolderTile(
+                                entry = entry,
+                                onClick = { onOpenFolder(entry) },
+                                onExplore = { onExploreFolder(entry) }
+                            )
                         } else {
                             val index = imagesOnly.indexOf(entry)
                             ImageTile(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
                         }
                     }
                 }
+                FastScrollbar(
+                    itemCount = currentEntries.size,
+                    visibleCount = gridState.layoutInfo.visibleItemsInfo.size,
+                    firstVisibleIndex = gridState.firstVisibleItemIndex,
+                    isScrolling = gridState.isScrollInProgress,
+                    onDragToIndex = { index ->
+                        coroutineScope.launch { gridState.scrollToItem(index) }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxSize()
+                )
             }
 
             PullRefreshIndicator(
@@ -277,7 +314,7 @@ private fun Breadcrumb(pathStack: List<DocEntry>, onClick: (Int) -> Unit) {
 }
 
 @Composable
-private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
+private fun FolderRow(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Unit) {
     val cacheKey = remember(entry.file.absolutePath) { entry.file.absolutePath }
     var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
 
@@ -298,7 +335,7 @@ private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
     ) {
         Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(16.dp))
-        Column(Modifier.padding(0.dp)) {
+        Column(Modifier.weight(1f)) {
             Text(
                 entry.name,
                 style = MaterialTheme.typography.titleMedium,
@@ -313,6 +350,13 @@ private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+        IconButton(onClick = onExplore) {
+            Icon(
+                Icons.Default.AccountTree,
+                contentDescription = "Browse all media inside recursively",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -359,7 +403,7 @@ private fun ImageRow(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
+private fun FolderTile(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Unit) {
     Column(
         modifier = Modifier
             .padding(4.dp)
@@ -375,6 +419,16 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            IconButton(
+                onClick = onExplore,
+                modifier = Modifier.align(Alignment.BottomEnd)
+            ) {
+                Icon(
+                    Icons.Default.AccountTree,
+                    contentDescription = "Browse all media inside recursively",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         Text(
             entry.name,
