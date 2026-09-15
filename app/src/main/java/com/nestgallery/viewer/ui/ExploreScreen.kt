@@ -1,6 +1,7 @@
 package com.nestgallery.viewer.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.LabelOff
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -36,8 +37,10 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +55,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
+import com.nestgallery.viewer.data.GalleryCache
 import com.nestgallery.viewer.data.exploreMediaFlow
 import com.nestgallery.viewer.data.relativeDirOf
 import kotlinx.coroutines.launch
@@ -69,21 +73,63 @@ fun ExploreScreen(
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onBack: () -> Unit
 ) {
-    val items = remember(root.file.absolutePath, hideHidden) { mutableStateListOf<DocEntry>() }
-    var scanning by remember(root.file.absolutePath, hideHidden) { mutableStateOf(true) }
+    // A plain (non-Compose-state-backed) cache key. GalleryCache is a
+    // process-lifetime singleton, unlike `remember`, so a scan already in
+    // progress or finished survives leaving for the image viewer and coming
+    // straight back - without it, every trip to the viewer restarted the
+    // entire recursive scan from scratch.
+    var rescanTrigger by remember { mutableIntStateOf(0) }
+    val exploreKey = remember(root.file.absolutePath, hideHidden, rescanTrigger) {
+        "explore:${root.file.absolutePath}|hidden=$hideHidden|r=$rescanTrigger"
+    }
 
-    LaunchedEffect(root.file.absolutePath, hideHidden) {
-        items.clear()
-        scanning = true
-        exploreMediaFlow(root.file, hideHidden).collect { batch ->
-            items.addAll(batch)
+    val items = remember(exploreKey) {
+        mutableStateListOf<DocEntry>().apply {
+            GalleryCache.getEntries(exploreKey)?.let { addAll(it) }
         }
-        scanning = false
+    }
+    var scanning by remember(exploreKey) { mutableStateOf(GalleryCache.getEntries(exploreKey) == null) }
+
+    LaunchedEffect(exploreKey) {
+        if (GalleryCache.getEntries(exploreKey) == null) {
+            scanning = true
+            exploreMediaFlow(root.file, hideHidden).collect { batch ->
+                items.addAll(batch)
+                GalleryCache.putEntries(exploreKey, items.toList())
+            }
+            scanning = false
+        }
     }
 
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
     val coroutineScope = rememberCoroutineScope()
+
+    // Scroll position, same pattern as the regular browser: saved on dispose
+    // (leaving for the viewer or navigating away), restored on return.
+    val scrollKey = remember(exploreKey, listMode) { "$exploreKey|mode=$listMode" }
+    val savedScroll = remember(scrollKey) { GalleryCache.getScroll(scrollKey) }
+    DisposableEffect(scrollKey) {
+        onDispose {
+            if (listMode) {
+                GalleryCache.putScroll(scrollKey, listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset)
+            } else {
+                GalleryCache.putScroll(scrollKey, gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset)
+            }
+        }
+    }
+    var scrollRestored by remember(scrollKey) { mutableStateOf(false) }
+    LaunchedEffect(scrollKey, items.size) {
+        // Once there's enough content to scroll to the saved position, jump
+        // there exactly once - guarded so it doesn't keep yanking the view
+        // back on every later batch that arrives while a scan is ongoing.
+        val saved = savedScroll
+        if (!scrollRestored && saved != null && items.size > saved.first) {
+            if (listMode) listState.scrollToItem(saved.first, saved.second)
+            else gridState.scrollToItem(saved.first, saved.second)
+            scrollRestored = true
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -101,6 +147,12 @@ fun ExploreScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        GalleryCache.invalidate(exploreKey)
+                        rescanTrigger++
+                    }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Rescan")
+                    }
                     IconButton(onClick = onToggleShowNames) {
                         Icon(
                             if (showNames) Icons.Default.Label else Icons.Default.LabelOff,
@@ -154,7 +206,7 @@ fun ExploreScreen(
                     firstVisibleIndex = listState.firstVisibleItemIndex,
                     isScrolling = listState.isScrollInProgress,
                     onDragToIndex = { index -> coroutineScope.launch { listState.scrollToItem(index) } },
-                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxSize()
+                    modifier = Modifier.align(Alignment.CenterEnd)
                 )
             } else {
                 LazyVerticalGrid(
@@ -179,7 +231,7 @@ fun ExploreScreen(
                     firstVisibleIndex = gridState.firstVisibleItemIndex,
                     isScrolling = gridState.isScrollInProgress,
                     onDragToIndex = { index -> coroutineScope.launch { gridState.scrollToItem(index) } },
-                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxSize()
+                    modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
 

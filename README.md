@@ -29,6 +29,11 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   whole tree to finish, so it stays responsive even on folders with tens
   of thousands of nested files. With filenames toggled on, each item also
   shows its path relative to the folder you started the scan from.
+- **Hold to preview** (grid view) — press and hold any image or video tile
+  to pop it up full-size over a dimmed, blurred background, Instagram-reel
+  style. Videos auto-play muted and looped while held. Release to dismiss.
+  (The background blur needs Android 12+; on older versions it falls back
+  to just the dim scrim.)
 - **Filename toggle** in the top bar — hide filenames (and, in the
   recursive explorer, relative paths) entirely for a cleaner, image-only
   look, in both list and grid view.

@@ -20,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +69,22 @@ fun FastScrollbar(
     val thumbFraction = (visibleCount.toFloat() / itemCount).coerceIn(0.06f, 1f)
     val scrollRange = (itemCount - visibleCount).coerceAtLeast(1)
     val progressFraction = (firstVisibleIndex.toFloat() / scrollRange).coerceIn(0f, 1f)
+    val thumbHeightPx = trackHeightPx * thumbFraction
+    val restingOffsetPx = (trackHeightPx - thumbHeightPx) * progressFraction
+
+    // detectDragGestures runs inside a long-lived coroutine that only
+    // restarts when pointerInput's keys change. Plain local `val`s like
+    // restingOffsetPx/thumbHeightPx/scrollRange get captured at whatever
+    // value they had when that coroutine last (re)started, which goes
+    // stale the moment the list scrolls without those keys changing - and
+    // that staleness was exactly what made grabbing the thumb feel glitchy
+    // (it would jump to wherever it was several scrolls ago). Reading them
+    // through rememberUpdatedState guarantees the gesture always sees the
+    // live value instead.
+    val latestRestingOffset by rememberUpdatedState(restingOffsetPx)
+    val latestThumbHeight by rememberUpdatedState(thumbHeightPx)
+    val latestScrollRange by rememberUpdatedState(scrollRange)
+    val latestItemCount by rememberUpdatedState(itemCount)
 
     AnimatedVisibility(
         visible = visible,
@@ -81,8 +98,6 @@ fun FastScrollbar(
                 .width(28.dp)
                 .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
         ) {
-            val thumbHeightPx = trackHeightPx * thumbFraction
-            val restingOffsetPx = (trackHeightPx - thumbHeightPx) * progressFraction
             val thumbOffsetPx = if (isDragging) dragOffsetPx else restingOffsetPx
             val density = LocalDensity.current
 
@@ -95,20 +110,20 @@ fun FastScrollbar(
                     .height(with(density) { thumbHeightPx.toDp() })
                     .clip(RoundedCornerShape(3.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f))
-                    .pointerInput(itemCount, visibleCount, trackHeightPx) {
+                    .pointerInput(Unit) {
                         detectDragGestures(
                             onDragStart = {
-                                dragOffsetPx = if (isDragging) dragOffsetPx else restingOffsetPx
+                                dragOffsetPx = latestRestingOffset
                                 isDragging = true
                             },
                             onDragEnd = { isDragging = false },
                             onDragCancel = { isDragging = false }
                         ) { change, dragAmount ->
                             change.consume()
-                            val maxOffset = (trackHeightPx - thumbHeightPx).coerceAtLeast(0f)
+                            val maxOffset = (trackHeightPx - latestThumbHeight).coerceAtLeast(0f)
                             dragOffsetPx = (dragOffsetPx + dragAmount.y).coerceIn(0f, maxOffset)
                             val fraction = if (maxOffset > 0f) dragOffsetPx / maxOffset else 0f
-                            val targetIndex = (fraction * scrollRange).roundToInt().coerceIn(0, itemCount - 1)
+                            val targetIndex = (fraction * latestScrollRange).roundToInt().coerceIn(0, latestItemCount - 1)
                             onDragToIndex(targetIndex)
                         }
                     }

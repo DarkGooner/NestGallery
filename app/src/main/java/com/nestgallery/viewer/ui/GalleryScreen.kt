@@ -2,6 +2,7 @@ package com.nestgallery.viewer.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -57,12 +59,21 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.GalleryCache
@@ -71,6 +82,7 @@ import com.nestgallery.viewer.data.listFolderFast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
@@ -131,6 +143,7 @@ fun GalleryScreen(
     }
 
     var refreshing by remember { mutableStateOf(false) }
+    var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
     val coroutineScope = rememberCoroutineScope()
     val pullRefreshState = rememberPullRefreshState(
         refreshing = refreshing,
@@ -218,8 +231,7 @@ fun GalleryScreen(
                         if (entry.isDirectory) {
                             FolderRow(
                                 entry = entry,
-                                onClick = { onOpenFolder(entry) },
-                                onExplore = { onExploreFolder(entry) }
+                                onClick = { onOpenFolder(entry) }
                             )
                         } else {
                             val index = imagesOnly.indexOf(entry)
@@ -235,27 +247,32 @@ fun GalleryScreen(
                     onDragToIndex = { index ->
                         coroutineScope.launch { listState.scrollToItem(index) }
                     },
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxSize()
+                    modifier = Modifier.align(Alignment.CenterEnd)
                 )
             } else {
                 LazyVerticalGrid(
                     state = gridState,
                     columns = GridCells.Adaptive(minSize = 108.dp),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .let { if (previewEntry != null) it.blur(18.dp) else it },
                     contentPadding = PaddingValues(4.dp)
                 ) {
                     gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
                         if (entry.isDirectory) {
                             FolderTile(
                                 entry = entry,
-                                onClick = { onOpenFolder(entry) },
-                                onExplore = { onExploreFolder(entry) }
+                                onClick = { onOpenFolder(entry) }
                             )
                         } else {
                             val index = imagesOnly.indexOf(entry)
-                            ImageTile(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
+                            ImageTile(
+                                entry = entry,
+                                showNames = showNames,
+                                onClick = { onOpenImage(imagesOnly, index) },
+                                onHoldStart = { previewEntry = entry },
+                                onHoldEnd = { previewEntry = null }
+                            )
                         }
                     }
                 }
@@ -267,9 +284,7 @@ fun GalleryScreen(
                     onDragToIndex = { index ->
                         coroutineScope.launch { gridState.scrollToItem(index) }
                     },
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxSize()
+                    modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
 
@@ -278,6 +293,10 @@ fun GalleryScreen(
                 state = pullRefreshState,
                 modifier = Modifier.align(Alignment.TopCenter)
             )
+
+            previewEntry?.let { entry ->
+                HoldPreviewOverlay(entry = entry)
+            }
         }
     }
 }
@@ -314,7 +333,7 @@ private fun Breadcrumb(pathStack: List<DocEntry>, onClick: (Int) -> Unit) {
 }
 
 @Composable
-private fun FolderRow(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Unit) {
+private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
     val cacheKey = remember(entry.file.absolutePath) { entry.file.absolutePath }
     var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
 
@@ -330,7 +349,7 @@ private fun FolderRow(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Uni
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -343,19 +362,14 @@ private fun FolderRow(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Uni
                 overflow = TextOverflow.Ellipsis
             )
             val c = count
-            if (c != null && c > 0) {
-                Text(
-                    "$c items",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        IconButton(onClick = onExplore) {
-            Icon(
-                Icons.Default.AccountTree,
-                contentDescription = "Browse all media inside recursively",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            // Always reserve the line (just hide it) so a row's height never
+            // jumps once its async count resolves - that jump was throwing
+            // off the spacing of everything below it in the list.
+            Text(
+                "${c ?: 0} items",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.alpha(if (c != null && c > 0) 1f else 0f)
             )
         }
     }
@@ -403,7 +417,7 @@ private fun ImageRow(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FolderTile(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Unit) {
+private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .padding(4.dp)
@@ -419,16 +433,6 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Un
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            IconButton(
-                onClick = onExplore,
-                modifier = Modifier.align(Alignment.BottomEnd)
-            ) {
-                Icon(
-                    Icons.Default.AccountTree,
-                    contentDescription = "Browse all media inside recursively",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
         }
         Text(
             entry.name,
@@ -441,13 +445,36 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit, onExplore: () -> Un
 }
 
 @Composable
-private fun ImageTile(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) {
+private fun ImageTile(
+    entry: DocEntry,
+    showNames: Boolean,
+    onClick: () -> Unit,
+    onHoldStart: () -> Unit,
+    onHoldEnd: () -> Unit
+) {
     Box(
         modifier = Modifier
             .padding(2.dp)
             .aspectRatio(1f)
             .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
+            .pointerInput(entry.file) {
+                detectTapGestures(
+                    onTap = { onClick() },
+                    onPress = {
+                        // If the pointer is still down after the threshold,
+                        // treat it as a hold: show the preview, then wait
+                        // for the actual release to dismiss it. If release
+                        // happens before the threshold, this is a normal
+                        // tap - do nothing extra, onTap handles it.
+                        val releasedQuickly = withTimeoutOrNull(300) { tryAwaitRelease() }
+                        if (releasedQuickly == null) {
+                            onHoldStart()
+                            tryAwaitRelease()
+                            onHoldEnd()
+                        }
+                    }
+                )
+            }
     ) {
         AsyncImage(
             model = entry.file,
@@ -483,4 +510,67 @@ private fun ImageTile(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) 
             }
         }
     }
+}
+
+/**
+ * Instagram-reel-style hold-to-preview: a dimmed, blurred-behind popup
+ * showing the full image, or an auto-playing muted/looping video, while
+ * the finger stays down on the tile. Purely a visual overlay - it doesn't
+ * consume touches, so lifting the finger (handled by the tile's own
+ * gesture) is what dismisses it.
+ */
+@Composable
+private fun HoldPreviewOverlay(entry: DocEntry) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth(0.88f)
+                .fillMaxHeight(0.7f)
+                .clip(RoundedCornerShape(16.dp))
+        ) {
+            if (entry.isVideo) {
+                HoldPreviewVideo(entry = entry)
+            } else {
+                AsyncImage(
+                    model = entry.file,
+                    contentDescription = entry.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HoldPreviewVideo(entry: DocEntry) {
+    val context = LocalContext.current
+    val exoPlayer = remember(entry.file) {
+        ExoPlayer.Builder(context).build().apply {
+            setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(entry.file)))
+            volume = 0f
+            repeatMode = Player.REPEAT_MODE_ONE
+            prepare()
+            playWhenReady = true
+        }
+    }
+
+    DisposableEffect(exoPlayer) {
+        onDispose { exoPlayer.release() }
+    }
+
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                player = exoPlayer
+                useController = false
+            }
+        }
+    )
 }
