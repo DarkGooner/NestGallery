@@ -1,9 +1,7 @@
 package com.nestgallery.viewer.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
@@ -37,8 +35,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withTimeout
 
 /**
  * Grid tile shared by the regular browser and the recursive explorer, so
@@ -62,33 +58,26 @@ fun MediaImageTile(
             .aspectRatio(1f)
             .clip(RoundedCornerShape(4.dp))
             .pointerInput(entry.file) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    try {
-                        // Races the release against the hold threshold.
-                        // withTimeout (not withTimeoutOrNull) is essential
-                        // here: waitForUpOrCancellation() itself returns
-                        // null on cancellation (e.g. the instant a parent
-                        // scroll takes over the gesture), which would be
-                        // indistinguishable from an actual timeout if we
-                        // used withTimeoutOrNull - that conflation was
-                        // exactly what caused a hold-preview flash on every
-                        // single scroll touch.
-                        val up = withTimeout(300) { waitForUpOrCancellation() }
-                        if (up != null) {
-                            onClick()
-                        }
-                        // up == null here means the gesture was cancelled
-                        // (most commonly: the grid started scrolling) -
-                        // do nothing, no click and no hold.
-                    } catch (e: TimeoutCancellationException) {
-                        // Still down past the threshold with no cancellation -
-                        // a genuine hold.
+                // Let Compose's gesture detector arbitrate tap, scroll and
+                // long-press using the platform touch-slop/long-press rules.
+                // The previous hand-written timeout could mistake a pointer
+                // cancellation from LazyGrid scrolling for a real timeout,
+                // which made the preview flash during ordinary touches.
+                var holdStarted = false
+                detectTapGestures(
+                    onTap = { onClick() },
+                    onLongPress = {
+                        holdStarted = true
                         onHoldStart()
-                        waitForUpOrCancellation()
-                        onHoldEnd()
+                    },
+                    onPress = {
+                        holdStarted = false
+                        tryAwaitRelease()
+                        if (holdStarted) {
+                            onHoldEnd()
+                        }
                     }
-                }
+                )
             }
     ) {
         AsyncImage(
@@ -139,11 +128,11 @@ fun MediaImageTile(
 }
 
 /**
- * Instagram-reel-style hold-to-preview: a dimmed, blurred-behind popup
- * showing the full image, or an auto-playing muted/looping video, while
- * the finger stays down on the tile. Purely a visual overlay - it doesn't
- * consume touches, so lifting the finger (handled by the tile's own
- * gesture) is what dismisses it.
+ * Instagram-reel-style hold-to-preview: a dimmed popup showing the full
+ * image, or an auto-playing muted/looping video, while the finger stays down
+ * on the tile. The background is dimmed rather than blurred: applying
+ * Modifier.blur() to a large LazyGrid forces an expensive offscreen render
+ * and was a major source of flicker while scrolling.
  */
 @Composable
 fun HoldPreviewOverlay(entry: DocEntry) {
@@ -163,6 +152,7 @@ fun HoldPreviewOverlay(entry: DocEntry) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.9f)
+                    .clip(RoundedCornerShape(12.dp))
             )
         }
     }
@@ -188,7 +178,8 @@ private fun HoldPreviewVideo(entry: DocEntry) {
     AndroidView(
         modifier = Modifier
             .fillMaxWidth()
-            .fillMaxHeight(0.9f),
+            .fillMaxHeight(0.9f)
+            .clip(RoundedCornerShape(12.dp)),
         factory = { ctx ->
             PlayerView(ctx).apply {
                 player = exoPlayer

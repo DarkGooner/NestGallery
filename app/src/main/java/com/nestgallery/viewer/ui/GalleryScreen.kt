@@ -58,7 +58,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -244,9 +243,7 @@ fun GalleryScreen(
                 LazyVerticalGrid(
                     state = gridState,
                     columns = GridCells.Adaptive(minSize = 108.dp),
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .let { if (previewEntry != null) it.blur(18.dp) else it },
+                    modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(4.dp)
                 ) {
                     gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
