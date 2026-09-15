@@ -2,7 +2,9 @@ package com.nestgallery.viewer.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
@@ -458,22 +460,22 @@ private fun ImageTile(
             .aspectRatio(1f)
             .clip(RoundedCornerShape(4.dp))
             .pointerInput(entry.file) {
-                detectTapGestures(
-                    onTap = { onClick() },
-                    onPress = {
-                        // If the pointer is still down after the threshold,
-                        // treat it as a hold: show the preview, then wait
-                        // for the actual release to dismiss it. If release
-                        // happens before the threshold, this is a normal
-                        // tap - do nothing extra, onTap handles it.
-                        val releasedQuickly = withTimeoutOrNull(300) { tryAwaitRelease() }
-                        if (releasedQuickly == null) {
-                            onHoldStart()
-                            tryAwaitRelease()
-                            onHoldEnd()
-                        }
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    // Race the release against the hold threshold. Exactly
+                    // one branch runs: a quick release opens the viewer, a
+                    // release that never showed up in time means the finger
+                    // is still down, so switch to hold-preview and wait for
+                    // the real release to dismiss it - never both.
+                    val releasedInTime = withTimeoutOrNull(300) { waitForUpOrCancellation() }
+                    if (releasedInTime != null) {
+                        onClick()
+                    } else {
+                        onHoldStart()
+                        waitForUpOrCancellation()
+                        onHoldEnd()
                     }
-                )
+                }
             }
     ) {
         AsyncImage(
@@ -527,22 +529,17 @@ private fun HoldPreviewOverlay(entry: DocEntry) {
             .background(Color.Black.copy(alpha = 0.55f)),
         contentAlignment = Alignment.Center
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth(0.88f)
-                .fillMaxHeight(0.7f)
-                .clip(RoundedCornerShape(16.dp))
-        ) {
-            if (entry.isVideo) {
-                HoldPreviewVideo(entry = entry)
-            } else {
-                AsyncImage(
-                    model = entry.file,
-                    contentDescription = entry.name,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+        if (entry.isVideo) {
+            HoldPreviewVideo(entry = entry)
+        } else {
+            AsyncImage(
+                model = entry.file,
+                contentDescription = entry.name,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .fillMaxHeight(0.9f)
+            )
         }
     }
 }
@@ -565,7 +562,9 @@ private fun HoldPreviewVideo(entry: DocEntry) {
     }
 
     AndroidView(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.9f),
         factory = { ctx ->
             PlayerView(ctx).apply {
                 player = exoPlayer
