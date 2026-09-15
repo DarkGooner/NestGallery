@@ -43,9 +43,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.delay
 import kotlin.math.max
 import kotlin.math.min
@@ -146,7 +148,12 @@ private fun ZoomableImage(entry: DocEntry, onTap: () -> Unit) {
 private fun VideoPlayer(entry: DocEntry) {
     val context = LocalContext.current
     val exoPlayer = remember(entry.file) {
-        ExoPlayer.Builder(context).build().apply {
+        // NextRenderersFactory falls back to FFmpeg software decoders when
+        // the device's hardware codec can't handle a format, so far more
+        // video files (unusual audio codecs, less common containers, etc.)
+        // play instead of failing outright.
+        val renderersFactory = NextRenderersFactory(context)
+        ExoPlayer.Builder(context, renderersFactory).build().apply {
             setMediaItem(MediaItem.fromUri(entry.file.toUri()))
             prepare()
             playWhenReady = true
@@ -174,12 +181,25 @@ private fun VideoPlayer(entry: DocEntry) {
                 PlayerView(ctx).apply {
                     player = exoPlayer
                     useController = true
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    // Longer timeout so the controller (and its scrub bar)
+                    // stays reachable, not just a quick flash.
+                    controllerShowTimeoutMs = 4000
                     playerViewRef = this
                 }
             }
         )
 
-        Row(Modifier.fillMaxSize()) {
+        // Double-tap seek zones are shrunk to the top ~78% of the screen so
+        // they never sit over Media3's own control bar / scrub bar at the
+        // bottom - previously they covered the full height and silently ate
+        // every touch meant for the native seek bar, making it impossible
+        // to scrub.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.78f)
+        ) {
             Box(
                 Modifier
                     .weight(1f)
