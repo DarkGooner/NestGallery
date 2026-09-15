@@ -21,6 +21,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -128,23 +129,44 @@ fun MediaImageTile(
 }
 
 /**
- * Instagram-reel-style hold-to-preview: a dimmed popup showing the full
- * image, or an auto-playing muted/looping video, while the finger stays down
- * on the tile. The background is dimmed rather than blurred: applying
- * Modifier.blur() to a large LazyGrid forces an expensive offscreen render
- * and was a major source of flicker while scrolling.
+ * Instagram-style hold-to-preview.
+ *
+ * The surrounding area is a blurred, cropped copy of the selected media,
+ * while the actual media stays sharp and keeps the full available width.
+ * Only this one overlay image is blurred - the LazyGrid is never blurred.
  */
 @Composable
 fun HoldPreviewOverlay(entry: DocEntry) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.55f)),
-        contentAlignment = Alignment.Center
+            .background(Color.Black)
     ) {
+        // Background: a single full-screen, cropped copy of the selected
+        // media. Coil can reuse its cached request for the same File. For
+        // videos, coil-video supplies a frame, so we don't need a second
+        // ExoPlayer just to create the blurred surroundings.
+        AsyncImage(
+            model = entry.file,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .fillMaxSize()
+                .blur(32.dp)
+        )
+
+        // Darken the blurred surroundings without changing the sharp media.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.35f))
+        )
+
         if (entry.isVideo) {
             HoldPreviewVideo(entry = entry)
         } else {
+            // Keep this full width. The background blur fills any vertical
+            // space required by the image's aspect ratio.
             AsyncImage(
                 model = entry.file,
                 contentDescription = entry.name,
@@ -152,7 +174,6 @@ fun HoldPreviewOverlay(entry: DocEntry) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(0.9f)
-                    .clip(RoundedCornerShape(12.dp))
             )
         }
     }
