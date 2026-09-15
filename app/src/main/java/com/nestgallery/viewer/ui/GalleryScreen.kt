@@ -2,9 +2,6 @@ package com.nestgallery.viewer.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
@@ -16,7 +13,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -67,15 +63,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.GalleryCache
@@ -84,7 +74,6 @@ import com.nestgallery.viewer.data.listFolderFast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
@@ -268,7 +257,7 @@ fun GalleryScreen(
                             )
                         } else {
                             val index = imagesOnly.indexOf(entry)
-                            ImageTile(
+                            MediaImageTile(
                                 entry = entry,
                                 showNames = showNames,
                                 onClick = { onOpenImage(imagesOnly, index) },
@@ -446,130 +435,3 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun ImageTile(
-    entry: DocEntry,
-    showNames: Boolean,
-    onClick: () -> Unit,
-    onHoldStart: () -> Unit,
-    onHoldEnd: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .padding(2.dp)
-            .aspectRatio(1f)
-            .clip(RoundedCornerShape(4.dp))
-            .pointerInput(entry.file) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    // Race the release against the hold threshold. Exactly
-                    // one branch runs: a quick release opens the viewer, a
-                    // release that never showed up in time means the finger
-                    // is still down, so switch to hold-preview and wait for
-                    // the real release to dismiss it - never both.
-                    val releasedInTime = withTimeoutOrNull(300) { waitForUpOrCancellation() }
-                    if (releasedInTime != null) {
-                        onClick()
-                    } else {
-                        onHoldStart()
-                        waitForUpOrCancellation()
-                        onHoldEnd()
-                    }
-                }
-            }
-    ) {
-        AsyncImage(
-            model = entry.file,
-            contentDescription = entry.name,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
-        if (entry.isVideo) {
-            Icon(
-                Icons.Filled.PlayCircle,
-                contentDescription = "Video",
-                tint = Color.White,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(32.dp)
-            )
-        }
-        if (showNames) {
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    entry.name,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-/**
- * Instagram-reel-style hold-to-preview: a dimmed, blurred-behind popup
- * showing the full image, or an auto-playing muted/looping video, while
- * the finger stays down on the tile. Purely a visual overlay - it doesn't
- * consume touches, so lifting the finger (handled by the tile's own
- * gesture) is what dismisses it.
- */
-@Composable
-private fun HoldPreviewOverlay(entry: DocEntry) {
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.55f)),
-        contentAlignment = Alignment.Center
-    ) {
-        if (entry.isVideo) {
-            HoldPreviewVideo(entry = entry)
-        } else {
-            AsyncImage(
-                model = entry.file,
-                contentDescription = entry.name,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.9f)
-            )
-        }
-    }
-}
-
-@Composable
-private fun HoldPreviewVideo(entry: DocEntry) {
-    val context = LocalContext.current
-    val exoPlayer = remember(entry.file) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(entry.file)))
-            volume = 0f
-            repeatMode = Player.REPEAT_MODE_ONE
-            prepare()
-            playWhenReady = true
-        }
-    }
-
-    DisposableEffect(exoPlayer) {
-        onDispose { exoPlayer.release() }
-    }
-
-    AndroidView(
-        modifier = Modifier
-            .fillMaxWidth()
-            .fillMaxHeight(0.9f),
-        factory = { ctx ->
-            PlayerView(ctx).apply {
-                player = exoPlayer
-                useController = false
-            }
-        }
-    )
-}

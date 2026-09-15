@@ -5,7 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -48,6 +47,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -104,6 +104,7 @@ fun ExploreScreen(
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
     val coroutineScope = rememberCoroutineScope()
+    var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
 
     // Scroll position, same pattern as the regular browser: saved on dispose
     // (leaving for the viewer or navigating away), restored on return.
@@ -209,19 +210,28 @@ fun ExploreScreen(
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
             } else {
+                // Same tile, gesture handling, and hold-to-preview popup as
+                // the regular browser's grid view - kept in one shared
+                // component (MediaImageTile / HoldPreviewOverlay) so the two
+                // screens can never drift apart in behavior.
                 LazyVerticalGrid(
                     state = gridState,
                     columns = GridCells.Adaptive(minSize = 108.dp),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .let { if (previewEntry != null) it.blur(18.dp) else it },
                     contentPadding = PaddingValues(4.dp)
                 ) {
                     gridItems(items, key = { it.file.absolutePath }) { entry ->
                         val index = items.indexOf(entry)
-                        ExploreImageTile(
+                        val relDir = remember(entry.file.absolutePath) { relativeDirOf(entry.file, root.file) }
+                        MediaImageTile(
                             entry = entry,
-                            root = root,
                             showNames = showNames,
-                            onClick = { onOpenImage(items, index) }
+                            subtitle = relDir,
+                            onClick = { onOpenImage(items, index) },
+                            onHoldStart = { previewEntry = entry },
+                            onHoldEnd = { previewEntry = null }
                         )
                     }
                 }
@@ -250,6 +260,10 @@ fun ExploreScreen(
                         Text("Still scanning…", color = Color.White, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
+            }
+
+            previewEntry?.let { entry ->
+                HoldPreviewOverlay(entry = entry)
             }
         }
     }
@@ -297,61 +311,6 @@ private fun ExploreImageRow(entry: DocEntry, root: DocEntry, showNames: Boolean,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ExploreImageTile(entry: DocEntry, root: DocEntry, showNames: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .padding(2.dp)
-            .aspectRatio(1f)
-            .clip(RoundedCornerShape(4.dp))
-            .clickable(onClick = onClick)
-    ) {
-        AsyncImage(
-            model = entry.file,
-            contentDescription = entry.name,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
-        if (entry.isVideo) {
-            Icon(
-                Icons.Filled.PlayCircle,
-                contentDescription = "Video",
-                tint = Color.White,
-                modifier = Modifier.align(Alignment.Center).size(32.dp)
-            )
-        }
-        if (showNames) {
-            val relDir = remember(entry.file.absolutePath) { relativeDirOf(entry.file, root.file) }
-            Box(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(horizontal = 4.dp, vertical = 2.dp)
-            ) {
-                Column {
-                    Text(
-                        entry.name,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (relDir.isNotEmpty()) {
-                        Text(
-                            relDir,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.75f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
                 }
             }
         }
