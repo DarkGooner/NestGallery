@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -166,6 +168,22 @@ private fun VideoPlayer(entry: DocEntry) {
 
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
     var seekFeedback by remember { mutableStateOf<String?>(null) }
+    var isBuffering by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    DisposableEffect(exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                isBuffering = state == Player.STATE_BUFFERING
+            }
+            override fun onPlayerError(error: PlaybackException) {
+                errorMessage = error.errorCodeName.replace('_', ' ').lowercase()
+                    .replaceFirstChar { it.uppercase() }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose { exoPlayer.removeListener(listener) }
+    }
 
     LaunchedEffectHideFeedback(seekFeedback) { seekFeedback = null }
 
@@ -185,6 +203,8 @@ private fun VideoPlayer(entry: DocEntry) {
                     // Longer timeout so the controller (and its scrub bar)
                     // stays reachable, not just a quick flash.
                     controllerShowTimeoutMs = 4000
+                    // Screen won't dim/sleep mid-playback.
+                    keepScreenOn = true
                     playerViewRef = this
                 }
             }
@@ -228,6 +248,28 @@ private fun VideoPlayer(entry: DocEntry) {
                         )
                     }
             )
+        }
+
+        if (isBuffering && errorMessage == null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                androidx.compose.material3.CircularProgressIndicator(color = Color.White)
+            }
+        }
+
+        errorMessage?.let { message ->
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.75f),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        "Can't play this video\n$message",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(20.dp)
+                    )
+                }
+            }
         }
 
         seekFeedback?.let { text ->

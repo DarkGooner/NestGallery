@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.nestgallery.viewer"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.nestgallery.viewer"
