@@ -6,6 +6,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * A folder or media file on shared storage, backed directly by a java.io.File.
@@ -68,7 +70,7 @@ fun storageRootEntry(): DocEntry {
     return DocEntry(file = root, name = "Storage", isDirectory = true, size = 0L, isVideo = false)
 }
 
-private const val EXPLORE_BATCH_SIZE = 60
+private const val EXPLORE_BATCH_SIZE = 300
 
 /**
  * Recursively (BFS, iterative - no recursion-depth risk on deep trees) walks
@@ -83,10 +85,12 @@ fun exploreMediaFlow(root: File, hideHidden: Boolean): Flow<List<DocEntry>> = fl
     val batch = ArrayList<DocEntry>(EXPLORE_BATCH_SIZE)
 
     while (queue.isNotEmpty()) {
+        currentCoroutineContext().ensureActive()
         val dir = queue.removeFirst()
         val children = dir.listFiles() ?: continue
 
         for (f in children) {
+            currentCoroutineContext().ensureActive()
             val name = f.name
             if (hideHidden && isHiddenName(name)) continue
 
@@ -103,7 +107,7 @@ fun exploreMediaFlow(root: File, hideHidden: Boolean): Flow<List<DocEntry>> = fl
     }
 
     if (batch.isNotEmpty()) emit(ArrayList(batch))
-}.flowOn(Dispatchers.Default)
+}.flowOn(Dispatchers.IO)
 
 /** [file]'s path relative to [root], not including the filename itself. */
 fun relativeDirOf(file: File, root: File): String {
