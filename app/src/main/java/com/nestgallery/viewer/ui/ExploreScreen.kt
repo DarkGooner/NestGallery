@@ -13,8 +13,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -93,9 +95,14 @@ fun ExploreScreen(
         if (GalleryCache.getEntries(exploreKey) == null) {
             scanning = true
             exploreMediaFlow(root.file, hideHidden).collect { batch ->
+                // Keep UI updates batched. Updating the Compose list once per
+                // small filesystem batch is far cheaper than rebuilding and
+                // caching the entire accumulated list on every emission.
                 items.addAll(batch)
-                GalleryCache.putEntries(exploreKey, items.toList())
             }
+            // Cache only the completed result. Caching a growing 50k-item list
+            // on every batch creates O(n²) copying and a lot of GC pressure.
+            GalleryCache.putEntries(exploreKey, items.toList())
             scanning = false
         }
     }
@@ -190,8 +197,7 @@ fun ExploreScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
-                    items(items, key = { it.file.absolutePath }) { entry ->
-                        val index = items.indexOf(entry)
+                    itemsIndexed(items, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                         ExploreImageRow(
                             entry = entry,
                             root = root,
@@ -219,8 +225,7 @@ fun ExploreScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(4.dp)
                 ) {
-                    gridItems(items, key = { it.file.absolutePath }) { entry ->
-                        val index = items.indexOf(entry)
+                    gridItemsIndexed(items, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                         val relDir = remember(entry.file.absolutePath) { relativeDirOf(entry.file, root.file) }
                         MediaImageTile(
                             entry = entry,
