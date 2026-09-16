@@ -222,6 +222,12 @@ private fun VideoPlayer(
         onDispose { controller.release() }
     }
 
+    fun seekBy(deltaMs: Long) {
+        val target = (controller.positionMs + deltaMs).coerceIn(0L, durationMs.coerceAtLeast(0L))
+        controller.seekTo(target)
+        positionMs = target
+    }
+
     AndroidView(
         modifier = Modifier
             .fillMaxSize()
@@ -231,6 +237,28 @@ private fun VideoPlayer(
                 textureView = this
                 controller.setTextureView(this)
                 controller.attach(this)
+
+                // A Compose gesture Box overlapping this TextureView never
+                // receives touches: interop views intercept touch input in
+                // their own bounds before Compose's overlapping gesture
+                // detectors get a chance. So tap/double-tap are handled here
+                // on the real View instead.
+                val gestureDetector = android.view.GestureDetector(
+                    ctx,
+                    object : android.view.GestureDetector.SimpleOnGestureListener() {
+                        override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
+                            onChromeVisibleChange(!chromeVisible)
+                            return true
+                        }
+                        override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
+                            val leftHalf = e.x < width / 2f
+                            seekBy(if (leftHalf) -10_000 else 10_000)
+                            seekFeedback = if (leftHalf) "⟲ 10s" else "10s ⟳"
+                            return true
+                        }
+                    }
+                )
+                setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
             }
         },
         update = { view ->
@@ -276,33 +304,7 @@ private fun VideoPlayer(
         }
     }
 
-    fun seekBy(deltaMs: Long) {
-        val target = (controller.positionMs + deltaMs).coerceIn(0L, durationMs.coerceAtLeast(0L))
-        controller.seekTo(target)
-        positionMs = target
-    }
-
     Box(Modifier.fillMaxSize()) {
-        // The controls are Compose overlays; the TextureView stays isolated
-        // underneath them, preventing the previous PlayerView/controller
-        // layering glitches.
-        Box(
-            Modifier.fillMaxWidth().fillMaxHeight(0.9f),
-            contentAlignment = Alignment.Center
-        ) {
-            Box(
-                Modifier.fillMaxSize().pointerInput(entry.file) {
-                    detectTapGestures(
-                        onTap = { onChromeVisibleChange(!chromeVisible) },
-                        onDoubleTap = { point ->
-                            val leftHalf = point.x < size.width / 2f
-                            seekBy(if (leftHalf) -10_000 else 10_000)
-                            seekFeedback = if (leftHalf) "⟲ 10s" else "10s ⟳"
-                        }
-                    )
-                }
-            )
-        }
 
         if (isBuffering && errorMessage == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
