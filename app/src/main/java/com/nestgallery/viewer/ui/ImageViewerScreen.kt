@@ -4,6 +4,7 @@ package com.nestgallery.viewer.ui
 
 import android.graphics.Bitmap
 import android.view.TextureView
+import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -66,8 +68,10 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.ComposeView
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.VlcPlayerController
+import com.nestgallery.viewer.ui.theme.NestGalleryTheme
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -92,15 +96,21 @@ fun ImageViewerScreen(
                 VideoPlayer(
                     entry = entry,
                     chromeVisible = chromeVisible,
-                    onChromeVisibleChange = { chromeVisible = it }
+                    onChromeVisibleChange = { chromeVisible = it },
+                    onDismiss = onDismiss
                 )
             } else {
                 ZoomableImage(entry = entry, onTap = { chromeVisible = !chromeVisible })
             }
         }
 
+        // Video pages render their own back button/chrome inside the same
+        // native view that hosts the TextureView (see VideoPlayer) - a
+        // Compose-drawn overlay here would be painted underneath the video's
+        // real pixels, since Views embedded via AndroidView always draw on
+        // top of sibling Compose content, regardless of declared order.
         AnimatedVisibility(
-            visible = chromeVisible,
+            visible = chromeVisible && !currentEntry.isVideo,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
@@ -111,14 +121,12 @@ fun ImageViewerScreen(
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                 }
-                if (!currentEntry.isVideo) {
-                    Text(
-                        text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",
-                        color = Color.White,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
-                    )
-                }
+                Text(
+                    text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
+                )
             }
         }
     }
@@ -168,7 +176,8 @@ private fun formatTime(ms: Long): String {
 private fun VideoPlayer(
     entry: DocEntry,
     chromeVisible: Boolean,
-    onChromeVisibleChange: (Boolean) -> Unit
+    onChromeVisibleChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
@@ -240,16 +249,21 @@ private fun VideoPlayer(
             .fillMaxSize()
             .background(Color.Black),
         factory = { ctx ->
-            TextureView(ctx).apply {
-                textureView = this
-                controller.setTextureView(this)
-                controller.attach(this)
+            // The video surface and its Compose-drawn controls must live in
+            // the SAME native ViewGroup. If the controls were instead a
+            // sibling Compose Box "on top" of a separate AndroidView, they'd
+            // still be painted UNDERNEATH the video's real pixels: Views
+            // embedded via AndroidView always draw on top of any Compose
+            // content in the same composition, regardless of declared
+            // order. Nesting a ComposeView as the second child here makes
+            // it plain View-vs-View ordering, which respects add order.
+            FrameLayout(ctx).apply {
+                val tv = TextureView(ctx)
+                addView(tv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+                textureView = tv
+                controller.setTextureView(tv)
+                controller.attach(tv)
 
-                // A Compose gesture Box overlapping this TextureView never
-                // receives touches: interop views intercept touch input in
-                // their own bounds before Compose's overlapping gesture
-                // detectors get a chance. So tap/double-tap are handled here
-                // on the real View instead.
                 val gestureDetector = android.view.GestureDetector(
                     ctx,
                     object : android.view.GestureDetector.SimpleOnGestureListener() {
@@ -258,19 +272,73 @@ private fun VideoPlayer(
                             return true
                         }
                         override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
-                            val leftHalf = e.x < width / 2f
+                            val leftHalf = e.x < tv.width / 2f
                             seekBy(if (leftHalf) -10_000 else 10_000)
                             seekFeedback = if (leftHalf) "⟲ 10s" else "10s ⟳"
                             return true
                         }
                     }
                 )
-                setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
+                tv.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
+
+                val overlay = ComposeView(ctx).apply {
+                    setContent {
+                        NestGalleryTheme {
+                            VideoOverlayContent(
+                                chromeVisible = currentChromeVisible.value,
+                                isBuffering = isBuffering,
+                                errorMessage = errorMessage,
+                                seekFeedback = seekFeedback,
+                                isPlaying = isPlaying,
+                                positionMs = if (isScrubbing) scrubTargetMs else positionMs,
+                                durationMs = durationMs,
+                                isScrubbing = isScrubbing,
+                                previewBitmap = previewBitmap,
+                                onDismiss = onDismiss,
+                                onPlayPause = {
+                                    if (controller.isPlaying) controller.pause() else controller.play()
+                                },
+                                onScrubStart = {
+                                    wasPlayingBeforeScrub = controller.isPlaying
+                                    controller.pause()
+                                    isScrubbing = true
+                                    scrubTargetMs = controller.positionMs
+                                    positionMs = scrubTargetMs
+                                    previewBitmap = controller.captureFrame()
+                                    onChromeVisibleChange(true)
+                                },
+                                onScrub = {
+                                    scrubTargetMs = it
+                                    positionMs = it
+                                },
+                                onScrubEnd = {
+                                    controller.seekTo(it)
+                                    positionMs = it
+                                    isScrubbing = false
+                                    previewBitmap = null
+                                    if (wasPlayingBeforeScrub) controller.play()
+                                },
+                                onScrubCancel = {
+                                    controller.seekTo(positionMs)
+                                    isScrubbing = false
+                                    previewBitmap = null
+                                    if (wasPlayingBeforeScrub) controller.play()
+                                },
+                                onSeekTo = { target ->
+                                    controller.seekTo(target)
+                                    positionMs = target
+                                }
+                            )
+                        }
+                    }
+                }
+                addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
             }
         },
-        update = { view ->
-            textureView = view
-            controller.setTextureView(view)
+        update = { frame ->
+            val tv = frame.getChildAt(0) as TextureView
+            textureView = tv
+            controller.setTextureView(tv)
         }
     )
 
@@ -310,9 +378,35 @@ private fun VideoPlayer(
             seekFeedback = null
         }
     }
+}
 
+/**
+ * Everything drawn on top of the video: buffering spinner, error card, the
+ * ±10s seek toast, the back button, and the YouTube-style bottom control
+ * bar. Lives inside a ComposeView nested in the same native FrameLayout as
+ * the TextureView (see the AndroidView factory above) so it actually paints
+ * on top of the video instead of underneath it.
+ */
+@Composable
+private fun VideoOverlayContent(
+    chromeVisible: Boolean,
+    isBuffering: Boolean,
+    errorMessage: String?,
+    seekFeedback: String?,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    isScrubbing: Boolean,
+    previewBitmap: Bitmap?,
+    onDismiss: () -> Unit,
+    onPlayPause: () -> Unit,
+    onScrubStart: () -> Unit,
+    onScrub: (Long) -> Unit,
+    onScrubEnd: (Long) -> Unit,
+    onScrubCancel: () -> Unit,
+    onSeekTo: (Long) -> Unit
+) {
     Box(Modifier.fillMaxSize()) {
-
         if (isBuffering && errorMessage == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Color.White)
@@ -344,44 +438,29 @@ private fun VideoPlayer(
             visible = chromeVisible,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            modifier = Modifier.fillMaxSize()
         ) {
-            VideoControlBar(
-                isPlaying = isPlaying,
-                positionMs = if (isScrubbing) scrubTargetMs else positionMs,
-                durationMs = durationMs,
-                isScrubbing = isScrubbing,
-                previewBitmap = previewBitmap,
-                onPlayPause = {
-                    if (controller.isPlaying) controller.pause() else controller.play()
-                },
-                onScrubStart = {
-                    wasPlayingBeforeScrub = controller.isPlaying
-                    controller.pause()
-                    isScrubbing = true
-                    scrubTargetMs = controller.positionMs
-                    positionMs = scrubTargetMs
-                    previewBitmap = controller.captureFrame()
-                    onChromeVisibleChange(true)
-                },
-                onScrub = {
-                    scrubTargetMs = it
-                    positionMs = it
-                },
-                onScrubEnd = {
-                    controller.seekTo(it)
-                    positionMs = it
-                    isScrubbing = false
-                    previewBitmap = null
-                    if (wasPlayingBeforeScrub) controller.play()
-                },
-                onScrubCancel = {
-                    controller.seekTo(positionMs)
-                    isScrubbing = false
-                    previewBitmap = null
-                    if (wasPlayingBeforeScrub) controller.play()
+            Box(Modifier.fillMaxSize()) {
+                Box(Modifier.statusBarsPadding().padding(8.dp)) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
+                    }
                 }
-            )
+                VideoControlBar(
+                    isPlaying = isPlaying,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    isScrubbing = isScrubbing,
+                    previewBitmap = previewBitmap,
+                    onPlayPause = onPlayPause,
+                    onScrubStart = onScrubStart,
+                    onScrub = onScrub,
+                    onScrubEnd = onScrubEnd,
+                    onScrubCancel = onScrubCancel,
+                    onSeekTo = onSeekTo,
+                    modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                )
+            }
         }
     }
 }
@@ -397,10 +476,12 @@ private fun VideoControlBar(
     onScrubStart: () -> Unit,
     onScrub: (Long) -> Unit,
     onScrubEnd: (Long) -> Unit,
-    onScrubCancel: () -> Unit
+    onScrubCancel: () -> Unit,
+    onSeekTo: (Long) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Column(
-        Modifier.fillMaxWidth()
+        modifier
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))))
             .padding(top = 42.dp, start = 12.dp, end = 12.dp, bottom = 12.dp)
     ) {
@@ -412,7 +493,8 @@ private fun VideoControlBar(
             onScrubStart = onScrubStart,
             onScrub = onScrub,
             onScrubEnd = onScrubEnd,
-            onScrubCancel = onScrubCancel
+            onScrubCancel = onScrubCancel,
+            onSeekTo = onSeekTo
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onPlayPause) {
@@ -428,14 +510,20 @@ private fun VideoControlBar(
                 color = Color.White,
                 style = MaterialTheme.typography.labelSmall
             )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "-${formatTime((durationMs - positionMs).coerceAtLeast(0L))}",
+                color = Color.White.copy(alpha = 0.75f),
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }
 
+
 /**
- * YouTube-style timeline interaction: the preview does not appear for an
- * ordinary tap. It appears only after the user holds the timeline long
- * enough for Compose's long-press detector, then drags left/right.
+ * YouTube-style timeline: an ordinary tap on the track seeks immediately;
+ * holding it down and dragging shows the frame-preview scrubber instead.
  */
 @Composable
 private fun ScrubBar(
@@ -446,7 +534,8 @@ private fun ScrubBar(
     onScrubStart: () -> Unit,
     onScrub: (Long) -> Unit,
     onScrubEnd: (Long) -> Unit,
-    onScrubCancel: () -> Unit
+    onScrubCancel: () -> Unit,
+    onSeekTo: (Long) -> Unit
 ) {
     var trackWidthPx by remember { mutableFloatStateOf(0f) }
     val density = LocalDensity.current
@@ -494,6 +583,14 @@ private fun ScrubBar(
         Box(
             Modifier.fillMaxWidth().height(36.dp)
                 .onGloballyPositioned { trackWidthPx = it.size.width.toFloat() }
+                .pointerInput(durationMs) {
+                    detectTapGestures { offset ->
+                        if (durationMs > 0 && trackWidthPx > 0) {
+                            val fraction = (offset.x / trackWidthPx).coerceIn(0f, 1f)
+                            onSeekTo((fraction * durationMs).toLong())
+                        }
+                    }
+                }
                 .pointerInput(durationMs) {
                     detectDragGesturesAfterLongPress(
                         onDragStart = { offset ->

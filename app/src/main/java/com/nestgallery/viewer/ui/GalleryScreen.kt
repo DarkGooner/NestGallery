@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.LabelOff
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -89,6 +90,7 @@ fun GalleryScreen(
     onGoHome: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onExploreFolder: (DocEntry) -> Unit,
+    onSearch: (DocEntry) -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
 ) {
@@ -166,6 +168,9 @@ fun GalleryScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { onSearch(current) }) {
+                            Icon(Icons.Default.Search, contentDescription = "Search images & videos")
+                        }
                         IconButton(onClick = { onExploreFolder(current) }) {
                             Icon(Icons.Default.AccountTree, contentDescription = "Browse all media in this folder recursively")
                         }

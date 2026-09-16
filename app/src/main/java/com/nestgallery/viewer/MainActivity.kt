@@ -44,12 +44,14 @@ import com.nestgallery.viewer.data.storageRootEntry
 import com.nestgallery.viewer.ui.ExploreScreen
 import com.nestgallery.viewer.ui.GalleryScreen
 import com.nestgallery.viewer.ui.ImageViewerScreen
+import com.nestgallery.viewer.ui.SearchScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
 
 private sealed class Screen {
     data object NeedsPermission : Screen()
     data object Browser : Screen()
     data class Explore(val root: DocEntry) : Screen()
+    data class Search(val root: DocEntry, val returnTo: Screen) : Screen()
     data class Viewer(val images: List<DocEntry>, val startIndex: Int, val returnTo: Screen) : Screen()
 }
 
@@ -156,6 +158,12 @@ private fun NestGalleryApp() {
             screen = Screen.Browser
         }
     }
+    val searchScreen = screen as? Screen.Search
+    if (searchScreen != null) {
+        BackHandler {
+            screen = searchScreen.returnTo
+        }
+    }
 
     Crossfade(targetState = screen, label = "screen") { s ->
         when (s) {
@@ -175,6 +183,7 @@ private fun NestGalleryApp() {
                     onGoHome = { pathStack = listOf(storageRootEntry()) },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onExploreFolder = { folder -> screen = Screen.Explore(folder) },
+                    onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
                     onBack = { if (pathStack.size > 1) pathStack = pathStack.dropLast(1) },
                     canGoBack = pathStack.size > 1
                 )
@@ -189,7 +198,19 @@ private fun NestGalleryApp() {
                     onToggleHideHidden = { hideHidden = !hideHidden },
                     onToggleShowNames = { showNames = !showNames },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
+                    onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
                     onBack = { screen = Screen.Browser }
+                )
+            }
+            is Screen.Search -> {
+                SearchScreen(
+                    root = s.root,
+                    hideHidden = hideHidden,
+                    showNames = showNames,
+                    listMode = listMode,
+                    onToggleViewMode = { listMode = !listMode },
+                    onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
+                    onBack = { screen = s.returnTo }
                 )
             }
             is Screen.Viewer -> {

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.LabelOff
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -72,6 +73,7 @@ fun ExploreScreen(
     onToggleHideHidden: () -> Unit,
     onToggleShowNames: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
+    onSearch: (DocEntry) -> Unit,
     onBack: () -> Unit
 ) {
     // A plain (non-Compose-state-backed) cache key. GalleryCache is a
@@ -154,6 +156,9 @@ fun ExploreScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { onSearch(root) }) {
+                        Icon(Icons.Default.Search, contentDescription = "Search images & videos")
+                    }
                     IconButton(onClick = {
                         GalleryCache.invalidate(exploreKey)
                         rescanTrigger++
