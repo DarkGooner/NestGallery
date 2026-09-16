@@ -197,10 +197,10 @@ private fun HoldPreviewVideo(entry: DocEntry) {
         modifier = Modifier
             .fillMaxWidth()
             .fillMaxHeight(0.9f)
-            .clip(RoundedCornerShape(12.dp)),
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black),
         factory = { ctx ->
             TextureView(ctx).apply {
-                setBackgroundColor(android.graphics.Color.BLACK)
                 controller.setTextureView(this)
                 controller.attach(this)
             }

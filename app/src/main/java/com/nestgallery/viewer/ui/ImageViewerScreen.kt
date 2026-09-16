@@ -218,10 +218,11 @@ private fun VideoPlayer(
     }
 
     AndroidView(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
         factory = { ctx ->
             TextureView(ctx).apply {
-                setBackgroundColor(android.graphics.Color.BLACK)
                 textureView = this
                 controller.setTextureView(this)
                 controller.attach(this)
