@@ -4,16 +4,15 @@ package com.nestgallery.viewer.ui
 
 import android.graphics.Bitmap
 import android.view.TextureView
-import android.widget.FrameLayout
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -50,7 +49,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,11 +66,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.platform.ComposeView
+import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.VlcPlayerController
-import com.nestgallery.viewer.ui.theme.NestGalleryTheme
-import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.max
@@ -104,20 +100,16 @@ fun ImageViewerScreen(
             }
         }
 
-        // Video pages render their own back button/chrome inside the same
-        // native view that hosts the TextureView (see VideoPlayer) - a
-        // Compose-drawn overlay here would be painted underneath the video's
-        // real pixels, since Views embedded via AndroidView always draw on
-        // top of sibling Compose content, regardless of declared order.
+        // Image pages' back button/filename bar. Video pages draw their own
+        // (see VideoPlayer) since they also need it layered with the
+        // control bar/scrub bar in one place.
         AnimatedVisibility(
             visible = chromeVisible && !currentEntry.isVideo,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
-            Box(
-                Modifier.fillMaxSize().statusBarsPadding().padding(8.dp)
-            ) {
+            Box(Modifier.fillMaxSize().statusBarsPadding().padding(8.dp)) {
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                 }
@@ -172,6 +164,21 @@ private fun formatTime(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
+/**
+ * Full-screen video playback. The video surface (a TextureView driven by
+ * VlcPlayerController) and every bit of UI - back button, tap/double-tap
+ * zones, buffering spinner, error card, and the scrub bar - are ordinary
+ * Compose siblings in one Box, in the SAME composition. That's the standard,
+ * reliable pattern: a plain Compose sibling declared after the AndroidView
+ * paints on top of it and receives touches normally. (An earlier attempt
+ * nested a second ComposeView inside the AndroidView's native view tree to
+ * work around a drawing-order concern and routed gestures through a native
+ * GestureDetector on the TextureView; that TextureView never actually saw
+ * any touches, because the full-size ComposeView layered on top claims the
+ * entire touch stream at the Android View level regardless of whether any
+ * composable inside it responds - which is exactly why nothing responded to
+ * taps. Keeping everything as plain Compose siblings avoids that entirely.)
+ */
 @Composable
 private fun VideoPlayer(
     entry: DocEntry,
@@ -187,7 +194,6 @@ private fun VideoPlayer(
     var positionMs by remember { mutableLongStateOf(0L) }
     var isScrubbing by remember { mutableStateOf(false) }
     var seekFeedback by remember { mutableStateOf<String?>(null) }
-    var textureView by remember { mutableStateOf<TextureView?>(null) }
     var scrubTargetMs by remember { mutableLongStateOf(0L) }
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var wasPlayingBeforeScrub by remember { mutableStateOf(false) }
@@ -238,110 +244,6 @@ private fun VideoPlayer(
         positionMs = target
     }
 
-    // The AndroidView factory below runs only once (when the TextureView is
-    // first created), so a plain captured `chromeVisible` parameter would be
-    // frozen at whatever it was on that first composition. rememberUpdatedState
-    // gives a stable holder whose .value always reflects the latest value.
-    val currentChromeVisible = rememberUpdatedState(chromeVisible)
-
-    AndroidView(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black),
-        factory = { ctx ->
-            // The video surface and its Compose-drawn controls must live in
-            // the SAME native ViewGroup. If the controls were instead a
-            // sibling Compose Box "on top" of a separate AndroidView, they'd
-            // still be painted UNDERNEATH the video's real pixels: Views
-            // embedded via AndroidView always draw on top of any Compose
-            // content in the same composition, regardless of declared
-            // order. Nesting a ComposeView as the second child here makes
-            // it plain View-vs-View ordering, which respects add order.
-            FrameLayout(ctx).apply {
-                val tv = TextureView(ctx)
-                addView(tv, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-                textureView = tv
-                controller.setTextureView(tv)
-                controller.attach(tv)
-
-                val gestureDetector = android.view.GestureDetector(
-                    ctx,
-                    object : android.view.GestureDetector.SimpleOnGestureListener() {
-                        override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
-                            onChromeVisibleChange(!currentChromeVisible.value)
-                            return true
-                        }
-                        override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
-                            val leftHalf = e.x < tv.width / 2f
-                            seekBy(if (leftHalf) -10_000 else 10_000)
-                            seekFeedback = if (leftHalf) "⟲ 10s" else "10s ⟳"
-                            return true
-                        }
-                    }
-                )
-                tv.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
-
-                val overlay = ComposeView(ctx).apply {
-                    setContent {
-                        NestGalleryTheme {
-                            VideoOverlayContent(
-                                chromeVisible = currentChromeVisible.value,
-                                isBuffering = isBuffering,
-                                errorMessage = errorMessage,
-                                seekFeedback = seekFeedback,
-                                isPlaying = isPlaying,
-                                positionMs = if (isScrubbing) scrubTargetMs else positionMs,
-                                durationMs = durationMs,
-                                isScrubbing = isScrubbing,
-                                previewBitmap = previewBitmap,
-                                onDismiss = onDismiss,
-                                onPlayPause = {
-                                    if (controller.isPlaying) controller.pause() else controller.play()
-                                },
-                                onScrubStart = {
-                                    wasPlayingBeforeScrub = controller.isPlaying
-                                    controller.pause()
-                                    isScrubbing = true
-                                    scrubTargetMs = controller.positionMs
-                                    positionMs = scrubTargetMs
-                                    previewBitmap = controller.captureFrame()
-                                    onChromeVisibleChange(true)
-                                },
-                                onScrub = {
-                                    scrubTargetMs = it
-                                    positionMs = it
-                                },
-                                onScrubEnd = {
-                                    controller.seekTo(it)
-                                    positionMs = it
-                                    isScrubbing = false
-                                    previewBitmap = null
-                                    if (wasPlayingBeforeScrub) controller.play()
-                                },
-                                onScrubCancel = {
-                                    controller.seekTo(positionMs)
-                                    isScrubbing = false
-                                    previewBitmap = null
-                                    if (wasPlayingBeforeScrub) controller.play()
-                                },
-                                onSeekTo = { target ->
-                                    controller.seekTo(target)
-                                    positionMs = target
-                                }
-                            )
-                        }
-                    }
-                }
-                addView(overlay, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-            }
-        },
-        update = { frame ->
-            val tv = frame.getChildAt(0) as TextureView
-            textureView = tv
-            controller.setTextureView(tv)
-        }
-    )
-
     LaunchedEffect(controller) {
         while (isActive) {
             positionMs = controller.positionMs
@@ -353,9 +255,8 @@ private fun VideoPlayer(
         }
     }
 
-    // Debounced VLC seeking is also used for the preview frame. This avoids
-    // hammering the decoder on every pointer event while still making the
-    // preview follow the finger closely.
+    // Debounced VLC seeking also drives the scrub preview frame: seek once
+    // the finger settles briefly, then grab whatever VLC just rendered.
     LaunchedEffect(isScrubbing, scrubTargetMs) {
         if (!isScrubbing || durationMs <= 0L) return@LaunchedEffect
         delay(90)
@@ -378,35 +279,45 @@ private fun VideoPlayer(
             seekFeedback = null
         }
     }
-}
 
-/**
- * Everything drawn on top of the video: buffering spinner, error card, the
- * ±10s seek toast, the back button, and the YouTube-style bottom control
- * bar. Lives inside a ComposeView nested in the same native FrameLayout as
- * the TextureView (see the AndroidView factory above) so it actually paints
- * on top of the video instead of underneath it.
- */
-@Composable
-private fun VideoOverlayContent(
-    chromeVisible: Boolean,
-    isBuffering: Boolean,
-    errorMessage: String?,
-    seekFeedback: String?,
-    isPlaying: Boolean,
-    positionMs: Long,
-    durationMs: Long,
-    isScrubbing: Boolean,
-    previewBitmap: Bitmap?,
-    onDismiss: () -> Unit,
-    onPlayPause: () -> Unit,
-    onScrubStart: () -> Unit,
-    onScrub: (Long) -> Unit,
-    onScrubEnd: (Long) -> Unit,
-    onScrubCancel: () -> Unit,
-    onSeekTo: (Long) -> Unit
-) {
-    Box(Modifier.fillMaxSize()) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                TextureView(ctx).also { tv ->
+                    controller.setTextureView(tv)
+                    controller.attach(tv)
+                }
+            }
+        )
+
+        // Tap toggles chrome; double-tap on either half seeks ±10s. Kept to
+        // the top ~80% of the screen so it never sits over the control bar.
+        Row(Modifier.fillMaxWidth().fillMaxHeight(0.8f)) {
+            Box(
+                Modifier.weight(1f).fillMaxHeight().pointerInput(entry.file) {
+                    detectTapGestures(
+                        onTap = { onChromeVisibleChange(!chromeVisible) },
+                        onDoubleTap = {
+                            seekBy(-10_000)
+                            seekFeedback = "⟲ 10s"
+                        }
+                    )
+                }
+            )
+            Box(
+                Modifier.weight(1f).fillMaxHeight().pointerInput(entry.file) {
+                    detectTapGestures(
+                        onTap = { onChromeVisibleChange(!chromeVisible) },
+                        onDoubleTap = {
+                            seekBy(10_000)
+                            seekFeedback = "10s ⟳"
+                        }
+                    )
+                }
+            )
+        }
+
         if (isBuffering && errorMessage == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = Color.White)
@@ -448,16 +359,41 @@ private fun VideoOverlayContent(
                 }
                 VideoControlBar(
                     isPlaying = isPlaying,
-                    positionMs = positionMs,
+                    positionMs = if (isScrubbing) scrubTargetMs else positionMs,
                     durationMs = durationMs,
                     isScrubbing = isScrubbing,
                     previewBitmap = previewBitmap,
-                    onPlayPause = onPlayPause,
-                    onScrubStart = onScrubStart,
-                    onScrub = onScrub,
-                    onScrubEnd = onScrubEnd,
-                    onScrubCancel = onScrubCancel,
-                    onSeekTo = onSeekTo,
+                    onPlayPause = { if (controller.isPlaying) controller.pause() else controller.play() },
+                    onScrubStart = {
+                        wasPlayingBeforeScrub = controller.isPlaying
+                        controller.pause()
+                        isScrubbing = true
+                        scrubTargetMs = controller.positionMs
+                        positionMs = scrubTargetMs
+                        previewBitmap = controller.captureFrame()
+                        onChromeVisibleChange(true)
+                    },
+                    onScrub = {
+                        scrubTargetMs = it
+                        positionMs = it
+                    },
+                    onScrubEnd = {
+                        controller.seekTo(it)
+                        positionMs = it
+                        isScrubbing = false
+                        previewBitmap = null
+                        if (wasPlayingBeforeScrub) controller.play()
+                    },
+                    onScrubCancel = {
+                        controller.seekTo(positionMs)
+                        isScrubbing = false
+                        previewBitmap = null
+                        if (wasPlayingBeforeScrub) controller.play()
+                    },
+                    onSeekTo = { target ->
+                        controller.seekTo(target)
+                        positionMs = target
+                    },
                     modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                 )
             }
@@ -519,7 +455,6 @@ private fun VideoControlBar(
         }
     }
 }
-
 
 /**
  * YouTube-style timeline: an ordinary tap on the track seeks immediately;
@@ -586,8 +521,8 @@ private fun ScrubBar(
                 .pointerInput(durationMs) {
                     detectTapGestures { offset ->
                         if (durationMs > 0 && trackWidthPx > 0) {
-                            val fraction = (offset.x / trackWidthPx).coerceIn(0f, 1f)
-                            onSeekTo((fraction * durationMs).toLong())
+                            val tapFraction = (offset.x / trackWidthPx).coerceIn(0f, 1f)
+                            onSeekTo((tapFraction * durationMs).toLong())
                         }
                     }
                 }
