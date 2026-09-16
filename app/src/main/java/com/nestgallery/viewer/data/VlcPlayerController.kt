@@ -24,8 +24,8 @@ class VlcPlayerController(
     private val file: File,
     private val muted: Boolean = false,
     private val repeat: Boolean = false,
-    private val onEvent: ((MediaPlayer.Event) -> Unit)? = null,
-    private val onAttachError: (() -> Unit)? = null
+    private val onAttachError: (() -> Unit)? = null,
+    private val onEvent: ((MediaPlayer.Event) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "NestGalleryVLC"
