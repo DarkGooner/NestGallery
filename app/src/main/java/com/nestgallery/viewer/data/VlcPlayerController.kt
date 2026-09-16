@@ -2,7 +2,6 @@ package com.nestgallery.viewer.data
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.SurfaceTexture
 import android.net.Uri
 import android.util.Log
 import android.view.TextureView
@@ -44,6 +43,7 @@ class VlcPlayerController(
 
     private var textureView: TextureView? = null
     private var released = false
+    private var sizeListener: android.view.View.OnLayoutChangeListener? = null
 
     init {
         mediaPlayer.setEventListener { event ->
@@ -68,6 +68,22 @@ class VlcPlayerController(
     }
 
     /**
+     * Pushes the TextureView's current pixel size to VLC so SURFACE_BEST_FIT
+     * can scale/center correctly. Uses a plain layout listener rather than a
+     * SurfaceTextureListener because attachViews() installs its own
+     * SurfaceTextureListener on the view to receive the surface for
+     * rendering; replacing it would stop video from rendering entirely.
+     */
+    private fun layoutListener(): android.view.View.OnLayoutChangeListener =
+        android.view.View.OnLayoutChangeListener { v, left, top, right, bottom, _, _, _, _ ->
+            val width = right - left
+            val height = bottom - top
+            if (!released && width > 0 && height > 0) {
+                mediaPlayer.getVLCVout().setWindowSize(width, height)
+            }
+        }
+
+    /**
      * Attach the VLC video output to the TextureView and start the file.
      * TextureView is intentional: unlike SurfaceView it lets us read the
      * currently rendered frame for the YouTube-style scrub preview.
@@ -85,21 +101,13 @@ class VlcPlayerController(
             vout.setVideoView(view)
             vout.attachViews()
 
-            // Unlike SurfaceView, a TextureView's pixel size is never pushed
-            // to VLC automatically. Without this, SURFACE_BEST_FIT scales
-            // against a stale/zero size and the frame renders small and
-            // pinned to one corner instead of centered/filling the view.
-            view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                    if (!released) vout.setWindowSize(width, height)
-                }
-                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
-                    if (!released) vout.setWindowSize(width, height)
-                }
-                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
-                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-            }
-            if (view.isAvailable && view.width > 0 && view.height > 0) {
+            // attachViews() installs its own TextureView.SurfaceTextureListener
+            // internally to hook up rendering - we must NOT replace that, or
+            // VLC never receives the surface and renders nothing. Instead,
+            // track size with a plain View.OnLayoutChangeListener and push it
+            // to VLC via setWindowSize, which SURFACE_BEST_FIT scaling needs.
+            view.addOnLayoutChangeListener(layoutListener().also { sizeListener = it })
+            if (view.width > 0 && view.height > 0) {
                 vout.setWindowSize(view.width, view.height)
             }
 
@@ -173,7 +181,10 @@ class VlcPlayerController(
         if (released) return
         released = true
 
-        runCatching { textureView?.surfaceTextureListener = null }
+        runCatching {
+            textureView?.let { tv -> sizeListener?.let { tv.removeOnLayoutChangeListener(it) } }
+        }
+        sizeListener = null
         runCatching {
             if (mediaPlayer.getVLCVout().areViewsAttached()) {
                 mediaPlayer.getVLCVout().detachViews()
