@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -228,6 +229,12 @@ private fun VideoPlayer(
         positionMs = target
     }
 
+    // The AndroidView factory below runs only once (when the TextureView is
+    // first created), so a plain captured `chromeVisible` parameter would be
+    // frozen at whatever it was on that first composition. rememberUpdatedState
+    // gives a stable holder whose .value always reflects the latest value.
+    val currentChromeVisible = rememberUpdatedState(chromeVisible)
+
     AndroidView(
         modifier = Modifier
             .fillMaxSize()
@@ -247,7 +254,7 @@ private fun VideoPlayer(
                     ctx,
                     object : android.view.GestureDetector.SimpleOnGestureListener() {
                         override fun onSingleTapConfirmed(e: android.view.MotionEvent): Boolean {
-                            onChromeVisibleChange(!chromeVisible)
+                            onChromeVisibleChange(!currentChromeVisible.value)
                             return true
                         }
                         override fun onDoubleTap(e: android.view.MotionEvent): Boolean {
