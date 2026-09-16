@@ -1,7 +1,7 @@
 package com.nestgallery.viewer.data
 
 import android.content.Context
-import androidx.media3.exoplayer.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.Extractor
