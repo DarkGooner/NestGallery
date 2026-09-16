@@ -30,12 +30,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.ui.PlayerView
+import android.view.TextureView
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
-import com.nestgallery.viewer.data.buildExoPlayer
+import com.nestgallery.viewer.data.VlcPlayerController
 
 /**
  * Grid tile shared by the regular browser and the recursive explorer, so
@@ -145,7 +143,7 @@ fun HoldPreviewOverlay(entry: DocEntry) {
         // Background: a single full-screen, cropped copy of the selected
         // media. Coil can reuse its cached request for the same File. For
         // videos, coil-video supplies a frame, so we don't need a second
-        // ExoPlayer just to create the blurred surroundings.
+        // a second full player just to create the blurred surroundings.
         AsyncImage(
             model = entry.file,
             contentDescription = null,
@@ -182,18 +180,17 @@ fun HoldPreviewOverlay(entry: DocEntry) {
 @Composable
 private fun HoldPreviewVideo(entry: DocEntry) {
     val context = LocalContext.current
-    val exoPlayer = remember(entry.file) {
-        buildExoPlayer(context).apply {
-            setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(entry.file)))
-            volume = 0f
-            repeatMode = Player.REPEAT_MODE_ONE
-            prepare()
-            playWhenReady = true
-        }
+    val controller = remember(entry.file) {
+        VlcPlayerController(
+            context = context,
+            file = entry.file,
+            muted = true,
+            repeat = true
+        )
     }
 
-    DisposableEffect(exoPlayer) {
-        onDispose { exoPlayer.release() }
+    DisposableEffect(controller) {
+        onDispose { controller.release() }
     }
 
     AndroidView(
@@ -202,10 +199,12 @@ private fun HoldPreviewVideo(entry: DocEntry) {
             .fillMaxHeight(0.9f)
             .clip(RoundedCornerShape(12.dp)),
         factory = { ctx ->
-            PlayerView(ctx).apply {
-                player = exoPlayer
-                useController = false
+            TextureView(ctx).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                controller.setTextureView(this)
+                controller.attach(this)
             }
-        }
+        },
+        update = { controller.setTextureView(it) }
     )
 }

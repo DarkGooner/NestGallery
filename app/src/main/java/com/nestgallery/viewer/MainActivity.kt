@@ -81,8 +81,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Register decoders once so every AsyncImage in the app can render
-        // animated GIFs and pull a preview frame out of video files.
+        // GIF/video-frame decoding is used only for lightweight gallery
+        // background previews. Actual video playback and timeline preview
+        // seeking are handled by LibVLC.
         Coil.setImageLoader(
             ImageLoader.Builder(applicationContext)
                 .components {

@@ -3,16 +3,16 @@
 package com.nestgallery.viewer.ui
 
 import android.graphics.Bitmap
-import android.media.MediaMetadataRetriever
+import android.view.TextureView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -64,21 +64,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
-import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
-import com.nestgallery.viewer.data.buildExoPlayer
-import kotlinx.coroutines.Dispatchers
+import com.nestgallery.viewer.data.VlcPlayerController
+import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
-import java.io.File
+import kotlinx.coroutines.isActive
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.roundToInt
 import kotlin.math.roundToInt
 
 @Composable
@@ -91,11 +83,7 @@ fun ImageViewerScreen(
     var chromeVisible by remember { mutableStateOf(true) }
     val currentEntry = images[pagerState.currentPage]
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
             val entry = images[page]
             if (entry.isVideo) {
@@ -105,10 +93,7 @@ fun ImageViewerScreen(
                     onChromeVisibleChange = { chromeVisible = it }
                 )
             } else {
-                ZoomableImage(
-                    entry = entry,
-                    onTap = { chromeVisible = !chromeVisible }
-                )
+                ZoomableImage(entry = entry, onTap = { chromeVisible = !chromeVisible })
             }
         }
 
@@ -119,10 +104,7 @@ fun ImageViewerScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             Box(
-                Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .padding(8.dp)
+                Modifier.fillMaxSize().statusBarsPadding().padding(8.dp)
             ) {
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
@@ -132,9 +114,7 @@ fun ImageViewerScreen(
                         text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",
                         color = Color.White,
                         style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 16.dp)
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
                     )
                 }
             }
@@ -154,12 +134,7 @@ private fun ZoomableImage(entry: DocEntry, onTap: () -> Unit) {
             contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer(
-                    scaleX = scale,
-                    scaleY = scale,
-                    translationX = offset.x,
-                    translationY = offset.y
-                )
+                .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)
                 .pointerInput(entry.file) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         scale = max(1f, min(scale * zoom, 5f))
@@ -187,12 +162,6 @@ private fun formatTime(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
-/**
- * Full-screen video playback with fully custom controls: play/pause,
- * a scrub bar that pops up a live frame preview while dragging (press and
- * hold the bar, drag to preview - same idea as YouTube's timeline preview),
- * double-tap zones to seek ±10s, and auto-hiding chrome.
- */
 @Composable
 private fun VideoPlayer(
     entry: DocEntry,
@@ -200,51 +169,92 @@ private fun VideoPlayer(
     onChromeVisibleChange: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    val exoPlayer = remember(entry.file) {
-        buildExoPlayer(context).apply {
-            setMediaItem(MediaItem.fromUri(entry.file.toUri()))
-            prepare()
-            playWhenReady = true
-        }
-    }
-    DisposableEffect(exoPlayer) { onDispose { exoPlayer.release() } }
-
-    var isBuffering by remember { mutableStateOf(false) }
     var isPlaying by remember { mutableStateOf(true) }
+    var isBuffering by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var positionMs by remember { mutableLongStateOf(0L) }
     var isScrubbing by remember { mutableStateOf(false) }
     var seekFeedback by remember { mutableStateOf<String?>(null) }
+    var textureView by remember { mutableStateOf<TextureView?>(null) }
+    var scrubTargetMs by remember { mutableLongStateOf(0L) }
+    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var wasPlayingBeforeScrub by remember { mutableStateOf(false) }
 
-    DisposableEffect(exoPlayer) {
-        val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                isBuffering = state == Player.STATE_BUFFERING
-                if (state == Player.STATE_READY) durationMs = exoPlayer.duration.coerceAtLeast(0)
-            }
-            override fun onIsPlayingChanged(playing: Boolean) {
-                isPlaying = playing
-            }
-            override fun onPlayerError(error: PlaybackException) {
-                errorMessage = error.errorCodeName.replace('_', ' ').lowercase()
-                    .replaceFirstChar { it.uppercase() }
+    val controller = remember(entry.file) {
+        VlcPlayerController(
+            context = context,
+            file = entry.file,
+            muted = false,
+            repeat = false
+        ) { event ->
+            when (event.type) {
+                org.videolan.libvlc.MediaPlayer.Event.Opening,
+                org.videolan.libvlc.MediaPlayer.Event.Buffering -> isBuffering = true
+                org.videolan.libvlc.MediaPlayer.Event.Playing -> {
+                    isBuffering = false
+                    isPlaying = true
+                }
+                org.videolan.libvlc.MediaPlayer.Event.Paused -> {
+                    isBuffering = false
+                    isPlaying = false
+                }
+                org.videolan.libvlc.MediaPlayer.Event.EndReached -> {
+                    isBuffering = false
+                    isPlaying = false
+                }
+                org.videolan.libvlc.MediaPlayer.Event.EncounteredError -> {
+                    isBuffering = false
+                    isPlaying = false
+                    errorMessage = "VLC could not decode this file"
+                }
             }
         }
-        exoPlayer.addListener(listener)
-        onDispose { exoPlayer.removeListener(listener) }
     }
 
-    // Poll playback position for the scrub bar, except while the user is
-    // actively dragging it (their finger drives the displayed position then).
-    LaunchedEffect(exoPlayer, isScrubbing) {
-        while (!isScrubbing) {
-            positionMs = exoPlayer.currentPosition.coerceAtLeast(0)
-            delay(200)
+    DisposableEffect(controller) {
+        onDispose { controller.release() }
+    }
+
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            TextureView(ctx).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                textureView = this
+                controller.setTextureView(this)
+                controller.attach(this)
+            }
+        },
+        update = { view ->
+            textureView = view
+            controller.setTextureView(view)
+        }
+    )
+
+    LaunchedEffect(controller) {
+        while (isActive) {
+            positionMs = controller.positionMs
+            val newDuration = controller.durationMs
+            if (newDuration > 0) durationMs = newDuration
+            isPlaying = controller.isPlaying
+            isBuffering = durationMs <= 0L && errorMessage == null
+            delay(150)
         }
     }
 
-    // Auto-hide chrome while playing, same as most video apps.
+    // Debounced VLC seeking is also used for the preview frame. This avoids
+    // hammering the decoder on every pointer event while still making the
+    // preview follow the finger closely.
+    LaunchedEffect(isScrubbing, scrubTargetMs) {
+        if (!isScrubbing || durationMs <= 0L) return@LaunchedEffect
+        delay(90)
+        val target = scrubTargetMs.coerceIn(0L, durationMs)
+        controller.seekTo(target)
+        delay(55)
+        previewBitmap = controller.captureFrame()
+    }
+
     LaunchedEffect(chromeVisible, isPlaying, isScrubbing) {
         if (chromeVisible && isPlaying && !isScrubbing) {
             delay(3500)
@@ -260,61 +270,30 @@ private fun VideoPlayer(
     }
 
     fun seekBy(deltaMs: Long) {
-        val duration = if (durationMs > 0) durationMs else Long.MAX_VALUE
-        exoPlayer.seekTo((exoPlayer.currentPosition + deltaMs).coerceIn(0, duration))
+        val target = (controller.positionMs + deltaMs).coerceIn(0L, durationMs.coerceAtLeast(0L))
+        controller.seekTo(target)
+        positionMs = target
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-    ) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    keepScreenOn = true
-                }
-            }
-        )
-
-        // Double-tap zones for ±10s seek; single tap toggles chrome. Kept
-        // clear of the bottom control bar so it never blocks the scrub bar.
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.8f)
+    Box(Modifier.fillMaxSize()) {
+        // The controls are Compose overlays; the TextureView stays isolated
+        // underneath them, preventing the previous PlayerView/controller
+        // layering glitches.
+        Box(
+            Modifier.fillMaxWidth().fillMaxHeight(0.9f),
+            contentAlignment = Alignment.Center
         ) {
             Box(
-                Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .pointerInput(entry.file) {
-                        detectTapGestures(
-                            onTap = { onChromeVisibleChange(!chromeVisible) },
-                            onDoubleTap = {
-                                seekBy(-10_000)
-                                seekFeedback = "⟲ 10s"
-                            }
-                        )
-                    }
-            )
-            Box(
-                Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .pointerInput(entry.file) {
-                        detectTapGestures(
-                            onTap = { onChromeVisibleChange(!chromeVisible) },
-                            onDoubleTap = {
-                                seekBy(10_000)
-                                seekFeedback = "10s ⟳"
-                            }
-                        )
-                    }
+                Modifier.fillMaxSize().pointerInput(entry.file) {
+                    detectTapGestures(
+                        onTap = { onChromeVisibleChange(!chromeVisible) },
+                        onDoubleTap = { point ->
+                            val leftHalf = point.x < size.width / 2f
+                            seekBy(if (leftHalf) -10_000 else 10_000)
+                            seekFeedback = if (leftHalf) "⟲ 10s" else "10s ⟳"
+                        }
+                    )
+                }
             )
         }
 
@@ -326,7 +305,7 @@ private fun VideoPlayer(
 
         errorMessage?.let { message ->
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Surface(color = Color.Black.copy(alpha = 0.75f), shape = RoundedCornerShape(12.dp)) {
+                Surface(color = Color.Black.copy(alpha = 0.78f), shape = RoundedCornerShape(12.dp)) {
                     Text(
                         "Can't play this video\n$message",
                         color = Color.White,
@@ -340,12 +319,7 @@ private fun VideoPlayer(
         seekFeedback?.let { text ->
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Surface(color = Color.Black.copy(alpha = 0.6f), shape = RoundedCornerShape(24.dp)) {
-                    Text(
-                        text,
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
-                    )
+                    Text(text, color = Color.White, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
                 }
             }
         }
@@ -357,17 +331,39 @@ private fun VideoPlayer(
             modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
         ) {
             VideoControlBar(
-                file = entry.file,
                 isPlaying = isPlaying,
-                positionMs = positionMs,
+                positionMs = if (isScrubbing) scrubTargetMs else positionMs,
                 durationMs = durationMs,
-                onPlayPause = { exoPlayer.playWhenReady = !exoPlayer.playWhenReady },
-                onScrubStart = { isScrubbing = true },
-                onScrub = { positionMs = it },
-                onScrubEnd = {
+                isScrubbing = isScrubbing,
+                previewBitmap = previewBitmap,
+                onPlayPause = {
+                    if (controller.isPlaying) controller.pause() else controller.play()
+                },
+                onScrubStart = {
+                    wasPlayingBeforeScrub = controller.isPlaying
+                    controller.pause()
+                    isScrubbing = true
+                    scrubTargetMs = controller.positionMs
+                    positionMs = scrubTargetMs
+                    previewBitmap = controller.captureFrame()
+                    onChromeVisibleChange(true)
+                },
+                onScrub = {
+                    scrubTargetMs = it
                     positionMs = it
-                    exoPlayer.seekTo(it)
+                },
+                onScrubEnd = {
+                    controller.seekTo(it)
+                    positionMs = it
                     isScrubbing = false
+                    previewBitmap = null
+                    if (wasPlayingBeforeScrub) controller.play()
+                },
+                onScrubCancel = {
+                    controller.seekTo(positionMs)
+                    isScrubbing = false
+                    previewBitmap = null
+                    if (wasPlayingBeforeScrub) controller.play()
                 }
             )
         }
@@ -376,32 +372,31 @@ private fun VideoPlayer(
 
 @Composable
 private fun VideoControlBar(
-    file: File,
     isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
+    isScrubbing: Boolean,
+    previewBitmap: Bitmap?,
     onPlayPause: () -> Unit,
     onScrubStart: () -> Unit,
     onScrub: (Long) -> Unit,
-    onScrubEnd: (Long) -> Unit
+    onScrubEnd: (Long) -> Unit,
+    onScrubCancel: () -> Unit
 ) {
     Column(
-        Modifier
-            .fillMaxWidth()
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.85f))
-                )
-            )
-            .padding(top = 32.dp, start = 12.dp, end = 12.dp, bottom = 12.dp)
+        Modifier.fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))))
+            .padding(top = 42.dp, start = 12.dp, end = 12.dp, bottom = 12.dp)
     ) {
         ScrubBar(
-            file = file,
             positionMs = positionMs,
             durationMs = durationMs,
+            isScrubbing = isScrubbing,
+            previewBitmap = previewBitmap,
             onScrubStart = onScrubStart,
             onScrub = onScrub,
-            onScrubEnd = onScrubEnd
+            onScrubEnd = onScrubEnd,
+            onScrubCancel = onScrubCancel
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onPlayPause) {
@@ -422,142 +417,102 @@ private fun VideoControlBar(
 }
 
 /**
- * A custom scrub bar: press and hold, then drag to preview frames at that
- * point in the timeline (fetched via MediaMetadataRetriever, debounced so
- * dragging quickly doesn't spam decode requests), release to seek there.
+ * YouTube-style timeline interaction: the preview does not appear for an
+ * ordinary tap. It appears only after the user holds the timeline long
+ * enough for Compose's long-press detector, then drags left/right.
  */
 @Composable
 private fun ScrubBar(
-    file: File,
     positionMs: Long,
     durationMs: Long,
+    isScrubbing: Boolean,
+    previewBitmap: Bitmap?,
     onScrubStart: () -> Unit,
     onScrub: (Long) -> Unit,
-    onScrubEnd: (Long) -> Unit
+    onScrubEnd: (Long) -> Unit,
+    onScrubCancel: () -> Unit
 ) {
     var trackWidthPx by remember { mutableFloatStateOf(0f) }
-    var isDragging by remember { mutableStateOf(false) }
-    var dragFraction by remember { mutableFloatStateOf(0f) }
-    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
-
-    val retriever = remember(file) {
-        MediaMetadataRetriever().apply {
-            runCatching { setDataSource(file.absolutePath) }
-        }
-    }
-    DisposableEffect(file) { onDispose { retriever.release() } }
-
-    val fraction = if (isDragging) {
-        dragFraction
-    } else if (durationMs > 0) {
-        (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
-    } else {
-        0f
-    }
-
-    LaunchedEffect(isDragging, dragFraction) {
-        if (isDragging && durationMs > 0) {
-            delay(120) // debounce rapid drag movement before decoding a frame
-            val targetUs = (dragFraction * durationMs * 1000).toLong()
-            val bitmap = withContext(Dispatchers.IO) {
-                runCatching {
-                    retriever.getFrameAtTime(targetUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                }.getOrNull()
-            }
-            if (isDragging) previewBitmap = bitmap
-        }
-    }
+    val fraction = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 
     Box(Modifier.fillMaxWidth()) {
-        if (isDragging) {
-            Box(
-                Modifier
-                    .offset {
-                        IntOffset(
-                            (dragFraction * trackWidthPx).roundToInt() - 60.dp.roundToPx(),
-                            -100.dp.roundToPx()
-                        )
-                    }
+        if (isScrubbing) {
+            val previewWidthPx = 180.dp.roundToPx()
+            val rawX = fraction * trackWidthPx - previewWidthPx / 2f
+            val clampedX = rawX.coerceIn(0f, max(0f, trackWidthPx - previewWidthPx))
+
+            Column(
+                modifier = Modifier
+                    .offset { IntOffset(clampedX.roundToInt(), -132.dp.roundToPx()) }
+                    .width(180.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        Modifier
-                            .width(120.dp)
-                            .height(68.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color.DarkGray)
-                    ) {
-                        previewBitmap?.let { bmp ->
-                            Image(
-                                bitmap = bmp.asImageBitmap(),
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
-                    }
-                    Surface(color = Color.Black.copy(alpha = 0.8f), shape = RoundedCornerShape(4.dp)) {
-                        Text(
-                            formatTime((dragFraction * durationMs).toLong()),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                Box(
+                    Modifier.width(180.dp).height(102.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF202124))
+                ) {
+                    previewBitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Video preview",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
+                }
+                Surface(color = Color.Black.copy(alpha = 0.9f), shape = RoundedCornerShape(5.dp)) {
+                    Text(
+                        formatTime(positionMs),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                    )
                 }
             }
         }
 
         Box(
-            Modifier
-                .fillMaxWidth()
-                .height(28.dp)
+            Modifier.fillMaxWidth().height(36.dp)
                 .onGloballyPositioned { trackWidthPx = it.size.width.toFloat() }
                 .pointerInput(durationMs) {
-                    detectDragGestures(
+                    detectDragGesturesAfterLongPress(
                         onDragStart = { offset ->
-                            isDragging = true
-                            dragFraction = (offset.x / trackWidthPx).coerceIn(0f, 1f)
-                            onScrubStart()
+                            if (durationMs > 0 && trackWidthPx > 0) {
+                                val fractionAtStart = (offset.x / trackWidthPx).coerceIn(0f, 1f)
+                                onScrubStart()
+                                onScrub((fractionAtStart * durationMs).toLong())
+                            }
                         },
                         onDragEnd = {
-                            onScrubEnd((dragFraction * durationMs).toLong())
-                            isDragging = false
+                            if (durationMs > 0) onScrubEnd(positionMs.coerceIn(0L, durationMs))
                         },
-                        onDragCancel = { isDragging = false }
-                    ) { change, _ ->
-                        change.consume()
-                        dragFraction = (change.position.x / trackWidthPx).coerceIn(0f, 1f)
-                        onScrub((dragFraction * durationMs).toLong())
-                    }
+                        onDragCancel = onScrubCancel,
+                        onDrag = { change, _ ->
+                            change.consume()
+                            if (durationMs > 0 && trackWidthPx > 0) {
+                                val fractionAtFinger = (change.position.x / trackWidthPx).coerceIn(0f, 1f)
+                                onScrub((fractionAtFinger * durationMs).toLong())
+                            }
+                        }
+                    )
                 },
             contentAlignment = Alignment.CenterStart
         ) {
             Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
+                Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp))
                     .background(Color.White.copy(alpha = 0.3f))
             )
             Box(
-                Modifier
-                    .fillMaxWidth(fraction)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
+                Modifier.fillMaxWidth(fraction).height(4.dp).clip(RoundedCornerShape(2.dp))
                     .background(MaterialTheme.colorScheme.primary)
             )
             Box(
-                Modifier
-                    .offset {
-                        IntOffset((fraction * trackWidthPx).roundToInt() - 8.dp.roundToPx(), 0)
-                    }
-                    .size(16.dp)
+                Modifier.offset { IntOffset((fraction * trackWidthPx).roundToInt() - 8.dp.roundToPx(), 0) }
+                    .size(if (isScrubbing) 20.dp else 16.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary)
             )
         }
     }
 }
-
-private fun File.toUri(): android.net.Uri = android.net.Uri.fromFile(this)
