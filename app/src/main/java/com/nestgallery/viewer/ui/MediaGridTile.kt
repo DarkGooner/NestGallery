@@ -32,11 +32,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.nestgallery.viewer.data.DocEntry
-import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
+import com.nestgallery.viewer.data.buildExoPlayer
 
 /**
  * Grid tile shared by the regular browser and the recursive explorer, so
@@ -184,7 +183,7 @@ fun HoldPreviewOverlay(entry: DocEntry) {
 private fun HoldPreviewVideo(entry: DocEntry) {
     val context = LocalContext.current
     val exoPlayer = remember(entry.file) {
-        ExoPlayer.Builder(context, NextRenderersFactory(context)).build().apply {
+        buildExoPlayer(context).apply {
             setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(entry.file)))
             volume = 0f
             repeatMode = Player.REPEAT_MODE_ONE
