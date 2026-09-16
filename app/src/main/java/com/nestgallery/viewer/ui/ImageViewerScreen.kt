@@ -61,6 +61,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -433,17 +434,20 @@ private fun ScrubBar(
     onScrubCancel: () -> Unit
 ) {
     var trackWidthPx by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val previewWidthPx = with(density) { 180.dp.roundToPx() }
+    val previewTopOffsetPx = with(density) { 132.dp.roundToPx() }
+    val thumbRadiusPx = with(density) { 8.dp.roundToPx() }
     val fraction = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 
     Box(Modifier.fillMaxWidth()) {
         if (isScrubbing) {
-            val previewWidthPx = 180.dp.roundToPx()
             val rawX = fraction * trackWidthPx - previewWidthPx / 2f
             val clampedX = rawX.coerceIn(0f, max(0f, trackWidthPx - previewWidthPx))
 
             Column(
                 modifier = Modifier
-                    .offset { IntOffset(clampedX.roundToInt(), -132.dp.roundToPx()) }
+                    .offset { IntOffset(clampedX.roundToInt(), -previewTopOffsetPx) }
                     .width(180.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -508,7 +512,7 @@ private fun ScrubBar(
                     .background(MaterialTheme.colorScheme.primary)
             )
             Box(
-                Modifier.offset { IntOffset((fraction * trackWidthPx).roundToInt() - 8.dp.roundToPx(), 0) }
+                Modifier.offset { IntOffset((fraction * trackWidthPx).roundToInt() - thumbRadiusPx, 0) }
                     .size(if (isScrubbing) 20.dp else 16.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary)
