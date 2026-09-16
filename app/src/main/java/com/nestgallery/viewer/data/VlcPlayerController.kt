@@ -24,7 +24,8 @@ class VlcPlayerController(
     private val file: File,
     private val muted: Boolean = false,
     private val repeat: Boolean = false,
-    private val onEvent: ((MediaPlayer.Event) -> Unit)? = null
+    private val onEvent: ((MediaPlayer.Event) -> Unit)? = null,
+    private val onAttachError: (() -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "NestGalleryVLC"
@@ -93,9 +94,17 @@ class VlcPlayerController(
             media.release()
             mediaPlayer.play()
         } catch (t: Throwable) {
+            // Never let a playback/open failure escape attach(): it's called
+            // directly from the Compose AndroidView factory, so an uncaught
+            // throwable here would crash the whole app instead of just
+            // failing this one video. Report it as an error event instead.
             Log.e(TAG, "Failed to attach/play: ${file.absolutePath}", t)
             runCatching { mediaPlayer.stop() }
-            throw t
+            if (!released) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    if (!released) onAttachError?.invoke()
+                }
+            }
         }
     }
 
