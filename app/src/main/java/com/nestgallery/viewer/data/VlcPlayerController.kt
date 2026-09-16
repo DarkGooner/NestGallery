@@ -2,6 +2,7 @@ package com.nestgallery.viewer.data
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
 import android.net.Uri
 import android.util.Log
 import android.view.TextureView
@@ -84,6 +85,24 @@ class VlcPlayerController(
             vout.setVideoView(view)
             vout.attachViews()
 
+            // Unlike SurfaceView, a TextureView's pixel size is never pushed
+            // to VLC automatically. Without this, SURFACE_BEST_FIT scales
+            // against a stale/zero size and the frame renders small and
+            // pinned to one corner instead of centered/filling the view.
+            view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                    if (!released) vout.setWindowSize(width, height)
+                }
+                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+                    if (!released) vout.setWindowSize(width, height)
+                }
+                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
+                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+            }
+            if (view.isAvailable && view.width > 0 && view.height > 0) {
+                vout.setWindowSize(view.width, view.height)
+            }
+
             val media = Media(libVlc, Uri.fromFile(file))
             // Start with software decoding. This is the compatibility path for
             // legacy AVI codecs and avoids device-specific MediaCodec crashes.
@@ -154,6 +173,7 @@ class VlcPlayerController(
         if (released) return
         released = true
 
+        runCatching { textureView?.surfaceTextureListener = null }
         runCatching {
             if (mediaPlayer.getVLCVout().areViewsAttached()) {
                 mediaPlayer.getVLCVout().detachViews()
