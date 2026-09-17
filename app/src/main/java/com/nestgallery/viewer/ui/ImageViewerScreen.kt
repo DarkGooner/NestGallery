@@ -359,8 +359,20 @@ private fun VideoPlayer(
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f))) {
-                Box(Modifier.statusBarsPadding().padding(8.dp)) {
+            Box(Modifier.fillMaxSize()) {
+                // Gradient scrims top and bottom only, fading to clear in the
+                // middle - keeps the picture visible while adjusting things,
+                // instead of a flat dim over the whole frame.
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                        .align(Alignment.TopCenter)
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)))
+                )
+                Box(
+                    Modifier.statusBarsPadding().padding(8.dp)
+                ) {
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                     }
@@ -450,6 +462,12 @@ private fun VideoControlBar(
             Text(
                 "${formatTime(positionMs)} / ${formatTime(durationMs)}",
                 color = Color.White,
+                style = MaterialTheme.typography.labelMedium
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                "-${formatTime((durationMs - positionMs).coerceAtLeast(0L))}",
+                color = Color.White.copy(alpha = 0.7f),
                 style = MaterialTheme.typography.labelMedium
             )
         }

@@ -3,10 +3,7 @@ package com.nestgallery.viewer.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.material.ExperimentalMaterialApi
-import androidx.compose.material.pullrefresh.PullRefreshIndicator
-import androidx.compose.material.pullrefresh.pullRefresh
-import androidx.compose.material.pullrefresh.rememberPullRefreshState
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -76,7 +73,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryScreen(
     pathStack: List<DocEntry>,
@@ -138,21 +135,6 @@ fun GalleryScreen(
     var refreshing by remember { mutableStateOf(false) }
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
     val coroutineScope = rememberCoroutineScope()
-    val pullRefreshState = rememberPullRefreshState(
-        refreshing = refreshing,
-        onRefresh = {
-            coroutineScope.launch {
-                refreshing = true
-                val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden) }
-                GalleryCache.putEntries(cacheKey, loaded)
-                // Also clear cached item counts for the folders shown here, so
-                // a pull-to-refresh picks up any changes inside them too.
-                loaded.filter { it.isDirectory }.forEach { GalleryCache.invalidate(it.file.absolutePath) }
-                entries = loaded
-                refreshing = false
-            }
-        }
-    )
 
     Scaffold(
         topBar = {
@@ -203,13 +185,26 @@ fun GalleryScreen(
         }
     ) { padding ->
         val currentEntries = entries
-        
-        Box(
-            Modifier
+
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = {
+                coroutineScope.launch {
+                    refreshing = true
+                    val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden) }
+                    GalleryCache.putEntries(cacheKey, loaded)
+                    // Also clear cached item counts for the folders shown here, so
+                    // a pull-to-refresh picks up any changes inside them too.
+                    loaded.filter { it.isDirectory }.forEach { GalleryCache.invalidate(it.file.absolutePath) }
+                    entries = loaded
+                    refreshing = false
+                }
+            },
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .pullRefresh(pullRefreshState)
         ) {
+        Box(Modifier.fillMaxSize()) {
             if (currentEntries == null) {
                 Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
@@ -283,15 +278,10 @@ fun GalleryScreen(
                 )
             }
 
-            PullRefreshIndicator(
-                refreshing = refreshing,
-                state = pullRefreshState,
-                modifier = Modifier.align(Alignment.TopCenter)
-            )
-
             previewEntry?.let { entry ->
                 HoldPreviewOverlay(entry = entry)
             }
+        }
         }
     }
 }
