@@ -167,10 +167,12 @@ class VlcPlayerController(
     val isPlaying: Boolean
         get() = !released && runCatching { mediaPlayer.isPlaying }.getOrDefault(false)
 
-    fun captureFrame(width: Int = 360, height: Int = 202): Bitmap? {
+    fun captureFrame(targetWidth: Int = 360): Bitmap? {
         val view = textureView ?: return null
         if (!view.isAvailable || view.width <= 0 || view.height <= 0) return null
-        return runCatching { view.getBitmap(width, height) }.getOrNull()
+        val targetHeight = (targetWidth.toFloat() * view.height / view.width).toInt()
+        if (targetHeight <= 0) return null
+        return runCatching { view.getBitmap(targetWidth, targetHeight) }.getOrNull()
     }
 
     fun setTextureView(view: TextureView?) {

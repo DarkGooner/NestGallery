@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.ArrowBack
@@ -202,6 +203,7 @@ fun GalleryScreen(
         }
     ) { padding ->
         val currentEntries = entries
+        
         Box(
             Modifier
                 .fillMaxSize()
@@ -209,11 +211,11 @@ fun GalleryScreen(
                 .pullRefresh(pullRefreshState)
         ) {
             if (currentEntries == null) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             } else if (currentEntries.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
                     Text("Nothing here", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else if (listMode) {

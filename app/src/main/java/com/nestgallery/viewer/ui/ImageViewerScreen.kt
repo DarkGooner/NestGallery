@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -62,6 +63,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -74,6 +76,7 @@ import com.nestgallery.viewer.data.VlcPlayerController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.CancellationException
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -343,7 +346,7 @@ private fun VideoPlayer(
         }
 
         seekFeedback?.let { text ->
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().padding(top = 100.dp), contentAlignment = Alignment.TopCenter) {
                 Surface(color = Color.Black.copy(alpha = 0.6f), shape = RoundedCornerShape(24.dp)) {
                     Text(text, color = Color.White, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
                 }
@@ -356,19 +359,34 @@ private fun VideoPlayer(
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
-            Box(Modifier.fillMaxSize()) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f))) {
                 Box(Modifier.statusBarsPadding().padding(8.dp)) {
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                     }
                 }
+                
+                // Centered Play/Pause button
+                IconButton(
+                    onClick = { if (controller.isPlaying) controller.pause() else controller.play() },
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(72.dp)
+                        .background(Color.Black.copy(alpha = 0.3f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = Color.White,
+                        modifier = Modifier.size(48.dp)
+                    )
+                }
+
                 VideoControlBar(
-                    isPlaying = isPlaying,
                     positionMs = if (isScrubbing) scrubTargetMs else positionMs,
                     durationMs = durationMs,
                     isScrubbing = isScrubbing,
                     previewBitmap = previewBitmap,
-                    onPlayPause = { if (controller.isPlaying) controller.pause() else controller.play() },
                     onScrubStart = {
                         wasPlayingBeforeScrub = controller.isPlaying
                         controller.pause()
@@ -408,12 +426,10 @@ private fun VideoPlayer(
 
 @Composable
 private fun VideoControlBar(
-    isPlaying: Boolean,
     positionMs: Long,
     durationMs: Long,
     isScrubbing: Boolean,
     previewBitmap: Bitmap?,
-    onPlayPause: () -> Unit,
     onScrubStart: () -> Unit,
     onScrub: (Long) -> Unit,
     onScrubEnd: (Long) -> Unit,
@@ -424,8 +440,19 @@ private fun VideoControlBar(
     Column(
         modifier
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))))
-            .padding(top = 42.dp, start = 12.dp, end = 12.dp, bottom = 12.dp)
+            .navigationBarsPadding()
+            .padding(top = 16.dp, start = 16.dp, end = 16.dp, bottom = 12.dp)
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "${formatTime(positionMs)} / ${formatTime(durationMs)}",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium
+            )
+        }
         ScrubBar(
             positionMs = positionMs,
             durationMs = durationMs,
@@ -437,27 +464,6 @@ private fun VideoControlBar(
             onScrubCancel = onScrubCancel,
             onSeekTo = onSeekTo
         )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onPlayPause) {
-                Icon(
-                    if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (isPlaying) "Pause" else "Play",
-                    tint = Color.White,
-                    modifier = Modifier.size(32.dp)
-                )
-            }
-            Text(
-                "${formatTime(positionMs)} / ${formatTime(durationMs)}",
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                "-${formatTime((durationMs - positionMs).coerceAtLeast(0L))}",
-                color = Color.White.copy(alpha = 0.75f),
-                style = MaterialTheme.typography.labelSmall
-            )
-        }
     }
 }
 
@@ -493,6 +499,12 @@ private fun ScrubBar(
 
             Column(
                 modifier = Modifier
+                    .layout { measurable, constraints ->
+                        val placeable = measurable.measure(constraints)
+                        layout(0, 0) {
+                            placeable.place(0, 0)
+                        }
+                    }
                     .offset { IntOffset(clampedX.roundToInt(), -previewTopOffsetPx) }
                     .width(180.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -564,20 +576,28 @@ private fun ScrubBar(
                             onScrubStart()
                             onScrub(((downX / trackWidthPx).coerceIn(0f, 1f) * durationMs).toLong())
 
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val change = event.changes.firstOrNull { it.id == down.id }
-                                if (change == null) {
-                                    onScrubCancel()
-                                    break
+                            try {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                    if (change == null || change.isConsumed) {
+                                        onScrubCancel()
+                                        break
+                                    }
+                                    change.consume()
+                                    val fraction = (change.position.x / trackWidthPx).coerceIn(0f, 1f)
+                                    if (change.changedToUp()) {
+                                        onScrubEnd((fraction * durationMs).toLong())
+                                        break
+                                    }
+                                    onScrub((fraction * durationMs).toLong())
                                 }
-                                change.consume()
-                                val fraction = (change.position.x / trackWidthPx).coerceIn(0f, 1f)
-                                if (change.changedToUp()) {
-                                    onScrubEnd((fraction * durationMs).toLong())
-                                    break
-                                }
-                                onScrub((fraction * durationMs).toLong())
+                            } catch (e: CancellationException) {
+                                onScrubCancel()
+                                throw e
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                onScrubCancel()
+                                throw e
                             }
                         }
                     }
@@ -585,16 +605,18 @@ private fun ScrubBar(
             contentAlignment = Alignment.CenterStart
         ) {
             Box(
-                Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp))
+                Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(1.5.dp))
                     .background(Color.White.copy(alpha = 0.3f))
             )
-            Box(
-                Modifier.fillMaxWidth(fraction).height(4.dp).clip(RoundedCornerShape(2.dp))
-                    .background(MaterialTheme.colorScheme.primary)
-            )
+            if (fraction > 0f) {
+                Box(
+                    Modifier.fillMaxWidth(fraction).height(3.dp).clip(RoundedCornerShape(1.5.dp))
+                        .background(MaterialTheme.colorScheme.primary)
+                )
+            }
             Box(
                 Modifier.offset { IntOffset((fraction * trackWidthPx).roundToInt() - thumbRadiusPx, 0) }
-                    .size(if (isScrubbing) 20.dp else 16.dp)
+                    .size(if (isScrubbing) 20.dp else 14.dp)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.primary)
             )
