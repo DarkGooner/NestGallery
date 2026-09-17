@@ -10,7 +10,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
@@ -58,6 +59,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -71,6 +73,7 @@ import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.VlcPlayerController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -291,9 +294,11 @@ private fun VideoPlayer(
             }
         )
 
-        // Tap toggles chrome; double-tap on either half seeks ±10s. Kept to
-        // the top ~80% of the screen so it never sits over the control bar.
-        Row(Modifier.fillMaxWidth().fillMaxHeight(0.8f)) {
+        // Tap toggles chrome; double-tap on either half seeks ±10s. Spans
+        // the full screen - the control bar below is declared later in this
+        // Box, so it still wins touches over its own area regardless of any
+        // overlap; no need to guess a safe height fraction here.
+        Row(Modifier.fillMaxSize()) {
             Box(
                 Modifier.weight(1f).fillMaxHeight().pointerInput(entry.file) {
                     detectTapGestures(
@@ -456,6 +461,8 @@ private fun VideoControlBar(
     }
 }
 
+private enum class ScrubOutcome { TAP, DRAG, CANCELLED }
+
 /**
  * YouTube-style timeline: an ordinary tap on the track seeks immediately;
  * holding it down and dragging shows the frame-preview scrubber instead.
@@ -519,34 +526,61 @@ private fun ScrubBar(
             Modifier.fillMaxWidth().height(36.dp)
                 .onGloballyPositioned { trackWidthPx = it.size.width.toFloat() }
                 .pointerInput(durationMs) {
-                    detectTapGestures { offset ->
-                        if (durationMs > 0 && trackWidthPx > 0) {
-                            val tapFraction = (offset.x / trackWidthPx).coerceIn(0f, 1f)
-                            onSeekTo((tapFraction * durationMs).toLong())
+                    // A single gesture handler, not two separate detectors
+                    // competing for the same touch stream (that was the bug:
+                    // a tap detector and a long-press-drag detector attached
+                    // independently to the same box can starve each other,
+                    // since Compose delivers the same raw events to both and
+                    // whichever consumes first can prevent the other from
+                    // ever recognizing its gesture). This races a quick
+                    // release / real movement against the long-press
+                    // threshold itself, so exactly one outcome ever happens.
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        if (trackWidthPx <= 0f) return@awaitEachGesture
+                        val downX = down.position.x
+
+                        val outcome = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                    ?: return@withTimeoutOrNull ScrubOutcome.CANCELLED
+                                if (change.changedToUp()) return@withTimeoutOrNull ScrubOutcome.TAP
+                                if (kotlin.math.abs(change.position.x - downX) > viewConfiguration.touchSlop) {
+                                    return@withTimeoutOrNull ScrubOutcome.DRAG
+                                }
+                            }
+                            @Suppress("UNREACHABLE_CODE") ScrubOutcome.CANCELLED
+                        }
+                        // null means the timeout itself elapsed - still held,
+                        // no tap/drag/cancel seen yet, so treat it as a hold.
+                        val isDragMode = outcome == null || outcome == ScrubOutcome.DRAG
+
+                        if (outcome == ScrubOutcome.TAP && durationMs > 0) {
+                            onSeekTo(((downX / trackWidthPx).coerceIn(0f, 1f) * durationMs).toLong())
+                        }
+
+                        if (isDragMode && durationMs > 0) {
+                            onScrubStart()
+                            onScrub(((downX / trackWidthPx).coerceIn(0f, 1f) * durationMs).toLong())
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                if (change == null) {
+                                    onScrubCancel()
+                                    break
+                                }
+                                change.consume()
+                                val fraction = (change.position.x / trackWidthPx).coerceIn(0f, 1f)
+                                if (change.changedToUp()) {
+                                    onScrubEnd((fraction * durationMs).toLong())
+                                    break
+                                }
+                                onScrub((fraction * durationMs).toLong())
+                            }
                         }
                     }
-                }
-                .pointerInput(durationMs) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { offset ->
-                            if (durationMs > 0 && trackWidthPx > 0) {
-                                val fractionAtStart = (offset.x / trackWidthPx).coerceIn(0f, 1f)
-                                onScrubStart()
-                                onScrub((fractionAtStart * durationMs).toLong())
-                            }
-                        },
-                        onDragEnd = {
-                            if (durationMs > 0) onScrubEnd(positionMs.coerceIn(0L, durationMs))
-                        },
-                        onDragCancel = onScrubCancel,
-                        onDrag = { change, _ ->
-                            change.consume()
-                            if (durationMs > 0 && trackWidthPx > 0) {
-                                val fractionAtFinger = (change.position.x / trackWidthPx).coerceIn(0f, 1f)
-                                onScrub((fractionAtFinger * durationMs).toLong())
-                            }
-                        }
-                    )
                 },
             contentAlignment = Alignment.CenterStart
         ) {
