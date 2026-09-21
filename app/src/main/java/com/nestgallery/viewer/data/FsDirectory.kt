@@ -32,6 +32,48 @@ private fun isVideoName(name: String) = name.extension() in videoExtensions
 /** True for dotfiles/dotfolders - the standard Unix/Android "hidden" convention. */
 private fun isHiddenName(name: String) = name.startsWith(".")
 
+private val chunkRegex = Regex("\\d+|\\D+")
+
+/**
+ * "Natural" filename comparison: runs of digits compare by numeric value
+ * rather than character-by-character, so "day2" sorts before "day11" (plain
+ * string comparison would put "day11" first, since '1' < '2'). Handles
+ * names with several numeric runs the same way, e.g. "day1_1_0" before
+ * "day11_1_0", and arbitrarily long digit runs without integer overflow by
+ * comparing them as strings once leading zeros are stripped and lengths
+ * are equalized.
+ */
+fun naturalCompare(a: String, b: String): Int {
+    val aChunks = chunkRegex.findAll(a).iterator()
+    val bChunks = chunkRegex.findAll(b).iterator()
+
+    while (aChunks.hasNext() && bChunks.hasNext()) {
+        val ac = aChunks.next().value
+        val bc = bChunks.next().value
+
+        val cmp = if (ac[0].isDigit() && bc[0].isDigit()) {
+            val aTrimmed = ac.trimStart('0').ifEmpty { "0" }
+            val bTrimmed = bc.trimStart('0').ifEmpty { "0" }
+            if (aTrimmed.length != bTrimmed.length) {
+                aTrimmed.length - bTrimmed.length
+            } else {
+                aTrimmed.compareTo(bTrimmed)
+            }
+        } else {
+            ac.compareTo(bc, ignoreCase = true)
+        }
+        if (cmp != 0) return cmp
+    }
+
+    return when {
+        aChunks.hasNext() -> 1
+        bChunks.hasNext() -> -1
+        else -> 0
+    }
+}
+
+private val byNaturalName = Comparator<DocEntry> { a, b -> naturalCompare(a.name, b.name) }
+
 /**
  * Lists the folders and media files directly inside [dir], folders first,
  * alphabetically. When [hideHidden] is true, dotfiles/dotfolders are
@@ -50,7 +92,7 @@ fun listFolderFast(dir: File, hideHidden: Boolean): List<DocEntry> {
     }
 
     return result.sortedWith(
-        compareByDescending<DocEntry> { it.isDirectory }.thenBy { it.name.lowercase() }
+        compareByDescending<DocEntry> { it.isDirectory }.then(byNaturalName)
     )
 }
 
@@ -87,7 +129,7 @@ fun exploreMediaFlow(root: File, hideHidden: Boolean): Flow<List<DocEntry>> = fl
     while (queue.isNotEmpty()) {
         currentCoroutineContext().ensureActive()
         val dir = queue.removeFirst()
-        val children = dir.listFiles() ?: continue
+        val children = (dir.listFiles() ?: continue).sortedWith { x, y -> naturalCompare(x.name, y.name) }
 
         for (f in children) {
             currentCoroutineContext().ensureActive()
