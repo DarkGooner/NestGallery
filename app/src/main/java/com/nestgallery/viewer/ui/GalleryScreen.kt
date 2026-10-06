@@ -26,13 +26,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Label
+import androidx.compose.material.icons.automirrored.filled.LabelOff
 import androidx.compose.material.icons.filled.AccountTree
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Label
-import androidx.compose.material.icons.filled.LabelOff
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ViewAgenda
@@ -91,7 +91,6 @@ fun GalleryScreen(
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onExploreFolder: (DocEntry) -> Unit,
     onSearch: (DocEntry) -> Unit,
-    onOpenPeople: () -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
 ) {
@@ -149,14 +148,11 @@ fun GalleryScreen(
                     navigationIcon = {
                         if (canGoBack) {
                             IconButton(onClick = onBack) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
                         }
                     },
                     actions = {
-                        IconButton(onClick = onOpenPeople) {
-                            Icon(Icons.Default.Face, contentDescription = "People & Pets")
-                        }
                         IconButton(onClick = { onSearch(current) }) {
                             Icon(Icons.Default.Search, contentDescription = "Search images & videos")
                         }
@@ -165,7 +161,7 @@ fun GalleryScreen(
                         }
                         IconButton(onClick = onToggleShowNames) {
                             Icon(
-                                if (showNames) Icons.Default.Label else Icons.Default.LabelOff,
+                                if (showNames) Icons.AutoMirrored.Filled.Label else Icons.AutoMirrored.Filled.LabelOff,
                                 contentDescription = "Toggle filenames"
                             )
                         }

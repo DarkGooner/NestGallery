@@ -89,7 +89,6 @@ fun SearchScreen(
     listMode: Boolean,
     onToggleViewMode: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
-    onOpenFaceSearch: () -> Unit,
     onBack: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
@@ -187,9 +186,6 @@ fun SearchScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onOpenFaceSearch) {
-                        Icon(Icons.Default.PersonSearch, contentDescription = "Search by Face")
-                    }
                     IconButton(onClick = { recursive = !recursive }) {
                         Icon(
                             if (recursive) Icons.Default.AccountTree else Icons.Default.Folder,
@@ -214,22 +210,11 @@ fun SearchScreen(
             when {
                 debouncedQuery.isEmpty() -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(24.dp)
-                        ) {
-                            Text(
-                                if (recursive) "Type to search ${root.name} and its subfolders"
-                                else "Type to search ${root.name}",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(16.dp))
-                            FilledTonalButton(onClick = onOpenFaceSearch) {
-                                Icon(Icons.Default.PersonSearch, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Find by Face")
-                            }
-                        }
+                        Text(
+                            if (recursive) "Type to search ${root.name} and its subfolders"
+                            else "Type to search ${root.name}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 results.isEmpty() && !scanning -> {

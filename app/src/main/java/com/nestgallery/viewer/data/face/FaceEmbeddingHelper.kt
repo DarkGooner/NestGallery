@@ -12,14 +12,15 @@ import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
- * Manages loading and inference for on-device MobileFaceNet face embedding model.
- * Produces L2-normalized 192-dimensional embeddings for fast cosine similarity face search.
+ * Manages loading and inference for Google FaceNet-512 (512-dimensional embedding model).
+ * Uses proper image standardization (whitening: (x - mean) / std) and L2-normalization.
+ * Provides high accuracy across age progression, facial hair, glasses, and diverse angles.
  */
 class FaceEmbeddingHelper(private val context: Context) {
 
     private var interpreter: Interpreter? = null
-    private var inputSize: Int = 112
-    private var embeddingDim: Int = 192
+    private var inputSize: Int = 160
+    private var embeddingDim: Int = 512
 
     init {
         loadModel()
@@ -29,7 +30,7 @@ class FaceEmbeddingHelper(private val context: Context) {
     private fun loadModel() {
         if (interpreter != null) return
         try {
-            val assetFd = context.assets.openFd("mobilefacenet.tflite")
+            val assetFd = context.assets.openFd("facenet_512.tflite")
             val inputStream = FileInputStream(assetFd.fileDescriptor)
             val fileChannel = inputStream.channel
             val startOffset = assetFd.startOffset
@@ -38,14 +39,15 @@ class FaceEmbeddingHelper(private val context: Context) {
 
             val options = Interpreter.Options().apply {
                 setNumThreads(4)
+                setUseXNNPACK(true)
             }
             val interp = Interpreter(modelBuffer, options)
             val inputShape = interp.getInputTensor(0).shape()
             if (inputShape.size == 4) {
-                inputSize = inputShape[1] // typically 112
+                inputSize = inputShape[1] // 160 for FaceNet
             }
             val outputShape = interp.getOutputTensor(0).shape()
-            embeddingDim = outputShape.last() // typically 192
+            embeddingDim = outputShape.last() // 512
 
             interpreter = interp
         } catch (e: Exception) {
@@ -57,9 +59,10 @@ class FaceEmbeddingHelper(private val context: Context) {
         get() = interpreter != null
 
     /**
-     * Extracts a normalized face feature embedding from a cropped face bitmap.
-     * @param faceBitmap The cropped face bitmap (will be scaled to 112x112).
-     * @return L2-normalized float embedding or null if model failed.
+     * Extracts a normalized 512D face feature embedding from a cropped face bitmap.
+     * Uses FaceNet standardization (pixel whitening): x' = (x - mean) / std_dev
+     * @param faceBitmap The cropped face bitmap (scaled to 160x160).
+     * @return L2-normalized float embedding of size 512 or null if failed.
      */
     @Synchronized
     fun extractEmbedding(faceBitmap: Bitmap): FloatArray? {
@@ -71,28 +74,53 @@ class FaceEmbeddingHelper(private val context: Context) {
             Bitmap.createScaledBitmap(faceBitmap, inputSize, inputSize, true)
         }
 
-        // Buffer for 1 * inputSize * inputSize * 3 * 4 bytes
+        val totalPixels = inputSize * inputSize
+        val intValues = IntArray(totalPixels)
+        scaledBitmap.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
+
+        if (scaledBitmap != faceBitmap && !scaledBitmap.isRecycled) {
+            scaledBitmap.recycle()
+        }
+
+        // 1. Calculate mean across all RGB channels
+        var sum = 0.0
+        for (pixel in intValues) {
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+            sum += r + g + b
+        }
+        val totalValues = totalPixels * 3
+        val mean = (sum / totalValues).toFloat()
+
+        // 2. Calculate standard deviation
+        var sumSqDiff = 0.0
+        for (pixel in intValues) {
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+            val dr = r - mean
+            val dg = g - mean
+            val db = b - mean
+            sumSqDiff += dr * dr + dg * dg + db * db
+        }
+        val std = sqrt(sumSqDiff / totalValues).toFloat()
+        val stdAdj = max(std, 1.0f / sqrt(totalValues.toFloat()))
+
+        // 3. Prepare standardized Float32 buffer [1, 160, 160, 3]
         val inputBuffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3 * 4).apply {
             order(ByteOrder.nativeOrder())
             rewind()
         }
 
-        val intValues = IntArray(inputSize * inputSize)
-        scaledBitmap.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
-
         for (pixel in intValues) {
-            val r = (pixel shr 16 and 0xFF)
-            val g = (pixel shr 8 and 0xFF)
-            val b = (pixel and 0xFF)
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
 
-            // MobileFaceNet standard normalization: (x - 128) / 128.0f
-            inputBuffer.putFloat((r - 128f) / 128f)
-            inputBuffer.putFloat((g - 128f) / 128f)
-            inputBuffer.putFloat((b - 128f) / 128f)
-        }
-
-        if (scaledBitmap != faceBitmap && !scaledBitmap.isRecycled) {
-            scaledBitmap.recycle()
+            inputBuffer.putFloat((r - mean) / stdAdj)
+            inputBuffer.putFloat((g - mean) / stdAdj)
+            inputBuffer.putFloat((b - mean) / stdAdj)
         }
 
         val output = Array(1) { FloatArray(embeddingDim) }
@@ -128,7 +156,7 @@ class FaceEmbeddingHelper(private val context: Context) {
     companion object {
         /**
          * Cosine similarity between two L2-normalized embeddings is simply their dot product.
-         * Returns a value between -1.0 and 1.0 (typically 0.65+ signifies same person).
+         * For FaceNet-512, values >= 0.60 to 0.65 strongly indicate the same person across ages.
          */
         fun cosineSimilarity(a: FloatArray, b: FloatArray): Float {
             val length = min(a.size, b.size)

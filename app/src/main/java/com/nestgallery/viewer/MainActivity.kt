@@ -47,8 +47,7 @@ import com.nestgallery.viewer.ui.ExploreScreen
 import com.nestgallery.viewer.ui.GalleryScreen
 import com.nestgallery.viewer.ui.ImageViewerScreen
 import com.nestgallery.viewer.ui.SearchScreen
-import com.nestgallery.viewer.ui.face.FaceSearchScreen
-import com.nestgallery.viewer.ui.face.PeopleScreen
+import com.nestgallery.viewer.ui.face.FolderFaceScreen
 import com.nestgallery.viewer.ui.face.PersonDetailScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
 
@@ -58,13 +57,8 @@ private sealed class Screen {
     data class Explore(val root: DocEntry) : Screen()
     data class Search(val root: DocEntry, val returnTo: Screen) : Screen()
     data class Viewer(val images: List<DocEntry>, val startIndex: Int, val returnTo: Screen) : Screen()
-    data class People(val returnTo: Screen) : Screen()
-    data class PersonDetail(val personId: Long, val returnTo: Screen) : Screen()
-    data class FaceSearch(
-        val initialQueryFile: File? = null,
-        val initialFaceBitmap: Bitmap? = null,
-        val returnTo: Screen
-    ) : Screen()
+    data class FolderFaces(val root: DocEntry, val files: List<DocEntry>, val returnTo: Screen) : Screen()
+    data class PersonDetail(val personId: Long, val folderPath: String? = null, val returnTo: Screen) : Screen()
 }
 
 private fun hasStorageAccess(): Boolean {
@@ -176,22 +170,16 @@ private fun NestGalleryApp() {
             screen = searchScreen.returnTo
         }
     }
-    val peopleScreen = screen as? Screen.People
-    if (peopleScreen != null) {
+    val folderFacesScreen = screen as? Screen.FolderFaces
+    if (folderFacesScreen != null) {
         BackHandler {
-            screen = peopleScreen.returnTo
+            screen = folderFacesScreen.returnTo
         }
     }
     val personDetailScreen = screen as? Screen.PersonDetail
     if (personDetailScreen != null) {
         BackHandler {
             screen = personDetailScreen.returnTo
-        }
-    }
-    val faceSearchScreen = screen as? Screen.FaceSearch
-    if (faceSearchScreen != null) {
-        BackHandler {
-            screen = faceSearchScreen.returnTo
         }
     }
 
@@ -214,7 +202,6 @@ private fun NestGalleryApp() {
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onExploreFolder = { folder -> screen = Screen.Explore(folder) },
                     onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
-                    onOpenPeople = { screen = Screen.People(returnTo = s) },
                     onBack = { if (pathStack.size > 1) pathStack = pathStack.dropLast(1) },
                     canGoBack = pathStack.size > 1
                 )
@@ -230,7 +217,9 @@ private fun NestGalleryApp() {
                     onToggleShowNames = { showNames = !showNames },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
-                    onOpenPeople = { screen = Screen.People(returnTo = s) },
+                    onOpenFaces = { root, files ->
+                        screen = Screen.FolderFaces(root = root, files = files, returnTo = s)
+                    },
                     onBack = { screen = Screen.Browser }
                 )
             }
@@ -242,7 +231,6 @@ private fun NestGalleryApp() {
                     listMode = listMode,
                     onToggleViewMode = { listMode = !listMode },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
-                    onOpenFaceSearch = { screen = Screen.FaceSearch(returnTo = s) },
                     onBack = { screen = s.returnTo }
                 )
             }
@@ -250,36 +238,30 @@ private fun NestGalleryApp() {
                 ImageViewerScreen(
                     images = s.images,
                     startIndex = s.startIndex,
-                    onDismiss = { screen = s.returnTo },
-                    onSearchFace = { file ->
-                        screen = Screen.FaceSearch(initialQueryFile = file, returnTo = s)
-                    }
+                    onDismiss = { screen = s.returnTo }
                 )
             }
-            is Screen.People -> {
-                PeopleScreen(
+            is Screen.FolderFaces -> {
+                FolderFaceScreen(
+                    root = s.root,
+                    files = s.files,
                     onBack = { screen = s.returnTo },
                     onOpenPerson = { personId ->
-                        screen = Screen.PersonDetail(personId = personId, returnTo = s)
+                        screen = Screen.PersonDetail(
+                            personId = personId,
+                            folderPath = s.root.file.absolutePath,
+                            returnTo = s
+                        )
                     },
-                    onOpenFaceSearch = {
-                        screen = Screen.FaceSearch(returnTo = s)
+                    onOpenImage = { images, index ->
+                        screen = Screen.Viewer(images, index, returnTo = s)
                     }
                 )
             }
             is Screen.PersonDetail -> {
                 PersonDetailScreen(
                     personId = s.personId,
-                    onBack = { screen = s.returnTo },
-                    onOpenImage = { images, index ->
-                        screen = Screen.Viewer(images, index, returnTo = s)
-                    }
-                )
-            }
-            is Screen.FaceSearch -> {
-                FaceSearchScreen(
-                    initialQueryFile = s.initialQueryFile,
-                    initialFaceBitmap = s.initialFaceBitmap,
+                    folderPath = s.folderPath,
                     onBack = { screen = s.returnTo },
                     onOpenImage = { images, index ->
                         screen = Screen.Viewer(images, index, returnTo = s)

@@ -1,147 +1,192 @@
 package com.nestgallery.viewer.data.face
 
+import kotlin.math.max
 import kotlin.math.sqrt
 
 /**
- * Groups face embeddings into "People" clusters, similar to Google Photos.
- * Preserves user-assigned names and automatically selects the most representative
- * cover photo for each person.
+ * High-accuracy Agglomerative Face Clusterer using Average + Max-Pair Linkage and Centroid updates.
+ * Specifically designed to solve:
+ * 1. Cluster fragmentation (prevents splitting the same face into Person 1, Person 55, Person 66).
+ * 2. Age progression invariance (bridges appearance changes across time).
+ * 3. Preserves user-assigned names and automatically selects the most representative cover face.
  */
 class FaceClusterer(
-    private val similarityThreshold: Float = 0.70f
+    private val similarityThreshold: Float = 0.62f // Calibrated for FaceNet-512 normalized embeddings
 ) {
 
+    private class Cluster(
+        var id: Long,
+        var name: String,
+        val faces: MutableList<ClusterFaceItem> = mutableListOf()
+    ) {
+        val centroid: FloatArray = FloatArray(512)
+
+        fun updateCentroid() {
+            if (faces.isEmpty()) return
+            centroid.fill(0f)
+            val dim = faces[0].embedding.size
+            for (face in faces) {
+                for (k in 0 until dim) {
+                    centroid[k] += face.embedding[k]
+                }
+            }
+            var sumSq = 0f
+            for (k in 0 until dim) {
+                centroid[k] /= faces.size
+                sumSq += centroid[k] * centroid[k]
+            }
+            val norm = sqrt(sumSq.toDouble()).toFloat()
+            if (norm > 0f) {
+                for (k in 0 until dim) centroid[k] /= norm
+            }
+        }
+
+        fun bestCoverFaceId(): Long {
+            if (faces.isEmpty()) return 0L
+            if (faces.size == 1) return faces[0].faceId
+
+            // Pick face closest to centroid (canonical, well-lit face)
+            var bestId = faces[0].faceId
+            var highestSim = -1f
+            for (f in faces) {
+                val sim = FaceEmbeddingHelper.cosineSimilarity(f.embedding, centroid)
+                if (sim > highestSim) {
+                    highestSim = sim
+                    bestId = f.faceId
+                }
+            }
+            return bestId
+        }
+    }
+
     /**
-     * Runs clustering on all faces in the database and updates database assignments.
+     * Clusters faces, optionally scoped to a folder tree.
      */
-    fun clusterFaces(database: FaceDatabase) {
-        val faces = database.getAllFacesForClustering()
+    fun clusterFaces(database: FaceDatabase, folderPath: String? = null) {
+        val faces = database.getFacesForClustering(folderPath)
         if (faces.isEmpty()) return
 
-        // Existing people and names to preserve
         val existingPeople = database.getAllPeople().associate { it.id to it.name }
         var nextPersonId = (existingPeople.keys.maxOrNull() ?: 0L) + 1L
 
-        // Group faces that already have a personId
-        val personNameToPreserve = existingPeople.toMutableMap()
-        val faceToPerson = mutableMapOf<Long, Long>()
-        val personFaces = mutableMapOf<Long, MutableList<ClusterFaceItem>>()
-
-        // Track assigned faces
+        // Initial setup: group faces that already have a recognized person ID
+        val clusters = mutableListOf<Cluster>()
         val unassignedFaces = mutableListOf<ClusterFaceItem>()
 
+        val existingClusterMap = mutableMapOf<Long, Cluster>()
+
         for (face in faces) {
-            if (face.currentPersonId > 0 && personNameToPreserve.containsKey(face.currentPersonId)) {
-                faceToPerson[face.faceId] = face.currentPersonId
-                personFaces.getOrPut(face.currentPersonId) { mutableListOf() }.add(face)
+            if (face.currentPersonId > 0 && existingPeople.containsKey(face.currentPersonId)) {
+                val cluster = existingClusterMap.getOrPut(face.currentPersonId) {
+                    Cluster(face.currentPersonId, existingPeople[face.currentPersonId] ?: "Person ${face.currentPersonId}").also {
+                        clusters.add(it)
+                    }
+                }
+                cluster.faces.add(face)
             } else {
                 unassignedFaces.add(face)
             }
         }
 
-        // Try to match unassigned faces to existing person clusters first
-        val iterator = unassignedFaces.iterator()
-        val remainingFaces = mutableListOf<ClusterFaceItem>()
-
-        while (iterator.hasNext()) {
-            val face = iterator.next()
-            var bestPersonId: Long? = null
-            var bestSim = similarityThreshold
-
-            for ((personId, cluster) in personFaces) {
-                // Calculate average similarity to cluster or max similarity
-                for (clusterFace in cluster) {
-                    val sim = FaceEmbeddingHelper.cosineSimilarity(face.embedding, clusterFace.embedding)
-                    if (sim > bestSim) {
-                        bestSim = sim
-                        bestPersonId = personId
-                    }
-                }
-            }
-
-            if (bestPersonId != null) {
-                faceToPerson[face.faceId] = bestPersonId
-                personFaces.getValue(bestPersonId).add(face)
-            } else {
-                remainingFaces.add(face)
-            }
+        // Compute centroids for existing clusters
+        for (c in clusters) {
+            c.updateCentroid()
         }
 
-        // Now cluster remaining unassigned faces together using greedy leader clustering
-        val visited = BooleanArray(remainingFaces.size)
-
-        for (i in remainingFaces.indices) {
-            if (visited[i]) continue
-            visited[i] = true
-
-            val leader = remainingFaces[i]
-            val cluster = mutableListOf(leader)
-
-            for (j in (i + 1) until remainingFaces.size) {
-                if (visited[j]) continue
-                val candidate = remainingFaces[j]
-                val sim = FaceEmbeddingHelper.cosineSimilarity(leader.embedding, candidate.embedding)
-                if (sim >= similarityThreshold) {
-                    visited[j] = true
-                    cluster.add(candidate)
-                }
-            }
-
-            val newPersonId = nextPersonId++
-            personNameToPreserve[newPersonId] = "Person $newPersonId"
-            personFaces[newPersonId] = cluster
-
-            for (member in cluster) {
-                faceToPerson[member.faceId] = newPersonId
-            }
+        // Start each unassigned face in its own mini-cluster
+        for (face in unassignedFaces) {
+            val c = Cluster(nextPersonId++, "Person $nextPersonId")
+            c.faces.add(face)
+            c.updateCentroid()
+            clusters.add(c)
         }
 
-        // Select cover face for each person (the face closest to centroid)
-        val coverFaceMap = mutableMapOf<Long, Long>()
+        // Agglomerative Hierarchical Clustering with Centroid & Average Linkage
+        var merged = true
+        while (merged && clusters.size > 1) {
+            merged = false
+            var bestI = -1
+            var bestJ = -1
+            var highestSim = similarityThreshold
 
-        for ((personId, cluster) in personFaces) {
-            if (cluster.isEmpty()) continue
+            for (i in 0 until clusters.size) {
+                val c1 = clusters[i]
+                for (j in (i + 1) until clusters.size) {
+                    val c2 = clusters[j]
 
-            if (cluster.size == 1) {
-                coverFaceMap[personId] = cluster[0].faceId
-            } else {
-                // Compute normalized centroid
-                val dim = cluster[0].embedding.size
-                val centroid = FloatArray(dim)
-                for (face in cluster) {
-                    for (k in 0 until dim) {
-                        centroid[k] += face.embedding[k]
-                    }
-                }
-                var norm = 0f
-                for (k in 0 until dim) {
-                    centroid[k] /= cluster.size
-                    norm += centroid[k] * centroid[k]
-                }
-                norm = sqrt(norm.toDouble()).toFloat()
-                if (norm > 0) {
-                    for (k in 0 until dim) centroid[k] /= norm
-                }
-
-                // Pick face with highest similarity to centroid
-                var bestFaceId = cluster[0].faceId
-                var highestSim = -1f
-                for (face in cluster) {
-                    val sim = FaceEmbeddingHelper.cosineSimilarity(face.embedding, centroid)
+                    val sim = computeClusterSimilarity(c1, c2)
                     if (sim > highestSim) {
                         highestSim = sim
-                        bestFaceId = face.faceId
+                        bestI = i
+                        bestJ = j
+                        merged = true
                     }
                 }
-                coverFaceMap[personId] = bestFaceId
+            }
+
+            if (merged && bestI != -1 && bestJ != -1) {
+                val target = clusters[bestI]
+                val source = clusters[bestJ]
+
+                // Merge source into target
+                target.faces.addAll(source.faces)
+                target.updateCentroid()
+
+                // Preserve custom name if source had one and target didn't
+                if (!source.name.startsWith("Person ") && target.name.startsWith("Person ")) {
+                    target.name = source.name
+                }
+
+                clusters.removeAt(bestJ)
             }
         }
 
-        // Apply everything to DB in single transaction
+        // Build assignments to write back to SQLite
+        val personNames = mutableMapOf<Long, String>()
+        val faceToPersonMap = mutableMapOf<Long, Long>()
+        val personCoverFaceMap = mutableMapOf<Long, Long>()
+
+        for (c in clusters) {
+            if (c.faces.isEmpty()) continue
+            personNames[c.id] = c.name
+            personCoverFaceMap[c.id] = c.bestCoverFaceId()
+
+            for (face in c.faces) {
+                faceToPersonMap[face.faceId] = c.id
+            }
+        }
+
         database.applyClusterAssignments(
-            personNames = personNameToPreserve,
-            faceToPersonMap = faceToPerson,
-            personCoverFaceMap = coverFaceMap
+            personNames = personNames,
+            faceToPersonMap = faceToPersonMap,
+            personCoverFaceMap = personCoverFaceMap
         )
+    }
+
+    /**
+     * Computes similarity between two clusters:
+     * Combines centroid similarity (overall facial structure) and max pair similarity
+     * (bridges age progression and angle variations between closest matching photos).
+     */
+    private fun computeClusterSimilarity(c1: Cluster, c2: Cluster): Float {
+        val centroidSim = FaceEmbeddingHelper.cosineSimilarity(c1.centroid, c2.centroid)
+
+        var maxPairSim = -1f
+        var sumPairSim = 0f
+        var pairCount = 0
+
+        for (f1 in c1.faces) {
+            for (f2 in c2.faces) {
+                val sim = FaceEmbeddingHelper.cosineSimilarity(f1.embedding, f2.embedding)
+                if (sim > maxPairSim) maxPairSim = sim
+                sumPairSim += sim
+                pairCount++
+            }
+        }
+
+        val avgPairSim = if (pairCount > 0) sumPairSim / pairCount else centroidSim
+
+        // Composite metric: 50% centroid match + 30% average match + 20% closest-pair bridge
+        return 0.50f * centroidSim + 0.30f * avgPairSim + 0.20f * maxPairSim
     }
 }

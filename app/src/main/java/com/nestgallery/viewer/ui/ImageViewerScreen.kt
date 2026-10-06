@@ -88,8 +88,7 @@ import java.io.File
 fun ImageViewerScreen(
     images: List<DocEntry>,
     startIndex: Int,
-    onDismiss: () -> Unit,
-    onSearchFace: ((File) -> Unit)? = null
+    onDismiss: () -> Unit
 ) {
     val pagerState = rememberPagerState(initialPage = startIndex) { images.size }
     var chromeVisible by remember { mutableStateOf(true) }
@@ -122,18 +121,6 @@ fun ImageViewerScreen(
             Box(Modifier.fillMaxSize().statusBarsPadding().padding(8.dp)) {
                 IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart)) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
-                }
-                if (!currentEntry.isVideo && onSearchFace != null) {
-                    IconButton(
-                        onClick = { onSearchFace(currentEntry.file) },
-                        modifier = Modifier.align(Alignment.TopEnd)
-                    ) {
-                        Icon(
-                            Icons.Default.PersonSearch,
-                            contentDescription = "Search by Face",
-                            tint = Color.White
-                        )
-                    }
                 }
                 Text(
                     text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",

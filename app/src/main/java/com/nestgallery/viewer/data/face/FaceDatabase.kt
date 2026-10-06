@@ -49,12 +49,13 @@ data class ClusterFaceItem(
     val faceId: Long,
     val embedding: FloatArray,
     val currentPersonId: Long,
-    val thumbnailPath: String
+    val thumbnailPath: String,
+    val filePath: String
 )
 
 /**
  * SQLite database storing indexed photos, detected face embeddings, and clustered people.
- * Engineered for sub-millisecond similarity scans and atomic batch operations on 10k+ photos.
+ * Supports folder-scoped queries so face recognition runs within the explored recursive tree.
  */
 class FaceDatabase private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
@@ -112,9 +113,6 @@ class FaceDatabase private constructor(context: Context) :
         onCreate(db)
     }
 
-    /**
-     * Checks if a file has already been indexed and its timestamp/size haven't changed.
-     */
     fun isFileIndexedAndCurrent(file: File): Boolean {
         val db = readableDatabase
         val cursor = db.rawQuery(
@@ -131,9 +129,6 @@ class FaceDatabase private constructor(context: Context) :
         return false
     }
 
-    /**
-     * Saves detected faces for a photo atomically.
-     */
     fun saveFileFaces(
         file: File,
         faces: List<PendingFaceRecord>
@@ -141,7 +136,6 @@ class FaceDatabase private constructor(context: Context) :
         val db = writableDatabase
         db.beginTransaction()
         try {
-            // Remove previous faces for this file if re-indexing
             db.delete("faces", "file_path = ?", arrayOf(file.absolutePath))
 
             val now = System.currentTimeMillis()
@@ -176,14 +170,23 @@ class FaceDatabase private constructor(context: Context) :
     }
 
     /**
-     * Retrieves all faces with their embeddings for clustering.
+     * Retrieves faces for clustering, optionally scoped to a folder tree.
      */
-    fun getAllFacesForClustering(): List<ClusterFaceItem> {
+    fun getFacesForClustering(folderPath: String? = null): List<ClusterFaceItem> {
         val db = readableDatabase
-        val cursor = db.rawQuery(
-            "SELECT id, embedding, person_id, thumbnail_path FROM faces",
-            null
-        )
+        val sql: String
+        val args: Array<String>?
+
+        if (folderPath != null) {
+            val normalized = folderPath.trimEnd(File.separatorChar, '/')
+            sql = "SELECT id, embedding, person_id, thumbnail_path, file_path FROM faces WHERE file_path = ? OR file_path LIKE ?"
+            args = arrayOf(normalized, "$normalized${File.separator}%")
+        } else {
+            sql = "SELECT id, embedding, person_id, thumbnail_path, file_path FROM faces"
+            args = null
+        }
+
+        val cursor = db.rawQuery(sql, args)
         val list = mutableListOf<ClusterFaceItem>()
         cursor.use {
             while (it.moveToNext()) {
@@ -191,8 +194,11 @@ class FaceDatabase private constructor(context: Context) :
                 val blob = it.getBlob(1)
                 val personId = it.getLong(2)
                 val thumb = it.getString(3) ?: ""
-                val embedding = FaceEmbeddingHelper.fromByteArray(blob)
-                list.add(ClusterFaceItem(id, embedding, personId, thumb))
+                val path = it.getString(4)
+                if (blob != null && blob.isNotEmpty()) {
+                    val embedding = FaceEmbeddingHelper.fromByteArray(blob)
+                    list.add(ClusterFaceItem(id, embedding, personId, thumb, path))
+                }
             }
         }
         return list
@@ -202,22 +208,20 @@ class FaceDatabase private constructor(context: Context) :
      * Updates clustering assignments in a single transaction, preserving custom names.
      */
     fun applyClusterAssignments(
-        personNames: Map<Long, String>, // personId to name
-        faceToPersonMap: Map<Long, Long>, // faceId to personId
-        personCoverFaceMap: Map<Long, Long> // personId to coverFaceId
+        personNames: Map<Long, String>,
+        faceToPersonMap: Map<Long, Long>,
+        personCoverFaceMap: Map<Long, Long>
     ) {
         val db = writableDatabase
         db.beginTransaction()
         try {
             val now = System.currentTimeMillis()
 
-            // Count faces per person
             val personCounts = mutableMapOf<Long, Int>()
             for ((_, personId) in faceToPersonMap) {
                 personCounts[personId] = (personCounts[personId] ?: 0) + 1
             }
 
-            // Sync people table
             for ((personId, count) in personCounts) {
                 val name = personNames[personId] ?: "Person $personId"
                 val coverFaceId = personCoverFaceMap[personId] ?: 0L
@@ -232,7 +236,6 @@ class FaceDatabase private constructor(context: Context) :
                 db.insertWithOnConflict("people", null, cv, SQLiteDatabase.CONFLICT_REPLACE)
             }
 
-            // Update faces
             val stmt = db.compileStatement("UPDATE faces SET person_id = ? WHERE id = ?")
             for ((faceId, personId) in faceToPersonMap) {
                 stmt.bindLong(1, personId)
@@ -241,7 +244,6 @@ class FaceDatabase private constructor(context: Context) :
             }
             stmt.close()
 
-            // Remove any obsolete empty people
             db.execSQL("DELETE FROM people WHERE id NOT IN (SELECT DISTINCT person_id FROM faces WHERE person_id > 0)")
 
             db.setTransactionSuccessful()
@@ -250,9 +252,6 @@ class FaceDatabase private constructor(context: Context) :
         }
     }
 
-    /**
-     * Returns list of all recognized people ordered by photo count.
-     */
     fun getAllPeople(): List<PersonEntity> {
         val db = readableDatabase
         val sql = """
@@ -261,8 +260,38 @@ class FaceDatabase private constructor(context: Context) :
             LEFT JOIN faces f ON f.id = p.cover_face_id
             ORDER BY p.face_count DESC, p.id ASC
         """.trimIndent()
-
         val cursor = db.rawQuery(sql, null)
+        val list = mutableListOf<PersonEntity>()
+        cursor.use {
+            while (it.moveToNext()) {
+                val id = it.getLong(0)
+                val name = it.getString(1)
+                val coverFaceId = it.getLong(2)
+                val count = it.getInt(3)
+                val thumb = it.getString(4)
+                list.add(PersonEntity(id, name, coverFaceId, count, thumb))
+            }
+        }
+        return list
+    }
+
+    /**
+     * Returns recognized people present in a specific folder tree.
+     */
+    fun getPeopleInFolder(folderPath: String): List<PersonEntity> {
+        val db = readableDatabase
+        val normalized = folderPath.trimEnd(File.separatorChar, '/')
+        val sql = """
+            SELECT p.id, p.name, p.cover_face_id, COUNT(f.id) as folder_count, fcover.thumbnail_path
+            FROM faces f
+            JOIN people p ON p.id = f.person_id
+            LEFT JOIN faces fcover ON fcover.id = p.cover_face_id
+            WHERE f.person_id > 0 AND (f.file_path = ? OR f.file_path LIKE ?)
+            GROUP BY p.id
+            ORDER BY folder_count DESC, p.id ASC
+        """.trimIndent()
+
+        val cursor = db.rawQuery(sql, arrayOf(normalized, "$normalized${File.separator}%"))
         val list = mutableListOf<PersonEntity>()
         cursor.use {
             while (it.moveToNext()) {
@@ -301,14 +330,23 @@ class FaceDatabase private constructor(context: Context) :
     }
 
     /**
-     * Returns unique image file paths containing this person.
+     * Returns unique image file paths containing this person, optionally scoped to a folder.
      */
-    fun getImagePathsForPerson(personId: Long): List<String> {
+    fun getImagePathsForPerson(personId: Long, folderPath: String? = null): List<String> {
         val db = readableDatabase
-        val cursor = db.rawQuery(
-            "SELECT DISTINCT file_path FROM faces WHERE person_id = ? ORDER BY id DESC",
-            arrayOf(personId.toString())
-        )
+        val sql: String
+        val args: Array<String>
+
+        if (folderPath != null) {
+            val normalized = folderPath.trimEnd(File.separatorChar, '/')
+            sql = "SELECT DISTINCT file_path FROM faces WHERE person_id = ? AND (file_path = ? OR file_path LIKE ?) ORDER BY id DESC"
+            args = arrayOf(personId.toString(), normalized, "$normalized${File.separator}%")
+        } else {
+            sql = "SELECT DISTINCT file_path FROM faces WHERE person_id = ? ORDER BY id DESC"
+            args = arrayOf(personId.toString())
+        }
+
+        val cursor = db.rawQuery(sql, args)
         val list = mutableListOf<String>()
         cursor.use {
             while (it.moveToNext()) {
@@ -318,36 +356,6 @@ class FaceDatabase private constructor(context: Context) :
         return list
     }
 
-    /**
-     * Returns all detected faces for an image file.
-     */
-    fun getFacesForFile(filePath: String): List<FaceEntity> {
-        val db = readableDatabase
-        val cursor = db.rawQuery(
-            "SELECT id, file_path, rect_left, rect_top, rect_right, rect_bottom, person_id, thumbnail_path FROM faces WHERE file_path = ?",
-            arrayOf(filePath)
-        )
-        val list = mutableListOf<FaceEntity>()
-        cursor.use {
-            while (it.moveToNext()) {
-                list.add(
-                    FaceEntity(
-                        id = it.getLong(0),
-                        filePath = it.getString(1),
-                        rect = RectF(it.getFloat(2), it.getFloat(3), it.getFloat(4), it.getFloat(5)),
-                        personId = it.getLong(6),
-                        embedding = null,
-                        thumbnailPath = it.getString(7)
-                    )
-                )
-            }
-        }
-        return list
-    }
-
-    /**
-     * Renames a person.
-     */
     fun renamePerson(personId: Long, newName: String) {
         val db = writableDatabase
         val cv = ContentValues().apply {
@@ -357,9 +365,6 @@ class FaceDatabase private constructor(context: Context) :
         db.update("people", cv, "id = ?", arrayOf(personId.toString()))
     }
 
-    /**
-     * Deletes a person cluster (clearing person_id on its faces).
-     */
     fun deletePerson(personId: Long) {
         val db = writableDatabase
         db.beginTransaction()
@@ -374,21 +379,19 @@ class FaceDatabase private constructor(context: Context) :
     }
 
     /**
-     * Searches all faces in the database by similarity to a query embedding.
-     * Groups matches by photo file, keeping the highest similarity per photo.
+     * Reverse face search strictly scoped to a folder tree.
      */
-    fun searchByEmbedding(
+    fun searchByEmbeddingInFolder(
         queryEmbedding: FloatArray,
-        minSimilarity: Float = 0.65f,
+        folderPath: String,
+        minSimilarity: Float = 0.58f,
         maxResults: Int = 300
     ): List<FaceMatch> {
         val db = readableDatabase
-        val cursor = db.rawQuery(
-            "SELECT file_path, embedding, rect_left, rect_top, rect_right, rect_bottom, thumbnail_path FROM faces",
-            null
-        )
+        val normalized = folderPath.trimEnd(File.separatorChar, '/')
+        val sql = "SELECT file_path, embedding, rect_left, rect_top, rect_right, rect_bottom, thumbnail_path FROM faces WHERE file_path = ? OR file_path LIKE ?"
+        val cursor = db.rawQuery(sql, arrayOf(normalized, "$normalized${File.separator}%"))
 
-        // Best match per file
         val fileMatchMap = mutableMapOf<String, FaceMatch>()
 
         cursor.use {
@@ -401,18 +404,20 @@ class FaceDatabase private constructor(context: Context) :
                 val bottom = it.getFloat(5)
                 val thumb = it.getString(6)
 
-                val emb = FaceEmbeddingHelper.fromByteArray(blob)
-                val sim = FaceEmbeddingHelper.cosineSimilarity(queryEmbedding, emb)
+                if (blob != null && blob.isNotEmpty()) {
+                    val emb = FaceEmbeddingHelper.fromByteArray(blob)
+                    val sim = FaceEmbeddingHelper.cosineSimilarity(queryEmbedding, emb)
 
-                if (sim >= minSimilarity) {
-                    val existing = fileMatchMap[path]
-                    if (existing == null || sim > existing.similarity) {
-                        fileMatchMap[path] = FaceMatch(
-                            filePath = path,
-                            similarity = sim,
-                            faceRect = RectF(left, top, right, bottom),
-                            thumbnailPath = thumb
-                        )
+                    if (sim >= minSimilarity) {
+                        val existing = fileMatchMap[path]
+                        if (existing == null || sim > existing.similarity) {
+                            fileMatchMap[path] = FaceMatch(
+                                filePath = path,
+                                similarity = sim,
+                                faceRect = RectF(left, top, right, bottom),
+                                thumbnailPath = thumb
+                            )
+                        }
                     }
                 }
             }
@@ -423,41 +428,40 @@ class FaceDatabase private constructor(context: Context) :
             .take(maxResults)
     }
 
-    fun getStats(): FaceDbStats {
+    fun getFolderStats(folderPath: String): FaceDbStats {
         val db = readableDatabase
+        val normalized = folderPath.trimEnd(File.separatorChar, '/')
         var photos = 0
         var faces = 0
         var people = 0
 
-        db.rawQuery("SELECT COUNT(*) FROM indexed_files", null).use {
+        db.rawQuery(
+            "SELECT COUNT(*) FROM indexed_files WHERE path = ? OR path LIKE ?",
+            arrayOf(normalized, "$normalized${File.separator}%")
+        ).use {
             if (it.moveToFirst()) photos = it.getInt(0)
         }
-        db.rawQuery("SELECT COUNT(*) FROM faces", null).use {
+
+        db.rawQuery(
+            "SELECT COUNT(*) FROM faces WHERE file_path = ? OR file_path LIKE ?",
+            arrayOf(normalized, "$normalized${File.separator}%")
+        ).use {
             if (it.moveToFirst()) faces = it.getInt(0)
         }
-        db.rawQuery("SELECT COUNT(*) FROM people", null).use {
+
+        db.rawQuery(
+            "SELECT COUNT(DISTINCT person_id) FROM faces WHERE person_id > 0 AND (file_path = ? OR file_path LIKE ?)",
+            arrayOf(normalized, "$normalized${File.separator}%")
+        ).use {
             if (it.moveToFirst()) people = it.getInt(0)
         }
 
         return FaceDbStats(photos, faces, people)
     }
 
-    fun clearAllData() {
-        val db = writableDatabase
-        db.beginTransaction()
-        try {
-            db.delete("faces", null, null)
-            db.delete("people", null, null)
-            db.delete("indexed_files", null, null)
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
-        }
-    }
-
     companion object {
         private const val DB_NAME = "nest_faces.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2 // Updated for FaceNet-512 embeddings
 
         @Volatile
         private var INSTANCE: FaceDatabase? = null

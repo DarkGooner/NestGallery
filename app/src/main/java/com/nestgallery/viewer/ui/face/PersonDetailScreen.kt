@@ -64,6 +64,7 @@ import java.io.File
 @Composable
 fun PersonDetailScreen(
     personId: Long,
+    folderPath: String? = null,
     onBack: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit
 ) {
@@ -78,7 +79,7 @@ fun PersonDetailScreen(
 
     fun loadData() {
         person = db.getPersonById(personId)
-        val imagePaths = db.getImagePathsForPerson(personId)
+        val imagePaths = db.getImagePathsForPerson(personId, folderPath)
         val entries = imagePaths.mapNotNull { path ->
             val file = File(path)
             if (file.exists()) {

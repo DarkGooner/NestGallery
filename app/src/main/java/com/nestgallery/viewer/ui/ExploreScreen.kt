@@ -20,11 +20,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Label
+import androidx.compose.material.icons.automirrored.filled.LabelOff
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.GridView
-import androidx.compose.material.icons.filled.Label
-import androidx.compose.material.icons.filled.LabelOff
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -63,6 +63,11 @@ import com.nestgallery.viewer.data.exploreMediaFlow
 import com.nestgallery.viewer.data.relativeDirOf
 import kotlinx.coroutines.launch
 
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.text.font.FontWeight
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExploreScreen(
@@ -75,7 +80,7 @@ fun ExploreScreen(
     onToggleShowNames: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onSearch: (DocEntry) -> Unit,
-    onOpenPeople: () -> Unit,
+    onOpenFaces: (DocEntry, List<DocEntry>) -> Unit,
     onBack: () -> Unit
 ) {
     // A plain (non-Compose-state-backed) cache key. GalleryCache is a
@@ -115,6 +120,7 @@ fun ExploreScreen(
     val gridState = rememberLazyGridState()
     val coroutineScope = rememberCoroutineScope()
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
+    var menuExpanded by remember { mutableStateOf(false) }
 
     // Scroll position, same pattern as the regular browser: saved on dispose
     // (leaving for the viewer or navigating away), restored on return.
@@ -146,47 +152,82 @@ fun ExploreScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        if (scanning) "Scanning ${root.name}… (${items.size})" else "${root.name} — ${items.size} items",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column {
+                        Text(
+                            root.name,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            if (scanning) "Scanning… (${items.size} found)" else "${items.size} items",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
                 actions = {
-                    IconButton(onClick = onOpenPeople) {
-                        Icon(Icons.Default.Face, contentDescription = "People & Pets")
+                    // 1. Scoped Face recognition button
+                    IconButton(onClick = { onOpenFaces(root, items.toList()) }) {
+                        Icon(Icons.Default.Face, contentDescription = "Faces in this folder")
                     }
+                    // 2. Text Search button
                     IconButton(onClick = { onSearch(root) }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search images & videos")
+                        Icon(Icons.Default.Search, contentDescription = "Search in folder")
                     }
-                    IconButton(onClick = {
-                        GalleryCache.invalidate(exploreKey)
-                        rescanTrigger++
-                    }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Rescan")
-                    }
-                    IconButton(onClick = onToggleShowNames) {
-                        Icon(
-                            if (showNames) Icons.Default.Label else Icons.Default.LabelOff,
-                            contentDescription = "Toggle filenames / paths"
-                        )
-                    }
-                    IconButton(onClick = onToggleHideHidden) {
-                        Icon(
-                            if (hideHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = "Toggle hidden items"
-                        )
-                    }
+                    // 3. View Mode Toggle
                     IconButton(onClick = onToggleViewMode) {
                         Icon(
                             if (listMode) Icons.Default.GridView else Icons.Default.ViewAgenda,
                             contentDescription = "Toggle view mode"
                         )
+                    }
+                    // 4. Overflow Menu (Best Practice: avoids overcrowding)
+                    Box {
+                        IconButton(onClick = { menuExpanded = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(
+                            expanded = menuExpanded,
+                            onDismissRequest = { menuExpanded = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Rescan folder") },
+                                onClick = {
+                                    menuExpanded = false
+                                    GalleryCache.invalidate(exploreKey)
+                                    rescanTrigger++
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Refresh, contentDescription = null)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (showNames) "Hide filenames" else "Show filenames") },
+                                onClick = {
+                                    menuExpanded = false
+                                    onToggleShowNames()
+                                },
+                                leadingIcon = {
+                                    Icon(if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, contentDescription = null)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (hideHidden) "Show hidden items" else "Hide hidden items") },
+                                onClick = {
+                                    menuExpanded = false
+                                    onToggleHideHidden()
+                                },
+                                leadingIcon = {
+                                    Icon(if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, contentDescription = null)
+                                }
+                            )
+                        }
                     }
                 }
             )
