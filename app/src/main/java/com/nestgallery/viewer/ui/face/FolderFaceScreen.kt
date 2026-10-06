@@ -1,7 +1,6 @@
 package com.nestgallery.viewer.ui.face
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -88,7 +87,9 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nestgallery.viewer.data.DocEntry
-import com.nestgallery.viewer.data.face.DetectedFaceResult
+import com.nestgallery.viewer.data.face.FaceImageLoader
+import com.nestgallery.viewer.data.face.FaceMath
+import com.nestgallery.viewer.data.face.QueryFace
 import com.nestgallery.viewer.data.face.FaceDatabase
 import com.nestgallery.viewer.data.face.FaceMatch
 import com.nestgallery.viewer.data.face.FaceScannerManager
@@ -102,7 +103,7 @@ import kotlin.math.roundToInt
 
 /**
  * Scoped Face Recognition screen for Recursive Explorer.
- * Runs face scanning, high-accuracy FaceNet-512 clustering, and reverse face search
+ * Runs face scanning, ArcFace-based grouping, and reverse face search
  * strictly within the explored folder tree.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -127,9 +128,10 @@ fun FolderFaceScreen(
 
     // Reverse Face Search state
     var queryBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var detectedFacesInQuery by remember { mutableStateOf<List<DetectedFaceResult>>(emptyList()) }
+    var detectedFacesInQuery by remember { mutableStateOf<List<QueryFace>>(emptyList()) }
     var activeFaceIndex by remember { mutableIntStateOf(0) }
-    var similarityThreshold by remember { mutableFloatStateOf(0.62f) } // Calibrated for FaceNet-512
+    // Raw ArcFace cosine. Measured: same person median ~0.74 (min ~0.45), different people <= ~0.25.
+    var similarityThreshold by remember { mutableFloatStateOf(0.42f) }
     var isSearching by remember { mutableStateOf(false) }
     var matchResults by remember { mutableStateOf<List<FaceMatch>>(emptyList()) }
     var matchedDocEntries by remember { mutableStateOf<List<DocEntry>>(emptyList()) }
@@ -148,58 +150,34 @@ fun FolderFaceScreen(
         }
     }
 
-    fun runFaceSearch(faceBitmap: Bitmap, threshold: Float) {
+    fun runFaceSearch(embedding: FloatArray, threshold: Float) {
         scope.launch {
             isSearching = true
-            withContext(Dispatchers.Default) {
-                val embedding = scanner.embeddingHelper.extractEmbedding(faceBitmap)
-                if (embedding != null) {
-                    val matches = db.searchByEmbeddingInFolder(
-                        queryEmbedding = embedding,
-                        folderPath = root.file.absolutePath,
-                        minSimilarity = threshold
-                    )
-                    val docs = matches.mapNotNull { m ->
-                        val f = File(m.filePath)
-                        if (f.exists()) {
-                            DocEntry(f, f.name, false, f.length(), false)
-                        } else null
-                    }
-                    withContext(Dispatchers.Main) {
-                        matchResults = matches
-                        matchedDocEntries = docs
-                        isSearching = false
-                    }
-                } else {
-                    withContext(Dispatchers.Main) {
-                        matchResults = emptyList()
-                        matchedDocEntries = emptyList()
-                        isSearching = false
-                    }
-                }
+            val all = scanner.searchFaces(embedding, root.file.absolutePath, threshold)
+            // drop photos that no longer exist, keeping matches and tiles index-aligned (stat calls off the main thread)
+            val (matches, docs) = withContext(Dispatchers.IO) {
+                val kept = all.filter { File(it.filePath).exists() }
+                kept to kept.map { m -> File(m.filePath).let { f -> DocEntry(f, f.name, false, f.length(), false) } }
             }
+            matchResults = matches
+            matchedDocEntries = docs
+            isSearching = false
         }
+    }
+
+    fun selectQueryFace(index: Int) {
+        val face = detectedFacesInQuery.getOrNull(index) ?: return
+        activeFaceIndex = index
+        queryBitmap = face.aligned
+        runFaceSearch(face.embedding, similarityThreshold)
     }
 
     fun processQueryImage(sourceBitmap: Bitmap) {
         scope.launch {
             isSearching = true
-            withContext(Dispatchers.Default) {
-                val faces = scanner.detectorHelper.detectFaces(sourceBitmap)
-                val finalFaces = if (faces.isNotEmpty()) {
-                    faces
-                } else {
-                    listOf(scanner.detectorHelper.extractFallbackFace(sourceBitmap))
-                }
-
-                withContext(Dispatchers.Main) {
-                    detectedFacesInQuery = finalFaces
-                    activeFaceIndex = 0
-                    val primaryFace = finalFaces[0].faceBitmap
-                    queryBitmap = primaryFace
-                    runFaceSearch(primaryFace, similarityThreshold)
-                }
-            }
+            val faces = scanner.analyzeQueryImage(sourceBitmap)
+            detectedFacesInQuery = faces
+            selectQueryFace(0)
         }
     }
 
@@ -209,14 +187,8 @@ fun FolderFaceScreen(
         uri?.let {
             scope.launch {
                 isSearching = true
-                withContext(Dispatchers.IO) {
-                    val stream = context.contentResolver.openInputStream(it)
-                    val bmp = BitmapFactory.decodeStream(stream)
-                    stream?.close()
-                    if (bmp != null) {
-                        processQueryImage(bmp)
-                    }
-                }
+                val bmp = withContext(Dispatchers.IO) { FaceImageLoader.decodeUri(context, it) }
+                if (bmp != null) processQueryImage(bmp) else isSearching = false
             }
         }
     }
@@ -329,7 +301,7 @@ fun FolderFaceScreen(
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Scan the photos collected by this recursive explorer to automatically cluster people using FaceNet-512.",
+                                "Scan the photos collected by this recursive explorer to automatically group people on this device.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
@@ -446,7 +418,39 @@ fun FolderFaceScreen(
                                 }
                             }
 
-                            // Sensitivity chips calibrated for FaceNet-512
+                            // Which face of the picked photo to search for (only shown when there are several)
+                            if (detectedFacesInQuery.size > 1) {
+                                Spacer(Modifier.height(12.dp))
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                                ) {
+                                    Text(
+                                        "Faces in photo:",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    detectedFacesInQuery.forEachIndexed { i, face ->
+                                        Image(
+                                            bitmap = face.aligned.asImageBitmap(),
+                                            contentDescription = "Face ${i + 1}",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .clip(CircleShape)
+                                                .border(
+                                                    if (i == activeFaceIndex) 2.dp else 1.dp,
+                                                    if (i == activeFaceIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                                    CircleShape
+                                                )
+                                                .clickable { selectQueryFace(i) }
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Sensitivity = raw ArcFace cosine cut-off (same person: median ~0.74; different people: <= ~0.25)
                             Spacer(Modifier.height(12.dp))
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -458,30 +462,16 @@ fun FolderFaceScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                FilterChip(
-                                    selected = similarityThreshold == 0.70f,
-                                    onClick = {
-                                        similarityThreshold = 0.70f
-                                        queryBitmap?.let { runFaceSearch(it, 0.70f) }
-                                    },
-                                    label = { Text("Strict (70%)") }
-                                )
-                                FilterChip(
-                                    selected = similarityThreshold == 0.62f,
-                                    onClick = {
-                                        similarityThreshold = 0.62f
-                                        queryBitmap?.let { runFaceSearch(it, 0.62f) }
-                                    },
-                                    label = { Text("Balanced (62%)") }
-                                )
-                                FilterChip(
-                                    selected = similarityThreshold == 0.54f,
-                                    onClick = {
-                                        similarityThreshold = 0.54f
-                                        queryBitmap?.let { runFaceSearch(it, 0.54f) }
-                                    },
-                                    label = { Text("Broad (54%)") }
-                                )
+                                listOf("Strict" to 0.52f, "Balanced" to 0.42f, "Broad" to 0.34f).forEach { (label, value) ->
+                                    FilterChip(
+                                        selected = similarityThreshold == value,
+                                        onClick = {
+                                            similarityThreshold = value
+                                            detectedFacesInQuery.getOrNull(activeFaceIndex)?.let { runFaceSearch(it.embedding, value) }
+                                        },
+                                        label = { Text(label) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -495,7 +485,7 @@ fun FolderFaceScreen(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 CircularProgressIndicator()
                                 Spacer(Modifier.height(12.dp))
-                                Text("Scanning embeddings in ${root.name}...")
+                                Text("Searching ${root.name}…")
                             }
                         }
                     } else if (queryBitmap == null) {
@@ -532,7 +522,7 @@ fun FolderFaceScreen(
                         ) {
                             itemsIndexed(matchedDocEntries, key = { _, doc -> doc.file.absolutePath }) { index, entry ->
                                 val match = matchResults.getOrNull(index)
-                                val matchPercent = match?.let { (it.similarity * 100).roundToInt() } ?: 0
+                                val matchPercent = match?.let { (FaceMath.matchProbability(it.similarity) * 100).roundToInt() } ?: 0
 
                                 Box(
                                     modifier = Modifier
@@ -557,7 +547,7 @@ fun FolderFaceScreen(
                                             .padding(4.dp)
                                             .background(
                                                 color = if (matchPercent >= 75) Color(0xFF1B5E20).copy(alpha = 0.85f)
-                                                else if (matchPercent >= 62) Color(0xFF00695C).copy(alpha = 0.85f)
+                                                else if (matchPercent >= 50) Color(0xFF00695C).copy(alpha = 0.85f)
                                                 else Color(0xFFE65100).copy(alpha = 0.85f),
                                                 shape = RoundedCornerShape(4.dp)
                                             )

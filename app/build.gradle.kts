@@ -57,7 +57,7 @@ android {
     }
 
     aaptOptions {
-        noCompress += listOf("tflite")
+        noCompress += listOf("onnx")
     }
 }
 
@@ -82,8 +82,6 @@ dependencies {
     implementation("io.coil-kt:coil-video:2.6.0")
     implementation("org.videolan.android:libvlc-all:3.7.6")
 
-    // On-device Machine Learning: ML Kit Face Detection (bundled offline) & TensorFlow Lite
-    implementation("com.google.mlkit:face-detection:16.1.7")
-    implementation("org.tensorflow:tensorflow-lite:2.16.1")
-    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
+    // On-device face pipeline (100% offline): SCRFD detector + ArcFace MobileFaceNet, run by ONNX Runtime.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 }

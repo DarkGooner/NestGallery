@@ -6,15 +6,25 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.max
+import kotlin.math.min
 
 sealed class ScanStatus {
     data class Idle(val stats: FaceDbStats) : ScanStatus()
@@ -22,223 +32,234 @@ sealed class ScanStatus {
         val scannedCount: Int,
         val totalCount: Int,
         val facesFound: Int,
-        val currentFileName: String
+        val currentFileName: String,
+        val photosPerSecond: Float = 0f
     ) : ScanStatus()
-    data class Paused(
-        val scannedCount: Int,
-        val totalCount: Int,
-        val facesFound: Int
-    ) : ScanStatus()
-    data class Completed(
-        val totalScanned: Int,
-        val facesFound: Int
-    ) : ScanStatus()
+    data class Paused(val scannedCount: Int, val totalCount: Int, val facesFound: Int) : ScanStatus()
+    data class Completed(val totalScanned: Int, val facesFound: Int) : ScanStatus()
 }
 
+/** A face found in the photo the user picked for "Find by face". [aligned] is the 112px crop shown in the UI. */
+class QueryFace(val aligned: Bitmap, val embedding: FloatArray)
+
 /**
- * Manages fast background face scanning and clustering scoped to explored folders.
+ * Face scanning, grouping and search, all on-device.
+ *
+ * Scan pipeline (everything overlaps, bounded by channel back-pressure):
+ *   decoder threads (IO)  ->  [decoded bitmaps]  ->  analysis workers (CPU: SCRFD + ArcFace)
+ *   ->  [results]  ->  one writer (batched SQLite transaction + in-memory index)
+ * Afterwards: incremental clustering, then cover thumbnails for the visible people.
  */
 class FaceScannerManager private constructor(private val appContext: Context) {
 
     val database = FaceDatabase.getInstance(appContext)
-    val embeddingHelper = FaceEmbeddingHelper(appContext)
-    val detectorHelper = FaceDetectorHelper()
-    val clusterer = FaceClusterer()
+    private val detector by lazy { ScrfdDetector(appContext) }
+    private val embedder by lazy { ArcFaceEmbedder(appContext) }
+    private val analyzer by lazy { FaceAnalyzer(detector, embedder) }
+    private val clusterer = PersonClusterer()
 
-    private val scope = CoroutineScope(Dispatchers.Default)
+    /** In-memory index of every embedding; also what "Find by face" searches. */
+    val store = FaceStore()
+    private val storeMutex = Mutex()
+    @Volatile private var storeLoaded = false
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var scanJob: Job? = null
-    private val isPaused = AtomicBoolean(false)
+    private val paused = MutableStateFlow(false)
 
     private val _status = MutableStateFlow<ScanStatus>(ScanStatus.Idle(FaceDbStats(0, 0, 0)))
     val status: StateFlow<ScanStatus> = _status.asStateFlow()
 
-    private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "heic", "bmp")
+    private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "bmp")
+    private val thumbDir by lazy { File(appContext.filesDir, "face_thumbs").apply { mkdirs() } }
 
-    private val thumbDir by lazy {
-        File(appContext.cacheDir, "face_thumbs").apply { mkdirs() }
+    init {
+        // The previous version cached face crops in cacheDir (evictable, and name-colliding). Drop them.
+        scope.launch(Dispatchers.IO) { File(appContext.cacheDir, "face_thumbs").deleteRecursively() }
     }
 
-    /**
-     * Starts face scanning on the media files collected by the Recursive Scan.
-     * @param files List of candidate image/media files.
-     * @param folderPath Root directory path of the recursive exploration.
-     */
+    private suspend fun ensureStoreLoaded() {
+        if (storeLoaded) return
+        storeMutex.withLock {
+            if (storeLoaded) return
+            withContext(Dispatchers.IO) {
+                database.forEachFace { f -> store.add(f.id, f.path, f.personId, f.quality, f.embedding) }
+            }
+            storeLoaded = true
+        }
+    }
+
+    // ---- scanning ------------------------------------------------------------------------------
+
+    private class Decoded(val file: File, val lastModified: Long, val size: Long, val bitmap: Bitmap?)
+
     fun startScanForFiles(files: List<File>, folderPath: String) {
         if (scanJob?.isActive == true) {
-            if (isPaused.get()) {
-                isPaused.set(false)
-            }
+            paused.value = false
             return
         }
-
+        paused.value = false
         scanJob = scope.launch {
+            var scanned = 0
+            var faces = 0
             try {
-                // Filter only image files that are not already scanned/up-to-date
-                val imageFiles = files.filter { it.extension.lowercase() in imageExtensions }
-                val filesToProcess = imageFiles.filter { !database.isFileIndexedAndCurrent(it) }
-                val totalCount = filesToProcess.size
-
-                var scannedCount = 0
-                var facesFoundCount = 0
-
-                _status.value = ScanStatus.Scanning(
-                    scannedCount = 0,
-                    totalCount = totalCount,
-                    facesFound = 0,
-                    currentFileName = if (totalCount > 0) filesToProcess[0].name else "Analyzing folder..."
-                )
-
-                for (file in filesToProcess) {
-                    while (isPaused.get() && isActive) {
-                        kotlinx.coroutines.delay(100)
-                    }
-                    if (!isActive) break
-
-                    _status.value = ScanStatus.Scanning(
-                        scannedCount = scannedCount,
-                        totalCount = totalCount,
-                        facesFound = facesFoundCount,
-                        currentFileName = file.name
-                    )
-
-                    try {
-                        val newFaces = processSingleImage(file)
-                        scannedCount++
-                        if (newFaces.isNotEmpty()) {
-                            facesFoundCount += newFaces.size
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
+                ensureStoreLoaded()
+                val indexed = withContext(Dispatchers.IO) { database.loadIndexedFiles(folderPath) }
+                val todo = withContext(Dispatchers.IO) {
+                    files.filter { it.extension.lowercase() in imageExtensions }.filter { f ->
+                        val s = indexed[f.absolutePath]
+                        s == null || s.first != f.lastModified() || s.second != f.length()
                     }
                 }
-
-                // Run clustering pass on this folder's faces
-                clusterer.clusterFaces(database, folderPath)
-
-                _status.value = ScanStatus.Completed(
-                    totalScanned = scannedCount,
-                    facesFound = facesFoundCount
-                )
-
-                kotlinx.coroutines.delay(1500)
-                _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
-
+                val result = runPipeline(todo)
+                scanned = result.first; faces = result.second
             } catch (e: CancellationException) {
+                // fall through to grouping whatever was saved, then rethrow below
+                withContext(NonCancellable) { groupPeople(folderPath, scanned, faces) }
                 _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
+                throw e
             } catch (e: Exception) {
                 e.printStackTrace()
-                _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
             }
+            groupPeople(folderPath, scanned, faces)
+            _status.value = ScanStatus.Completed(scanned, faces)
+            delay(1500)
+            _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
         }
     }
 
-    private fun processSingleImage(file: File): List<PendingFaceRecord> {
-        val bitmap = detectorHelper.decodeSampledBitmap(file, maxDimension = 512)
-            ?: run {
-                database.saveFileFaces(file, emptyList())
-                return emptyList()
-            }
+    /** @return (photos processed, faces found) */
+    private suspend fun runPipeline(todo: List<File>): Pair<Int, Int> = coroutineScope {
+        val total = todo.size
+        val cores = Runtime.getRuntime().availableProcessors()
+        val decoderCount = (cores / 4).coerceIn(1, 2)
+        val analysisCount = (cores / 2).coerceIn(1, 4)
+        val decoded = Channel<Decoded>(2)
+        val results = Channel<ScannedFile>(64)
+        val next = AtomicInteger(0)
+        val startNs = System.nanoTime()
+        var scanned = 0
+        var facesFound = 0
+        _status.value = ScanStatus.Scanning(0, total, 0, if (total > 0) "Starting…" else "Everything is already indexed")
 
-        try {
-            val detected = detectorHelper.detectFaces(bitmap)
-            if (detected.isEmpty()) {
-                database.saveFileFaces(file, emptyList())
-                return emptyList()
-            }
-
-            val pending = mutableListOf<PendingFaceRecord>()
-            for ((idx, faceRes) in detected.withIndex()) {
-                val embedding = embeddingHelper.extractEmbedding(faceRes.faceBitmap) ?: continue
-
-                // Save small avatar crop to cache for fast rendering
-                val thumbFile = File(thumbDir, "face_${file.name.hashCode()}_${idx}.jpg")
-                try {
-                    FileOutputStream(thumbFile).use { out ->
-                        faceRes.faceBitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
-                    }
-                } catch (e: Exception) {
-                    // ignore
+        val decoders = List(decoderCount) {
+            launch(Dispatchers.IO) {
+                while (isActive) {
+                    if (paused.value) paused.first { !it }
+                    val i = next.getAndIncrement()
+                    if (i >= total) break
+                    val f = todo[i]
+                    decoded.send(Decoded(f, f.lastModified(), f.length(), FaceImageLoader.decodeFile(f)))
                 }
-
-                pending.add(
-                    PendingFaceRecord(
-                        normalizedBounds = faceRes.normalizedBounds,
-                        embedding = embedding,
-                        thumbnailPath = thumbFile.absolutePath
-                    )
-                )
-            }
-
-            database.saveFileFaces(file, pending)
-            return pending
-        } finally {
-            if (!bitmap.isRecycled) {
-                bitmap.recycle()
             }
         }
+        val workers = List(analysisCount) {
+            launch(Dispatchers.Default) {
+                for (d in decoded) {
+                    val bmp = d.bitmap
+                    val found: List<NewFace> = try {
+                        if (bmp == null) emptyList()
+                        else analyzer.analyze(bmp).map { NewFace(it.bounds, it.landmarksNorm, it.embedding, it.quality) }
+                    } catch (e: Exception) { emptyList() } finally { bmp?.recycle() }
+                    results.send(ScannedFile(d.file.absolutePath, d.lastModified, d.size, found))
+                }
+            }
+        }
+        launch { decoders.joinAll(); decoded.close() }
+        launch { workers.joinAll(); results.close() }
+
+        val batch = ArrayList<ScannedFile>()
+        while (true) {
+            val first = results.receiveCatching().getOrNull() ?: break
+            batch.add(first)
+            while (batch.size < 32) { batch.add(results.tryReceive().getOrNull() ?: break) }
+
+            val saved = withContext(Dispatchers.IO) { database.saveBatch(batch) }
+            for ((k, file) in batch.withIndex()) {
+                store.removeFile(file.path)
+                for ((j, face) in file.faces.withIndex()) store.add(saved[k][j], file.path, 0L, face.quality, face.embedding)
+                facesFound += file.faces.size
+            }
+            scanned += batch.size
+            val seconds = max(0.001f, (System.nanoTime() - startNs) / 1e9f)
+            _status.value = if (paused.value) ScanStatus.Paused(scanned, total, facesFound)
+            else ScanStatus.Scanning(scanned, total, facesFound, File(batch.last().path).name, scanned / seconds)
+            batch.clear()
+        }
+        Pair(scanned, facesFound)
+    }
+
+    // ---- grouping (clustering) -------------------------------------------------------------------
+
+    private suspend fun groupPeople(folderPath: String, scanned: Int, faces: Int) = withContext(Dispatchers.Default) {
+        if (!storeLoaded) return@withContext
+        _status.value = ScanStatus.Scanning(scanned, scanned, faces, "Grouping people…")
+        val named = database.namedPersonIds()
+        val nextId = max(database.maxPersonId(), store.maxPersonId()) + 1
+        val res = clusterer.run(store, named, nextId)
+        val changed = res.changedRows.map { store.faceId(it) to store.personOf(it) }
+        val covers = res.coverRowByPerson.mapValues { store.faceId(it.value) }
+        withContext(Dispatchers.IO) { database.applyClustering(changed, res.faceCountByPerson, covers) }
+
+        _status.value = ScanStatus.Scanning(scanned, scanned, faces, "Preparing faces…")
+        for ((personId, faceId) in covers) {
+            if ((res.faceCountByPerson[personId] ?: 0) < FaceDatabase.MIN_FACES_TO_SHOW) continue
+            ensureThumbnail(faceId)
+        }
+    }
+
+    private fun ensureThumbnail(faceId: Long) {
+        val existing = database.hasThumbnail(faceId)
+        if (existing != null && File(existing).exists()) return
+        val loc = database.getFaceLocation(faceId) ?: return
+        val out = File(thumbDir, "f$faceId.jpg")
+        if (FaceThumbnails.render(File(loc.path), loc.landmarksNorm, out)) database.setThumbnail(faceId, out.absolutePath)
     }
 
     fun pauseScan() {
-        isPaused.set(true)
+        paused.value = true
         val current = _status.value
-        if (current is ScanStatus.Scanning) {
-            _status.value = ScanStatus.Paused(
-                scannedCount = current.scannedCount,
-                totalCount = current.totalCount,
-                facesFound = current.facesFound
-            )
-        }
+        if (current is ScanStatus.Scanning) _status.value = ScanStatus.Paused(current.scannedCount, current.totalCount, current.facesFound)
     }
 
     fun resumeScan() {
-        isPaused.set(false)
+        paused.value = false
         val current = _status.value
         if (current is ScanStatus.Paused) {
-            _status.value = ScanStatus.Scanning(
-                scannedCount = current.scannedCount,
-                totalCount = current.totalCount,
-                facesFound = current.facesFound,
-                currentFileName = "Resuming..."
-            )
+            _status.value = ScanStatus.Scanning(current.scannedCount, current.totalCount, current.facesFound, "Resuming…")
         }
     }
 
     fun stopScan() {
         scanJob?.cancel()
         scanJob = null
-        isPaused.set(false)
+        paused.value = false
     }
 
-    /**
-     * Performs reverse face search strictly within the specified explored folder.
-     */
-    suspend fun searchByFaceInFolder(
-        queryBitmap: Bitmap,
-        folderPath: String,
-        minSimilarity: Float = 0.58f
-    ): Pair<Bitmap, List<FaceMatch>> = withContext(Dispatchers.Default) {
-        val detected = detectorHelper.detectFaces(queryBitmap)
-        val faceResult = if (detected.isNotEmpty()) {
-            detected[0]
-        } else {
-            detectorHelper.extractFallbackFace(queryBitmap)
+    // ---- "Find by face" ------------------------------------------------------------------------------
+
+    /** Detects faces in a user-picked photo, largest first. Falls back to the centre square for tight avatar crops. */
+    suspend fun analyzeQueryImage(bitmap: Bitmap): List<QueryFace> = withContext(Dispatchers.Default) {
+        val found = analyzer.analyze(bitmap, keepAligned = true, maxFaces = 12)
+        if (found.isNotEmpty()) return@withContext found.map { QueryFace(it.aligned!!, it.embedding) }
+        val side = min(bitmap.width, bitmap.height)
+        val square = Bitmap.createBitmap(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side)
+        val scaled = Bitmap.createScaledBitmap(square, FaceMath.ALIGN_SIZE, FaceMath.ALIGN_SIZE, true)
+        listOf(QueryFace(scaled, embedder.embed(scaled)))
+    }
+
+    /** Exact search over the in-memory index; best face per photo, strongest first. */
+    suspend fun searchFaces(embedding: FloatArray, folderPath: String, minSimilarity: Float, maxResults: Int = 300): List<FaceMatch> =
+        withContext(Dispatchers.Default) {
+            ensureStoreLoaded()
+            val bestPerFile = LinkedHashMap<String, FaceHit>()
+            for (h in store.search(embedding, minSimilarity, folderPath)) bestPerFile.putIfAbsent(store.pathOf(h.row), h)
+            bestPerFile.entries.take(maxResults).map { (path, hit) -> FaceMatch(path, hit.similarity, null) }
         }
-
-        val embedding = embeddingHelper.extractEmbedding(faceResult.faceBitmap)
-            ?: return@withContext Pair(faceResult.faceBitmap, emptyList())
-
-        val matches = database.searchByEmbeddingInFolder(embedding, folderPath, minSimilarity)
-        Pair(faceResult.faceBitmap, matches)
-    }
 
     companion object {
-        @Volatile
-        private var INSTANCE: FaceScannerManager? = null
-
-        fun getInstance(context: Context): FaceScannerManager {
-            return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: FaceScannerManager(context.applicationContext).also { INSTANCE = it }
-            }
-        }
+        @Volatile private var INSTANCE: FaceScannerManager? = null
+        fun getInstance(context: Context): FaceScannerManager =
+            INSTANCE ?: synchronized(this) { INSTANCE ?: FaceScannerManager(context.applicationContext).also { INSTANCE = it } }
     }
 }

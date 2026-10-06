@@ -1,6 +1,7 @@
 package com.nestgallery.viewer.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +52,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -148,94 +150,13 @@ fun ExploreScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            root.name,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            if (scanning) "Scanning… (${items.size} found)" else "${items.size} items",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    // 1. Scoped Face recognition button
-                    IconButton(onClick = { onOpenFaces(root, items.toList()) }) {
-                        Icon(Icons.Default.Face, contentDescription = "Faces in this folder")
-                    }
-                    // 2. Text Search button
-                    IconButton(onClick = { onSearch(root) }) {
-                        Icon(Icons.Default.Search, contentDescription = "Search in folder")
-                    }
-                    // 3. View Mode Toggle
-                    IconButton(onClick = onToggleViewMode) {
-                        Icon(
-                            if (listMode) Icons.Default.GridView else Icons.Default.ViewAgenda,
-                            contentDescription = "Toggle view mode"
-                        )
-                    }
-                    // 4. Overflow Menu (Best Practice: avoids overcrowding)
-                    Box {
-                        IconButton(onClick = { menuExpanded = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More options")
-                        }
-                        DropdownMenu(
-                            expanded = menuExpanded,
-                            onDismissRequest = { menuExpanded = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Rescan folder") },
-                                onClick = {
-                                    menuExpanded = false
-                                    GalleryCache.invalidate(exploreKey)
-                                    rescanTrigger++
-                                },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Refresh, contentDescription = null)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (showNames) "Hide filenames" else "Show filenames") },
-                                onClick = {
-                                    menuExpanded = false
-                                    onToggleShowNames()
-                                },
-                                leadingIcon = {
-                                    Icon(if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, contentDescription = null)
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (hideHidden) "Show hidden items" else "Hide hidden items") },
-                                onClick = {
-                                    menuExpanded = false
-                                    onToggleHideHidden()
-                                },
-                                leadingIcon = {
-                                    Icon(if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, contentDescription = null)
-                                }
-                            )
-                        }
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+    val bar = rememberCollapsingBar()
+    val topPad = bar.contentTopPadding()
+
+    Scaffold { padding ->
+        Box(Modifier.fillMaxSize().padding(padding).nestedScroll(bar.connection)) {
             if (items.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().padding(top = topPad), contentAlignment = Alignment.Center) {
                     if (scanning) {
                         CircularProgressIndicator()
                     } else {
@@ -246,7 +167,7 @@ fun ExploreScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp)
+                    contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
                 ) {
                     itemsIndexed(items, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                         ExploreImageRow(
@@ -274,7 +195,7 @@ fun ExploreScreen(
                     state = gridState,
                     columns = GridCells.Adaptive(minSize = 108.dp),
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(4.dp)
+                    contentPadding = PaddingValues(start = 4.dp, end = 4.dp, bottom = 4.dp, top = topPad)
                 ) {
                     gridItemsIndexed(items, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                         val relDir = remember(entry.file.absolutePath) { relativeDirOf(entry.file, root.file) }
@@ -318,6 +239,37 @@ fun ExploreScreen(
             previewEntry?.let { entry ->
                 HoldPreviewOverlay(entry = entry)
             }
+
+            NestTopBar(
+                state = bar,
+                title = root.name,
+                subtitle = if (scanning) "Scanning… ${items.size} found" else "${items.size} items · all subfolders",
+                onBack = onBack,
+                listMode = listMode,
+                onToggleViewMode = onToggleViewMode,
+                recursive = RecursiveAction(
+                    active = true,
+                    busy = scanning,
+                    description = "Recursive view is on. Tap to rescan this folder and all subfolders",
+                    onClick = {
+                        GalleryCache.invalidate(exploreKey)
+                        rescanTrigger++
+                    }
+                ),
+                searchContent = { SearchPill("Search in ${root.name}") { onSearch(root) } },
+                headerActions = {
+                    IconButton(onClick = { onOpenFaces(root, items.toList()) }, modifier = Modifier.size(44.dp)) {
+                        Icon(Icons.Default.Face, contentDescription = "Faces in this folder")
+                    }
+                },
+                menu = listOf(
+                    TopBarMenuItem(if (showNames) "Hide filenames" else "Show filenames",
+                        if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, onToggleShowNames),
+                    TopBarMenuItem(if (hideHidden) "Show hidden items" else "Hide hidden items",
+                        if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onToggleHideHidden)
+                ),
+                modifier = Modifier.align(Alignment.TopCenter).alpha(if (previewEntry == null) 1f else 0f)
+            )
         }
     }
 }

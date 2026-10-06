@@ -12,8 +12,9 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   device storage. No SAF folder-tree picker, no re-picking a folder every
   time you reinstall. A "Home" button in the top bar jumps back to the
   storage root from anywhere.
-- **Breadcrumb bar** under the top app bar, always showing the full path;
-  tap any segment to jump back. System back button also walks up one
+- **Floating top capsule** — search, recursive scan and a grid/list switch stay pinned
+  while the title/path header folds away as you scroll. The path is shown as tappable
+  chips; tap any segment to jump back. System back button also walks up one
   folder at a time.
 - **List or grid view**, toggle in the top bar. List view renders each
   image full width with the filename underneath it.
@@ -54,9 +55,10 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   - **Edge-case resilience**: safely handles cut/cropped faces near photo borders
     without crashes, aligns tilted/rotated faces via Euler angle correction,
     detects partial profiles, and includes fallback center cropping for pre-cropped face inputs.
-  - **Engineered for 10,000+ photos**: local SQLite vector index with 192-d
-    MobileFaceNet embeddings; incremental scanning skips unchanged files instantly;
-    downsampled image decodes prevent high memory usage.
+  - **Engineered for 10,000+ photos**: SCRFD detector + ArcFace (MobileFaceNet) embeddings
+    run through ONNX Runtime; a parallel decode/analyse/write pipeline; incremental,
+    linear-time clustering that never reshuffles people you've already named; an int8
+    in-memory index that searches 50k faces in tens of milliseconds. Everything is local.
 - Dark theme with Material You dynamic color on Android 12+.
 
 ## Setup: just push

@@ -154,62 +154,14 @@ fun SearchScreen(
 
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    TextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
-                        placeholder = { Text("Search images & videos") },
-                        singleLine = true,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent
-                        ),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        trailingIcon = {
-                            if (query.isNotEmpty()) {
-                                IconButton(onClick = { query = "" }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Clear")
-                                }
-                            }
-                        }
-                    )
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { recursive = !recursive }) {
-                        Icon(
-                            if (recursive) Icons.Default.AccountTree else Icons.Default.Folder,
-                            contentDescription = if (recursive) {
-                                "Recursive scan mode: searching ${root.name} and all subfolders"
-                            } else {
-                                "Searching only ${root.name} directly"
-                            }
-                        )
-                    }
-                    IconButton(onClick = onToggleViewMode) {
-                        Icon(
-                            if (listMode) Icons.Default.GridView else Icons.Default.ViewAgenda,
-                            contentDescription = "Toggle view mode"
-                        )
-                    }
-                }
-            )
-        }
-    ) { padding ->
+    val bar = rememberCollapsingBar()
+    val topPad = bar.contentTopPadding()
+
+    Scaffold { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
                 debouncedQuery.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxSize().padding(top = topPad), contentAlignment = Alignment.Center) {
                         Text(
                             if (recursive) "Type to search ${root.name} and its subfolders"
                             else "Type to search ${root.name}",
@@ -218,7 +170,7 @@ fun SearchScreen(
                     }
                 }
                 results.isEmpty() && !scanning -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxSize().padding(top = topPad), contentAlignment = Alignment.Center) {
                         Text("No matches for \"$debouncedQuery\"", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
@@ -226,7 +178,7 @@ fun SearchScreen(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(bottom = 24.dp)
+                        contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
                     ) {
                         itemsIndexed(results, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                             val relDir = remember(entry.file.absolutePath) { relativeDirOf(entry.file, root.file) }
@@ -245,7 +197,7 @@ fun SearchScreen(
                         state = gridState,
                         columns = GridCells.Adaptive(minSize = 108.dp),
                         modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(4.dp)
+                        contentPadding = PaddingValues(start = 4.dp, end = 4.dp, bottom = 4.dp, top = topPad)
                     ) {
                         gridItemsIndexed(results, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                             val relDir = remember(entry.file.absolutePath) { relativeDirOf(entry.file, root.file) }
@@ -277,6 +229,33 @@ fun SearchScreen(
                     }
                 }
             }
+
+            NestTopBar(
+                state = bar,
+                title = root.name,
+                subtitle = null,
+                onBack = onBack,
+                showHeader = false,
+                listMode = listMode,
+                onToggleViewMode = onToggleViewMode,
+                recursive = RecursiveAction(
+                    icon = if (recursive) Icons.Default.AccountTree else Icons.Default.Folder,
+                    active = recursive,
+                    busy = scanning && recursive,
+                    description = if (recursive) "Searching ${root.name} and all subfolders. Tap to search only this folder"
+                    else "Searching only ${root.name}. Tap to include subfolders",
+                    onClick = { recursive = !recursive }
+                ),
+                searchContent = {
+                    SearchField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = if (recursive) "Search ${root.name} + subfolders" else "Search ${root.name}",
+                        focusRequester = focusRequester
+                    )
+                },
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }

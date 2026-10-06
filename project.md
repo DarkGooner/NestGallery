@@ -19,9 +19,9 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
          ▼                                                 ▼
 ┌─────────────────────────────────┐       ┌──────────────────────────────┐
 │       Data & Storage Layer      │       │     On-Device ML Engine      │
-│  FsDirectory (Direct File IO)   │       │  FaceDetectorHelper (ML Kit) │
-│  GalleryCache (Process Memory)  │       │  FaceEmbeddingHelper (TFLite)│
-│  VlcPlayerController (LibVLC)   │       │  FaceClusterer (HAC 512D)    │
+│  FsDirectory (Direct File IO)   │       │  ScrfdDetector (ONNX)        │
+│  GalleryCache (Process Memory)  │       │  ArcFaceEmbedder (ONNX)      │
+│  VlcPlayerController (LibVLC)   │       │  PersonClusterer + FaceStore │
 │                                 │       │  FaceScannerManager (Scope)  │
 │                                 │       │  FaceDatabase (SQLite)       │
 └─────────────────────────────────┘       └──────────────────────────────┘
@@ -29,7 +29,7 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 
 ### Key Architectural Tenets
 1. **Zero-SAF Direct Filesystem Access**: Rather than slow cross-process Storage Access Framework (`SAF`) queries, NestGallery requests `MANAGE_EXTERNAL_STORAGE` (All Files Access) on Android 11+ (API 30+) to read the storage directly using standard `java.io.File`.
-2. **On-Device Facial Recognition**: Uses Google ML Kit's face detector coupled with a 512-dimensional TensorFlow Lite model (**Google FaceNet-512**). All processing runs 100% locally on the device with zero cloud dependency.
+2. **On-Device Facial Recognition**: InsightFace **SCRFD-500MF** (detector, 5 landmarks) + **ArcFace MobileFaceNet / WebFace600K** (512-d embeddings) executed by ONNX Runtime. Faces are aligned to the ArcFace 112x112 template from the landmarks. All processing runs 100% locally. *Model licence: InsightFace's pretrained models are non-commercial research only.*
 3. **Folder-Scoped Processing**: Heavy operations like recursive exploration, media indexing, and facial clustering are strictly scoped to user-selected directory trees rather than locking up the entire device storage.
 4. **Resilient Video Playback**: Uses native **LibVLC** (`libvlc-all:3.7.6`) instead of ExoPlayer/Media3 to guarantee playback of legacy and esoteric video containers and codecs (e.g. AVI, MKV, legacy DivX/Xvid, 10-bit H.264).
 
@@ -77,9 +77,9 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 - **Functionality**:
   - `namespace`: `com.nestgallery.viewer`, `minSdk`: 26, `targetSdk`: 34, `compileSdk`: 36.
   - Native ABI filters: `arm64-v8a`, `armeabi-v7a` (ensures optimal APK size for mobile architectures).
-  - TFLite compression rule: `aaptOptions { noCompress += listOf("tflite") }` to allow zero-copy memory mapping (`FileChannel.MapMode.READ_ONLY`) of the FaceNet-512 model directly from the APK assets.
+  - `aaptOptions { noCompress += listOf("onnx") }` so the models can be copied out of the APK cheaply (they are materialised once into `filesDir/models` and memory-mapped by ONNX Runtime).
   - Signing configurations for release builds pointing to `app/keystore/release.keystore`.
-  - Dependencies: Jetpack Compose BOM, Coil (`coil-compose`, `coil-gif`, `coil-video`), LibVLC (`org.videolan.android:libvlc-all:3.7.6`), Google ML Kit (`face-detection:16.1.7`), TensorFlow Lite (`tensorflow-lite:2.16.1`, `tensorflow-lite-support:0.4.4`).
+  - Dependencies: Jetpack Compose BOM, Coil (`coil-compose`, `coil-gif`, `coil-video`), LibVLC (`org.videolan.android:libvlc-all:3.7.6`), ONNX Runtime (`onnxruntime-android:1.22.0`).
 - **How to Modify**: To upgrade dependencies, add new ML models, or change SDK target levels.
 
 #### [`app/src/main/AndroidManifest.xml`](file:///d:/Projects/NestGallery/app/src/main/AndroidManifest.xml)
@@ -90,14 +90,15 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 
 #### [`app/proguard-rules.pro`](file:///d:/Projects/NestGallery/app/proguard-rules.pro)
 - **Role**: Code obfuscation and R8 shrinking rules.
-- **Functionality**: Protects TFLite, ML Kit, and LibVLC native JNI methods from being stripped out during release builds.
+- **Functionality**: Protects ONNX Runtime and LibVLC native JNI methods from being stripped out during release builds.
 
 #### [`app/keystore/release.keystore`](file:///d:/Projects/NestGallery/app/keystore/release.keystore)
 - **Role**: Pre-configured keystore for signing release APKs.
 
-#### [`app/src/main/assets/facenet_512.tflite`](file:///d:/Projects/NestGallery/app/src/main/assets/facenet_512.tflite)
-- **Role**: Pre-trained Google FaceNet-512 deep neural network in TensorFlow Lite format (24.3 MB).
-- **Functionality**: Takes a 160×160 normalized RGB face crop and outputs a 512-dimensional feature embedding vector.
+#### `app/src/main/assets/scrfd_500m.onnx` (2.4 MB) and `arcface_mbf.onnx` (13 MB)
+- **Role**: SCRFD-500MF face detector and ArcFace MobileFaceNet (`w600k_mbf`) recogniser from InsightFace's `buffalo_s` pack.
+- **Contract**: detector input `[1,3,H,W]` (RGB, `(x-127.5)/128`, we use 640x640 letterboxed top-left), 9 outputs (score/box/5-landmark per stride 8/16/32). Recogniser input `[1,3,112,112]` (RGB, `(x-127.5)/127.5`), output 512-d.
+- **Swapping the recogniser**: `w600k_r50.onnx` (buffalo_l/m) has the identical interface and is more accurate on hard/demographically balanced benchmarks, but ~8x heavier. Replace the asset, change `ArcFaceEmbedder.ASSET` and bump `MODEL_ID` (the DB drops incompatible embeddings automatically).
 
 ---
 
@@ -154,53 +155,27 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 
 ### Face Recognition & Machine Learning Engine (`com.nestgallery.viewer.data.face`)
 
-#### [`app/src/main/java/com/nestgallery/viewer/data/face/FaceDatabase.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/face/FaceDatabase.kt)
-- **Role**: SQLite persistence layer for face recognition metadata, embeddings, and cluster associations.
-- **Functionality**:
-  - Manages three indexed tables:
-    - `indexed_files`: File path, last modified timestamp, size, and face count. Avoids redundant re-processing of unchanged files.
-    - `people`: Cluster records (`id`, `name`, `cover_face_id`, `face_count`, `updated_at`).
-    - `faces`: Detected face crops (`file_path`, bounding box `rect_left..rect_bottom`, `person_id`, 512D float array serialized as binary `BLOB`, `thumbnail_path`).
-  - Scoped Query Functions:
-    - `getPeopleInFolder(folderPath)`: Returns only clusters representing faces appearing in that folder.
-    - `searchByEmbeddingInFolder(queryEmbedding, folderPath, threshold, limit)`: Performs vectorized cosine similarity search against faces in the specified folder.
-    - `getFacesForClustering(folderPath)`: Fetches detected embeddings within the folder for agglomerative clustering.
-    - `renamePerson(id, name)` & `deletePerson(id)`: Cluster management utilities.
+Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect @640` -> `5-point similarity alignment to 112x112` -> `ArcFace embed (512-d)` -> `quality score` -> `int8 store + SQLite` -> `incremental clustering`.
 
-#### [`app/src/main/java/com/nestgallery/viewer/data/face/FaceDetectorHelper.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/face/FaceDetectorHelper.kt)
-- **Role**: Fast on-device face detection with Google ML Kit.
-- **Functionality**:
-  - Configured with `PERFORMANCE_MODE_FAST` and `minFaceSize = 0.08f` (~15ms detection per image).
-  - `decodeSampledBitmap(file, maxDimension = 512)`: Decodes images with downsampling to 512px and applies EXIF orientation rotation matrix.
-  - `detectFacesInBitmap(bitmap)`: Detects faces, crops them with padding, aligns rotation along Euler angle Z (tilted heads), and scales crops to 160×160 for FaceNet.
-  - Edge Case Handling: Includes boundary clamping when a face is partially cut off at image margins, and center-crop fallback when pre-cropped faces are provided.
+| File | Android-free? | Role |
+|---|---|---|
+| `FaceMath.kt` | yes | closed-form similarity transform, SCRFD head decoding + NMS, quality score, match-% calibration |
+| `FaceStore.kt` | yes | `Int8Matrix` (chunked int8 embeddings, ~4x smaller than float32) and `FaceStore`: thread-safe in-memory index with exact folder-scoped cosine search |
+| `PersonClusterer.kt` | yes | incremental clusterer (see below) |
+| `OnnxFaceModels.kt` | no | `ScrfdDetector`, `ArcFaceEmbedder` (ONNX Runtime, 1 intra-op thread per session so several images run in parallel) |
+| `FaceImage.kt` | no | `FaceImageLoader` (sampled decode, all 8 EXIF orientations), `FaceAligner` (Skia matrix warp), `FaceAnalyzer`, `FaceThumbnails` |
+| `FaceDatabase.kt` | no | SQLite v3 (WAL), batched writes, int8 embedding blobs, index-friendly folder range queries |
+| `FaceScannerManager.kt` | no | parallel scan pipeline, grouping, cover thumbnails, query analysis + search |
 
-#### [`app/src/main/java/com/nestgallery/viewer/data/face/FaceEmbeddingHelper.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/face/FaceEmbeddingHelper.kt)
-- **Role**: Feature extraction and embedding generation using TensorFlow Lite.
-- **Functionality**:
-  - Memory-maps `facenet_512.tflite` with 4-thread XNNPACK acceleration.
-  - Input: 160×160 RGB bitmap.
-  - Preprocessing: Standard pixel whitening `x' = (x - mean) / max(std, 1/sqrt(N))` across all channels.
-  - Output: 512-dimensional float vector, normalized to unit length via L2 norm.
-  - `cosineSimilarity(a, b)`: Vector dot-product calculation for unit vectors ($A \cdot B$).
+**Scan pipeline** (`FaceScannerManager.runPipeline`): 1-2 decoder coroutines (IO) feed a bounded channel; 1-4 analysis workers (CPU) run detect+align+embed; one writer commits batches of up to 32 photos in a single transaction and appends to the in-memory index. Already-indexed files are skipped using one bulk query. Pause stops new decodes; cancel still groups what was saved.
 
-#### [`app/src/main/java/com/nestgallery/viewer/data/face/FaceClusterer.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/face/FaceClusterer.kt)
-- **Role**: Agglomerative Hierarchical Clustering (HAC) algorithm for face grouping.
-- **Functionality**:
-  - Solves cluster fragmentation (e.g. stops the same person from being split into `Person 1`, `Person 55`, `Person 66`).
-  - Metric: Blended link similarity:
-    $$\text{Sim}(C_1, C_2) = 0.5 \times \text{CentroidSim} + 0.3 \times \text{AverageSim} + 0.2 \times \text{MaxPairSim}$$
-  - Calibrated similarity threshold: `0.62f` for normalized FaceNet-512 embeddings.
-  - Updates running cluster centroids and automatically selects the face closest to the centroid as the cover thumbnail.
-  - Preserves existing user-assigned person names across incremental scans.
+**Clustering** (`PersonClusterer`): only faces with `person_id = 0` are assigned (existing people and user-typed names are stable). Each face is compared to every person centroid (int8 dot), the 6 nearest get an exemplar comparison (up to 8 diverse exemplars per person via farthest-point sampling); join if `0.5*centroid + 0.5*best exemplar >= threshold`. Only faces with quality >= 0.5 may *start* a person. Two faces from the same photo are never the same person (cannot-link), and two people who co-occur in a photo are never merged. A final merge pass repairs fragmentation. Thresholds live in `ClusterConfig`. `person_id = -1` means the user dismissed the face.
 
-#### [`app/src/main/java/com/nestgallery/viewer/data/face/FaceScannerManager.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/face/FaceScannerManager.kt)
-- **Role**: Background scanning coordinator, lifecycle manager, and progress state dispatcher.
-- **Functionality**:
-  - Exposes `status: StateFlow<ScanStatus>` (`Idle`, `Scanning`, `Paused`, `Completed`).
-  - `startScanForFiles(files, folderPath)`: Takes candidate files from recursive scan, checks `isFileIndexedAndCurrent`, detects faces, extracts embeddings, saves cropped thumbnail images to disk, inserts DB records, and triggers `FaceClusterer`.
-  - Supports pause/resume/cancellation without UI blocking.
-  - `searchFaceInFolder(queryBitmap, folderPath)`: Extracts embedding from an input image and performs reverse face search in the folder.
+**Search**: exact brute-force cosine over the int8 index, scoped to the folder by path prefix. Raw cosine is stored/compared; `FaceMath.matchProbability` only converts it to the displayed percentage. Sensitivity chips: Strict 0.52 / Balanced 0.42 / Broad 0.34.
+
+**Cover thumbnails** are rendered lazily, only for the face chosen as each (visible) person's cover, into `filesDir/face_thumbs/f<faceId>.jpg`.
+
+**Verification tooling**: `tools/face-eval/` holds the Python reference pipeline, the labeled-pair evaluation and the JVM test harness used to validate the Kotlin core.
 
 ---
 
@@ -211,17 +186,21 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 - **Functionality**:
   - Displays contents of current folder in a grid or staggered layout.
   - Supports navigation into subfolders and navigating up the directory stack.
-  - Top Bar actions: Search folder, Recursive Explorer (`AccountTree`), filename toggle, hidden files toggle, and view mode switch.
+  - Uses `NestTopBar` (see below). Pinned dock: search pill, recursive-explorer button, grid/list switch. Header tier: back, title, path chips, Home, overflow (filenames / hidden items).
   - Long-press preview: Renders animated live preview using `MediaImageTile`.
+
+#### [`app/src/main/java/com/nestgallery/viewer/ui/NestTopBar.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/NestTopBar.kt)
+- **Role**: Shared floating, two-tier "glass capsule" top bar for the browser, recursive explorer and search.
+- **Header tier** (folds away while scrolling down via `CollapsingBarState`, a nested-scroll connection that never consumes scroll and snaps open/closed after a fling): back or folder badge, title + subtitle, tappable path chips, extra actions, overflow menu.
+- **Dock tier** (always visible): `SearchPill` (or the typeable `SearchField` on the search screen), `RecursiveAction` button (tinted when recursive mode is active, progress ring while scanning), animated sliding grid/list switch.
+- **Usage**: host the content and bar in one `Box` with `Modifier.nestedScroll(bar.connection)`; give lists `contentPadding(top = bar.contentTopPadding())` so they scroll underneath the capsule.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/ExploreScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/ExploreScreen.kt)
 - **Role**: Recursive flattened explorer interface.
 - **Functionality**:
   - Recursively discovers all media nested in subdirectories using `exploreMediaFlow`.
   - Displays media in a unified grid with sub-labels indicating relative folder paths.
-  - Material 3 Redesigned Top Bar:
-    - Direct actions: **Faces in folder** (launches `FolderFaceScreen`), **Search in folder**, **View mode toggle**.
-    - Overflow Menu (`MoreVert`): Rescan folder, Show/hide filenames, Show/hide hidden items.
+  - `NestTopBar`: the recursive button doubles as **rescan** (active tint + progress ring while walking the tree); **Faces in folder** sits in the header tier; filenames / hidden items in the overflow menu.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/ImageViewerScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/ImageViewerScreen.kt)
 - **Role**: Fullscreen photo viewer and video player.

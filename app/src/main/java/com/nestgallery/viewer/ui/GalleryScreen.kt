@@ -4,6 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -138,56 +141,14 @@ fun GalleryScreen(
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
-    Scaffold(
-        topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Text(current.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    },
-                    navigationIcon = {
-                        if (canGoBack) {
-                            IconButton(onClick = onBack) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { onSearch(current) }) {
-                            Icon(Icons.Default.Search, contentDescription = "Search images & videos")
-                        }
-                        IconButton(onClick = { onExploreFolder(current) }) {
-                            Icon(Icons.Default.AccountTree, contentDescription = "Browse all media in this folder recursively")
-                        }
-                        IconButton(onClick = onToggleShowNames) {
-                            Icon(
-                                if (showNames) Icons.AutoMirrored.Filled.Label else Icons.AutoMirrored.Filled.LabelOff,
-                                contentDescription = "Toggle filenames"
-                            )
-                        }
-                        IconButton(onClick = onToggleHideHidden) {
-                            Icon(
-                                if (hideHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = "Toggle hidden items"
-                            )
-                        }
-                        IconButton(onClick = onToggleViewMode) {
-                            Icon(
-                                if (listMode) Icons.Default.GridView else Icons.Default.ViewAgenda,
-                                contentDescription = "Toggle view mode"
-                            )
-                        }
-                        IconButton(onClick = onGoHome) {
-                            Icon(Icons.Default.Home, contentDescription = "Go to storage root")
-                        }
-                    }
-                )
-                Breadcrumb(pathStack = pathStack, onClick = onBreadcrumbClick)
-            }
-        }
-    ) { padding ->
+    val bar = rememberCollapsingBar()
+    val topPad = bar.contentTopPadding()
+    val pullState = rememberPullToRefreshState()
+
+    Scaffold { padding ->
         val currentEntries = entries
 
+        Box(Modifier.fillMaxSize().padding(padding).nestedScroll(bar.connection)) {
         PullToRefreshBox(
             isRefreshing = refreshing,
             onRefresh = {
@@ -202,24 +163,30 @@ fun GalleryScreen(
                     refreshing = false
                 }
             },
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
+            modifier = Modifier.fillMaxSize(),
+            state = pullState,
+            indicator = {
+                PullToRefreshDefaults.Indicator(
+                    state = pullState,
+                    isRefreshing = refreshing,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = topPad)
+                )
+            }
         ) {
         Box(Modifier.fillMaxSize()) {
             if (currentEntries == null) {
-                Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().padding(top = topPad).verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
             } else if (currentEntries.isEmpty()) {
-                Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().padding(top = topPad).verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
                     Text("Nothing here", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else if (listMode) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 24.dp)
+                    contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
                 ) {
                     items(currentEntries, key = { it.file.absolutePath }) { entry ->
                         if (entry.isDirectory) {
@@ -248,7 +215,7 @@ fun GalleryScreen(
                     state = gridState,
                     columns = GridCells.Adaptive(minSize = 108.dp),
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(4.dp)
+                    contentPadding = PaddingValues(start = 4.dp, end = 4.dp, bottom = 4.dp, top = topPad)
                 ) {
                     gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
                         if (entry.isDirectory) {
@@ -285,36 +252,36 @@ fun GalleryScreen(
             }
         }
         }
-    }
-}
 
-@Composable
-private fun Breadcrumb(pathStack: List<DocEntry>, onClick: (Int) -> Unit) {
-    val scroll = rememberScrollState()
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .horizontalScroll(scroll)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        pathStack.forEachIndexed { index, entry ->
-            val isLast = index == pathStack.lastIndex
-            Text(
-                text = entry.name,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = if (isLast) FontWeight.Bold else FontWeight.Normal,
-                color = if (isLast) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.clickable(enabled = !isLast) { onClick(index) }
-            )
-            if (!isLast) {
-                Text(
-                    "  /  ",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+        val folderCount = currentEntries?.count { it.isDirectory } ?: 0
+        val mediaCount = currentEntries?.count { !it.isDirectory } ?: 0
+        NestTopBar(
+            state = bar,
+            title = current.name,
+            subtitle = if (currentEntries == null) null else "$folderCount folders · $mediaCount items",
+            onBack = if (canGoBack) onBack else null,
+            listMode = listMode,
+            onToggleViewMode = onToggleViewMode,
+            recursive = RecursiveAction(
+                description = "Browse all media in this folder recursively",
+                onClick = { onExploreFolder(current) }
+            ),
+            searchContent = { SearchPill("Search in ${current.name}") { onSearch(current) } },
+            pathChips = pathStack.map { it.name },
+            onPathClick = onBreadcrumbClick,
+            headerActions = {
+                IconButton(onClick = onGoHome, modifier = Modifier.size(44.dp)) {
+                    Icon(Icons.Default.Home, contentDescription = "Go to storage root")
+                }
+            },
+            menu = listOf(
+                TopBarMenuItem(if (showNames) "Hide filenames" else "Show filenames",
+                    if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, onToggleShowNames),
+                TopBarMenuItem(if (hideHidden) "Show hidden items" else "Hide hidden items",
+                    if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onToggleHideHidden)
+            ),
+            modifier = Modifier.align(Alignment.TopCenter).alpha(if (previewEntry == null) 1f else 0f)
+        )
         }
     }
 }
