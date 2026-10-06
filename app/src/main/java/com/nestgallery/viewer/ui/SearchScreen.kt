@@ -6,10 +6,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
@@ -25,10 +28,12 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.PersonSearch
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -84,6 +89,7 @@ fun SearchScreen(
     listMode: Boolean,
     onToggleViewMode: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
+    onOpenFaceSearch: () -> Unit,
     onBack: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
@@ -181,6 +187,9 @@ fun SearchScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenFaceSearch) {
+                        Icon(Icons.Default.PersonSearch, contentDescription = "Search by Face")
+                    }
                     IconButton(onClick = { recursive = !recursive }) {
                         Icon(
                             if (recursive) Icons.Default.AccountTree else Icons.Default.Folder,
@@ -205,11 +214,22 @@ fun SearchScreen(
             when {
                 debouncedQuery.isEmpty() -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            if (recursive) "Type to search ${root.name} and its subfolders"
-                            else "Type to search ${root.name}",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Text(
+                                if (recursive) "Type to search ${root.name} and its subfolders"
+                                else "Type to search ${root.name}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            FilledTonalButton(onClick = onOpenFaceSearch) {
+                                Icon(Icons.Default.PersonSearch, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Find by Face")
+                            }
+                        }
                     }
                 }
                 results.isEmpty() && !scanning -> {

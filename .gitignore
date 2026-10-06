@@ -9,5 +9,6 @@
 captures/
 .externalNativeBuild/
 .cxx/
+.vs/
 # Note: app/keystore/release.keystore is intentionally committed so the
 # GitHub Actions workflow can sign builds with zero setup. See README.

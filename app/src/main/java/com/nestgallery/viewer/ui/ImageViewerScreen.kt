@@ -81,11 +81,15 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+import androidx.compose.material.icons.filled.PersonSearch
+import java.io.File
+
 @Composable
 fun ImageViewerScreen(
     images: List<DocEntry>,
     startIndex: Int,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onSearchFace: ((File) -> Unit)? = null
 ) {
     val pagerState = rememberPagerState(initialPage = startIndex) { images.size }
     var chromeVisible by remember { mutableStateOf(true) }
@@ -116,8 +120,20 @@ fun ImageViewerScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             Box(Modifier.fillMaxSize().statusBarsPadding().padding(8.dp)) {
-                IconButton(onClick = onDismiss) {
+                IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart)) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
+                }
+                if (!currentEntry.isVideo && onSearchFace != null) {
+                    IconButton(
+                        onClick = { onSearchFace(currentEntry.file) },
+                        modifier = Modifier.align(Alignment.TopEnd)
+                    ) {
+                        Icon(
+                            Icons.Default.PersonSearch,
+                            contentDescription = "Search by Face",
+                            tint = Color.White
+                        )
+                    }
                 }
                 Text(
                     text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",

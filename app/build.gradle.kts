@@ -55,6 +55,10 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    aaptOptions {
+        noCompress += listOf("tflite")
+    }
 }
 
 dependencies {
@@ -77,4 +81,9 @@ dependencies {
     implementation("io.coil-kt:coil-gif:2.6.0")
     implementation("io.coil-kt:coil-video:2.6.0")
     implementation("org.videolan.android:libvlc-all:3.7.6")
+
+    // On-device Machine Learning: ML Kit Face Detection (bundled offline) & TensorFlow Lite
+    implementation("com.google.mlkit:face-detection:16.1.7")
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 }

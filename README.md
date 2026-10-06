@@ -43,10 +43,20 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   brief on-screen confirmation), same as most video apps.
 - **Full-screen image viewer** with swipe between images, pinch-to-zoom,
   and double-tap to zoom.
-- Built for scale: a single batched directory read per folder (not one
-  query per file), an in-memory cache so revisiting a folder or backing
-  out of the viewer is instant, and lazy lists/grids that only decode
-  on-screen thumbnails — comfortably handles folders with 5,000+ files.
+- **On-Device Facial Recognition (Google Photos style)** — Discover and group
+  people in your photos completely offline with zero server calls.
+  - **People & Pets view**: circular face avatar previews, editable names
+    (e.g. "Mom", "Alice"), and instant photo count. Tap any person to view
+    all their photos.
+  - **Find / Search by Face**: pick any photo (from storage, camera, or
+    tap a face directly in the full-screen photo viewer) to instantly search
+    the entire gallery for that person, ranked by match percentage (e.g. 98% Match).
+  - **Edge-case resilience**: safely handles cut/cropped faces near photo borders
+    without crashes, aligns tilted/rotated faces via Euler angle correction,
+    detects partial profiles, and includes fallback center cropping for pre-cropped face inputs.
+  - **Engineered for 10,000+ photos**: local SQLite vector index with 192-d
+    MobileFaceNet embeddings; incremental scanning skips unchanged files instantly;
+    downsampled image decodes prevent high memory usage.
 - Dark theme with Material You dynamic color on Android 12+.
 
 ## Setup: just push

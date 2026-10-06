@@ -73,6 +73,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+import androidx.compose.material.icons.filled.Face
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GalleryScreen(
@@ -89,6 +91,7 @@ fun GalleryScreen(
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onExploreFolder: (DocEntry) -> Unit,
     onSearch: (DocEntry) -> Unit,
+    onOpenPeople: () -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
 ) {
@@ -151,6 +154,9 @@ fun GalleryScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = onOpenPeople) {
+                            Icon(Icons.Default.Face, contentDescription = "People & Pets")
+                        }
                         IconButton(onClick = { onSearch(current) }) {
                             Icon(Icons.Default.Search, contentDescription = "Search images & videos")
                         }

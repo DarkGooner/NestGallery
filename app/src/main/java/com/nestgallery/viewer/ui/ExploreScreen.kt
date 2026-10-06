@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.LabelOff
@@ -74,6 +75,7 @@ fun ExploreScreen(
     onToggleShowNames: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onSearch: (DocEntry) -> Unit,
+    onOpenPeople: () -> Unit,
     onBack: () -> Unit
 ) {
     // A plain (non-Compose-state-backed) cache key. GalleryCache is a
@@ -156,6 +158,9 @@ fun ExploreScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenPeople) {
+                        Icon(Icons.Default.Face, contentDescription = "People & Pets")
+                    }
                     IconButton(onClick = { onSearch(root) }) {
                         Icon(Icons.Default.Search, contentDescription = "Search images & videos")
                     }
