@@ -21,7 +21,7 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 │       Data & Storage Layer      │       │     On-Device ML Engine      │
 │  FsDirectory (Direct File IO)   │       │  ScrfdDetector (ONNX)        │
 │  GalleryCache (Process Memory)  │       │  ArcFaceEmbedder (ONNX)      │
-│  VlcPlayerController (LibVLC)   │       │  PersonClusterer + FaceStore │
+│  VlcPlayerController (LibVLC)   │       │  PeopleClusterer + FaceStore │
 │                                 │       │  FaceScannerManager (Scope)  │
 │                                 │       │  FaceDatabase (SQLite)       │
 └─────────────────────────────────┘       └──────────────────────────────┘
@@ -29,7 +29,7 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 
 ### Key Architectural Tenets
 1. **Zero-SAF Direct Filesystem Access**: Rather than slow cross-process Storage Access Framework (`SAF`) queries, NestGallery requests `MANAGE_EXTERNAL_STORAGE` (All Files Access) on Android 11+ (API 30+) to read the storage directly using standard `java.io.File`.
-2. **On-Device Facial Recognition**: InsightFace **SCRFD-500MF** (detector, 5 landmarks) + **ArcFace MobileFaceNet / WebFace600K** (512-d embeddings) executed by ONNX Runtime. Faces are aligned to the ArcFace 112x112 template from the landmarks. All processing runs 100% locally. *Model licence: InsightFace's pretrained models are non-commercial research only.*
+2. **On-Device Facial Recognition**: InsightFace **SCRFD-500MF** (detector, 5 landmarks) + **ArcFace ResNet-50 / WebFace600K, int8-quantised** (512-d embeddings) executed by ONNX Runtime. Faces are aligned to the ArcFace 112x112 template from the landmarks. All processing runs 100% locally. *Model licence: InsightFace's pretrained models are non-commercial research only.*
 3. **Folder-Scoped Processing**: Heavy operations like recursive exploration, media indexing, and facial clustering are strictly scoped to user-selected directory trees rather than locking up the entire device storage.
 4. **Resilient Video Playback**: Uses native **LibVLC** (`libvlc-all:3.7.6`) instead of ExoPlayer/Media3 to guarantee playback of legacy and esoteric video containers and codecs (e.g. AVI, MKV, legacy DivX/Xvid, 10-bit H.264).
 
@@ -95,10 +95,10 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 #### [`app/keystore/release.keystore`](file:///d:/Projects/NestGallery/app/keystore/release.keystore)
 - **Role**: Pre-configured keystore for signing release APKs.
 
-#### `app/src/main/assets/scrfd_500m.onnx` (2.4 MB) and `arcface_mbf.onnx` (13 MB)
-- **Role**: SCRFD-500MF face detector and ArcFace MobileFaceNet (`w600k_mbf`) recogniser from InsightFace's `buffalo_s` pack.
-- **Contract**: detector input `[1,3,H,W]` (RGB, `(x-127.5)/128`, we use 640x640 letterboxed top-left), 9 outputs (score/box/5-landmark per stride 8/16/32). Recogniser input `[1,3,112,112]` (RGB, `(x-127.5)/127.5`), output 512-d.
-- **Swapping the recogniser**: `w600k_r50.onnx` (buffalo_l/m) has the identical interface and is more accurate on hard/demographically balanced benchmarks, but ~8x heavier. Replace the asset, change `ArcFaceEmbedder.ASSET` and bump `MODEL_ID` (the DB drops incompatible embeddings automatically).
+#### `app/src/main/assets/scrfd_500m.onnx` (2.4 MB), `arcface_r50_int8.onnx` (42 MB), `face_knn.onnx` (<1 KB)
+- **Role**: SCRFD-500MF face detector (InsightFace `buffalo_s`); ArcFace ResNet-50 recogniser (`w600k_r50` from `buffalo_l`, statically quantised to int8 QDQ with `tools/face-eval/quant.py`, ~9x faster than fp32 with no measurable accuracy loss); the Gemm+TopK kNN kernel the clusterer runs on ONNX Runtime (`tools/face-eval/make_knn_model.py`).
+- **Contract**: detector input `[1,3,H,W]` (RGB, `(x-127.5)/128`, H/W = photo size rounded up to 32), 9 outputs (score/box/5-landmark per stride 8/16/32). Recogniser input `[N,3,112,112]` (RGB, `(x-127.5)/127.5`), output 512-d.
+- **Swapping the recogniser**: any ArcFace-style 112x112 model with the same contract works. Replace the asset, change `ArcFaceEmbedder.ASSET`, bump `MODEL_ID` (the DB drops incompatible embeddings automatically) and re-measure the thresholds with `tools/face-eval` - they depend on the model.
 
 ---
 
@@ -155,32 +155,42 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 
 ### Face Recognition & Machine Learning Engine (`com.nestgallery.viewer.data.face`)
 
-Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect @640` -> `5-point similarity alignment to 112x112` -> `ArcFace embed (512-d)` -> `quality score` -> `int8 store + SQLite` -> `incremental clustering`.
+Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect` -> `5-point similarity alignment to 112x112` -> `ArcFace R50 embed (512-d)` -> `quality score` -> `int8 store + SQLite` -> `kNN graph (ONNX)` -> `average-linkage clustering`.
 
 | File | Android-free? | Role |
 |---|---|---|
-| `FaceMath.kt` | yes | closed-form similarity transform, SCRFD head decoding + NMS, quality score, match-% calibration |
-| `FaceStore.kt` | yes | `Int8Matrix` (chunked int8 embeddings, ~4x smaller than float32) and `FaceStore`: thread-safe in-memory index with exact folder-scoped cosine search |
-| `ImmichClusterer.kt` | yes | port of Immich's DBSCAN-style recognition clustering + duplicate-person reconciliation (see below) |
+| `FaceMath.kt` | yes | closed-form similarity transform, SCRFD head decoding + NMS, quality score, calibrated match bands (`MATCH_STRONG/LIKELY/POSSIBLE`) |
+| `FaceStore.kt` | yes | `Int8Matrix` (chunked int8 embeddings) and `FaceStore`: thread-safe in-memory index with exact folder-scoped cosine search; `BruteForceNeighborFinder` (Kotlin kNN, tests + fallback) |
+| `PeopleClusterer.kt` | yes | constrained average-linkage clustering + margin-tested attach (see below) |
 | `FaceScanService.kt` | no | foreground service (data-sync) + wake lock + progress notification so scans survive minimising / screen-off |
-| `OnnxFaceModels.kt` | no | `ScrfdDetector`, `ArcFaceEmbedder` (ONNX Runtime, 1 intra-op thread per session so several images run in parallel) |
+| `OnnxFaceModels.kt` | no | `ScrfdDetector`, `ArcFaceEmbedder`, `OnnxKnn` (ONNX Runtime) |
 | `FaceImage.kt` | no | `FaceImageLoader` (sampled decode, all 8 EXIF orientations), `FaceAligner` (Skia matrix warp), `FaceAnalyzer`, `FaceThumbnails` |
-| `FaceDatabase.kt` | no | SQLite v3 (WAL), batched writes, int8 embedding blobs, index-friendly folder range queries |
-| `FaceScannerManager.kt` | no | parallel scan pipeline, grouping, cover thumbnails, query analysis + search |
+| `FaceDatabase.kt` | no | SQLite v4 (WAL), batched writes, int8 embedding blobs, folder range queries, `face_rejections` ("not this person"), merge |
+| `FaceScannerManager.kt` | no | parallel scan pipeline, grouping, corrections (rename / merge / remove / hide - always DB **and** in-memory index), cover thumbnails, search + person suggestions |
 
-**Scan pipeline** (`FaceScannerManager.runPipeline`): 1-2 decoder coroutines (IO) feed a bounded channel; 1-4 analysis workers (CPU) run detect+align+embed; one writer commits batches of up to 32 photos in a single transaction and appends to the in-memory index. Already-indexed files are skipped using one bulk query. Pause stops new decodes; cancel still groups what was saved.
+**Scan pipeline** (`FaceScannerManager.runPipeline`): 1-2 decoder coroutines (IO) feed a bounded channel; 1-4 analysis workers (CPU) run detect+align+embed; one writer commits batches of up to 32 photos in a single transaction and appends to the in-memory index. Already-indexed files are skipped using one bulk query. Pause stops new decodes; cancel still groups what was saved. If a scan indexed nothing new, grouping is skipped.
 
-**Clustering** (`ImmichClusterer`): a port of Immich's `handleRecognizeFaces`. For each unassigned face, find the nearest faces within cosine distance 0.5 (exact int8 scan, multi-threaded). Faces with no neighbour are noise; a face with >= `minFaces` (2; Immich uses 3) faces in range is a *core* point; non-core faces are deferred until all others are processed. A face joins the person of its nearest assigned neighbour; a core face with none starts a new person. Two additions to Immich: (1) **reconcile** - Immich never merges people it has split, so when a core face bridges two people they are merged (this is what fixes "same person shows up as two"); (2) **same-photo rule** - faces in one photo are never the same person, never neighbours, and people sharing a photo are never merged. Named people are never merged with each other and always survive. `person_id = -1` is a dismissed face. On first run after upgrading, unnamed groups made by the old algorithm are rebuilt (`cluster_algo` meta key). Config in `ImmichConfig`.
+**Clustering** (`PeopleClusterer`, measured in `tools/face-eval/README.md`):
+1. *Neighbours*: every ungrouped face gets its 24 nearest faces through `OnnxKnn` (`face_knn.onnx`: Gemm + TopK in blocks of 16k rows, ~4x faster than Kotlin because ART does not vectorise). A full rebuild of 40k faces is one 40k x 40k pass.
+2. *Merge*: existing people start as groups, ungrouped faces as singletons. The pair of groups with the highest **average** cosine over all their face pairs is merged while it is >= `linkThreshold` (0.45). For unit vectors that average is `sumA . sumB / (|A||B|)`, so a group is just a running sum. Average linkage never increases on a merge, so stale heap entries are upper bounds and are re-scored lazily (no neighbour lists to maintain).
+3. *Attach*: a face still alone joins the person it matches best on average if that is >= `attachThreshold` (0.35) **and** beats the runner-up by `attachMargin` (0.06); ambiguous faces stay ungrouped instead of being guessed.
+4. *Constraints* (every merge and attach): faces of one photo are different people; two named people never merge; a face the user removed from a person never returns to it (`face_rejections`).
+
+Why not the previous Immich-style DBSCAN: it is single-link, so one look-alike face chains two people together, and its "reconcile" step merged any groups that touched. On CGI renders (where different characters look much more alike than real people) its pairwise precision was 0.035 - a few groups swallowed many characters. Average linkage: 0.996.
+
+Existing people are never split by a normal run; **Regroup people** (Faces screen menu) re-clusters everything unnamed from scratch. Person ids only grow (`max_person_id` meta key), so a stored rejection can never point at a later, unrelated person. On first run after an algorithm change (`cluster_algo` meta key) unnamed people are rebuilt automatically.
+
+**Corrections** (Google Photos style): long-press people to multi-select and **Merge**; in a person, **Select** photos -> **Not this person** (removed + remembered); rename; hide (faces marked `person_id = -1`, never regrouped).
 
 **Background scanning**: `FaceScannerManager` starts `FaceScanService` (foreground, `dataSync`) when a scan starts. The service holds a partial wake lock, shows a progress notification (photos/s, Pause / Resume / Stop) and stops itself when the scan ends. Status is published before the service starts so it can't see a stale Idle. Progress is committed in batches, so if Android still kills the process the next scan resumes (indexed photos are skipped). Android 13+ asks for notification permission before the first scan; Android 15 limits dataSync services to ~6h/day, handled in `onTimeout`.
 
-**Scan speed**: detector input is the photo's own aspect ratio rounded up to a multiple of 32 instead of a fixed 640x640 square (about 40-55% less detector time on 4:3 / 16:9 photos in tests, same detections on 4 of 5 sample photos), detection score floor 0.7 and a minimum face size skip junk faces, faces of a photo are embedded in one batched model call (about 18% faster per face).
+**Scan speed**: detector input is the photo's own aspect ratio rounded up to a multiple of 32 instead of a fixed 640x640 square, detection score floor 0.7 and a minimum face size skip junk faces, faces of a photo are embedded in one batched call, the recogniser is int8.
 
-**Search**: exact brute-force cosine over the int8 index, scoped to the folder by path prefix. Raw cosine is stored/compared; `FaceMath.matchProbability` only converts it to the displayed percentage. Sensitivity chips: Strict 0.52 / Balanced 0.42 / Broad 0.34. Long-press on a result (or on a person's photo) shows the same hold-to-preview as the gallery (`Modifier.holdPreviewGestures`).
+**Search** ("Find by face"): exact brute-force cosine over the int8 index, scoped to the folder by path prefix, best face per photo. Sensitivity chips map to calibrated bands - Strict `MATCH_STRONG` (~1 in 100k different-person pairs pass), Balanced `MATCH_LIKELY` (~1 in 10k), Broad `MATCH_POSSIBLE` (~1 in 1k) - and result badges are coloured by band. "Looks like" lists the people whose faces match the query on average (same score as the clusterer's attach step). `FaceMath.matchProbability` only converts the raw cosine into the displayed percentage.
 
-**Cover thumbnails** are rendered lazily, only for the face chosen as each (visible) person's cover, into `filesDir/face_thumbs/f<faceId>.jpg`.
+**Cover thumbnails** are rendered lazily, only for the face chosen as each (visible) person's cover (high quality and close to the person's average face), into `filesDir/face_thumbs/f<faceId>.jpg`.
 
-**Verification tooling**: `tools/face-eval/` holds the Python reference pipeline, the labeled-pair evaluation and the JVM test harness used to validate the Kotlin core.
+**Verification tooling**: `tools/face-eval/` (Python harness on LFW + DigiFace-1M) and `app/src/test/.../PeopleClustererTest.kt` (`./gradlew :app:testDebugUnitTest`; set `FACE_EVAL_FIXTURE` to also run on real exported embeddings).
 
 ---
 
@@ -243,17 +253,18 @@ Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect @640` -> `5-point si
 - **Role**: Scoped facial recognition hub for the active recursive exploration.
 - **Functionality**:
   - **Tabs**:
-    1. **People**: Displays detected person clusters with face count badges and circular cover thumbnails.
-    2. **Find by Face**: Reverse image search. Allows picking an input photo (from device or gallery), detects query faces, and returns ranked matching photos in the current folder with similarity percentages.
-  - **Control Bar**: Real-time progress bar, item counters, Pause/Resume, and Rescan buttons.
-  - **Dialogs**: Inline person renaming dialog.
+    1. **People**: Detected people with photo counts and circular cover thumbnails. Long-press to multi-select, then **Merge**.
+    2. **Find by Face**: Reverse image search. Pick a photo, choose one of its faces; shows "Looks like" people suggestions and ranked matching photos in the folder, badges coloured by confidence band (strong / likely / possible).
+  - **Control Bar**: Real-time progress bar, item counters, Pause/Resume, and Rescan buttons. Overflow menu: **Regroup people**.
+  - **Dialogs**: rename, merge confirmation, regroup confirmation.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/face/PersonDetailScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/face/PersonDetailScreen.kt)
 - **Role**: Detailed gallery of photos containing a specific person cluster.
 - **Functionality**:
   - Displays circular hero cover and cluster statistics.
   - Grid of all photos in which this person's face was identified.
-  - Renaming and cluster deletion actions.
+  - **Select** -> **Not this person**: removes the selected photos from the person and remembers it (they are never grouped back into this person).
+  - Rename and hide-person actions (all routed through `FaceScannerManager` so the in-memory index stays in sync).
 
 ---
 
@@ -280,8 +291,9 @@ Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect @640` -> `5-point si
 3. Provide an `onBack: () -> Unit` callback that updates `screen = s.returnTo`.
 
 ### How to Adjust Face Recognition Precision
-- **Sensitivity / Similarity Threshold**: Edit `similarityThreshold` in [`FaceClusterer.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/face/FaceClusterer.kt#L14). Lower values (e.g. `0.58f`) group more aggressively across large age gaps; higher values (e.g. `0.68f`) ensure stricter separation.
-- **Detection Sensitivity**: Adjust `minFaceSize` in [`FaceDetectorHelper.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/face/FaceDetectorHelper.kt#L47).
+- **Grouping**: `ClusterConfig` in `PeopleClusterer.kt`. `linkThreshold` higher (e.g. `0.5f`) = fewer wrong merges, more people split in two; lower (`0.42f`) = the reverse. `attachThreshold` / `attachMargin` control how readily leftover faces join a person. Bump `CLUSTER_ALGO` in `FaceScannerManager` to regroup existing libraries, and measure with `tools/face-eval/cluster.py` first.
+- **Find by face bands**: `MATCH_STRONG / MATCH_LIKELY / MATCH_POSSIBLE` in `FaceMath.kt` (raw cosine, model specific).
+- **Detection**: `FaceAnalyzer.MIN_DET_SCORE` and `FaceQuality.MIN_EYE_DIST`.
 
 ### How to Build & Run
 - **Debug build**: `./gradlew assembleDebug`

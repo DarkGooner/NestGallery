@@ -13,7 +13,6 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
-import kotlin.math.min
 
 /** Decodes photos at a size that is cheap to decode but still has enough pixels for small faces. */
 object FaceImageLoader {
@@ -100,7 +99,7 @@ class AnalyzedFace(
     /** 5 landmarks, x,y interleaved, 0..1 relative to the analysed image (lets thumbnails be re-rendered later). */
     val landmarksNorm: FloatArray,
     val embedding: FloatArray,
-    /** "Effective" quality: faces that must not seed a new person are capped below the seed threshold. */
+    /** 0..1, see [FaceQuality]. */
     val quality: Float,
     val detScore: Float,
     /** Aligned 112x112 crop; only filled when requested (query images). Caller owns/recycles it. */
@@ -128,8 +127,7 @@ class FaceAnalyzer(private val detector: ScrfdDetector, private val embedder: Ar
                 val eyeNorm = FaceQuality.eyeDistance(d.landmarks) * 800f / ScrfdDetector.INPUT_SIZE
                 if (eyeNorm < FaceQuality.MIN_EYE_DIST) continue       // too small to embed reliably
                 val yaw = FaceQuality.yawProxy(d.landmarks)
-                var q = FaceQuality.score(d.score, eyeNorm, yaw)
-                if (!FaceQuality.canSeed(q, eyeNorm, yaw)) q = min(q, FaceQuality.SEED_MIN_QUALITY - 0.01f)
+                val q = FaceQuality.score(d.score, eyeNorm, yaw)
 
                 // Small faces are aligned from the larger decode (more real pixels); big faces from the detector image.
                 val useSrc = (d.x2 - d.x1) < FaceMath.ALIGN_SIZE && src !== detBmp

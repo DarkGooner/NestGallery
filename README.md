@@ -48,16 +48,23 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   people in your photos completely offline with zero server calls.
   - **People & Pets view**: circular face avatar previews, editable names
     (e.g. "Mom", "Alice"), and instant photo count. Tap any person to view
-    all their photos.
+    all their photos. Fix mistakes like in Google Photos: long-press people to
+    **merge** them, or select photos in a person and mark them **Not this person**
+    (remembered, so they are never grouped back). **Regroup people** rebuilds
+    everything you haven't named.
   - **Find / Search by Face**: pick any photo (from storage, camera, or
     tap a face directly in the full-screen photo viewer) to instantly search
     the entire gallery for that person, ranked by match percentage (e.g. 98% Match).
   - **Edge-case resilience**: safely handles cut/cropped faces near photo borders
     without crashes, aligns tilted/rotated faces via Euler angle correction,
     detects partial profiles, and includes fallback center cropping for pre-cropped face inputs.
-  - **Engineered for 10,000+ photos**: SCRFD detector + ArcFace (MobileFaceNet) embeddings
-    run through ONNX Runtime; a parallel decode/analyse/write pipeline; incremental,
-    linear-time clustering that never reshuffles people you've already named; an int8
+  - **Real people and 3D renders** (Daz3D, Blender, game characters): ArcFace ResNet-50
+    (int8) embeddings and average-linkage clustering, measured on real photos (LFW) and
+    CGI renders (DigiFace-1M) at 99.5%+ grouping precision (BCubed; the previous
+    clusterer merged different CGI characters wholesale - details in `tools/face-eval/README.md`).
+  - **Engineered for 10,000-20,000+ photos**: SCRFD detector + ArcFace run through ONNX
+    Runtime; a parallel decode/analyse/write pipeline; incremental clustering on an ONNX
+    k-nearest-neighbour graph that never reshuffles people you've already named; an int8
     in-memory index that searches 50k faces in tens of milliseconds. Everything is local.
 - Dark theme with Material You dynamic color on Android 12+.
 

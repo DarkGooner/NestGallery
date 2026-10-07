@@ -12,3 +12,6 @@ captures/
 .vs/
 # Note: app/keystore/release.keystore is intentionally committed so the
 # GitHub Actions workflow can sign builds with zero setup. See README.
+
+# face-eval embedding cache (tools/face-eval/embed.py)
+/tools/face-eval/emb/

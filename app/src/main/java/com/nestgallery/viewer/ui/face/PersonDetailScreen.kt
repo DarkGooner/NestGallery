@@ -23,10 +23,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -43,6 +47,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,7 +64,11 @@ import com.nestgallery.viewer.ui.holdPreviewGestures
 import coil.request.ImageRequest
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.face.FaceDatabase
+import com.nestgallery.viewer.data.face.FaceScannerManager
 import com.nestgallery.viewer.data.face.PersonEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -72,6 +81,8 @@ fun PersonDetailScreen(
 ) {
     val context = LocalContext.current
     val db = remember { FaceDatabase.getInstance(context) }
+    val scanner = remember { FaceScannerManager.getInstance(context) }
+    val scope = rememberCoroutineScope()
 
     var person by remember { mutableStateOf<PersonEntity?>(null) }
     var mediaEntries by remember { mutableStateOf<List<DocEntry>>(emptyList()) }
@@ -79,23 +90,26 @@ fun PersonDetailScreen(
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf("") }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    // "Select" mode: tap photos, then "Not this person" removes them (and the grouping remembers the correction)
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showRemoveDialog by remember { mutableStateOf(false) }
 
     fun loadData() {
-        person = db.getPersonById(personId)
-        val imagePaths = db.getImagePathsForPerson(personId, folderPath)
-        val entries = imagePaths.mapNotNull { path ->
-            val file = File(path)
-            if (file.exists()) {
-                DocEntry(
-                    file = file,
-                    name = file.name,
-                    isDirectory = false,
-                    size = file.length(),
-                    isVideo = false
-                )
-            } else null
+        scope.launch {
+            val (p, entries) = withContext(Dispatchers.IO) {
+                val p = db.getPersonById(personId)
+                val entries = db.getImagePathsForPerson(personId, folderPath).mapNotNull { path ->
+                    val file = File(path)
+                    if (file.exists()) DocEntry(file = file, name = file.name, isDirectory = false, size = file.length(), isVideo = false)
+                    else null
+                }
+                p to entries
+            }
+            person = p
+            mediaEntries = entries
+            selected = selected.filter { path -> entries.any { it.file.absolutePath == path } }.toSet()
         }
-        mediaEntries = entries
     }
 
     LaunchedEffect(personId) {
@@ -106,7 +120,21 @@ fun PersonDetailScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            if (selecting) TopAppBar(
+                title = { Text(if (selected.isEmpty()) "Select photos" else "${selected.size} selected") },
+                navigationIcon = {
+                    IconButton(onClick = { selecting = false; selected = emptySet() }) {
+                        Icon(Icons.Default.Close, contentDescription = "Done selecting")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { showRemoveDialog = true }, enabled = selected.isNotEmpty()) {
+                        Icon(Icons.Default.PersonRemove, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Not this person")
+                    }
+                }
+            ) else TopAppBar(
                 title = {
                     Text(
                         currentPerson?.name ?: "Person",
@@ -120,6 +148,7 @@ fun PersonDetailScreen(
                     }
                 },
                 actions = {
+                    TextButton(onClick = { selecting = true }, enabled = mediaEntries.isNotEmpty()) { Text("Select") }
                     IconButton(
                         onClick = {
                             renameInput = currentPerson?.name ?: ""
@@ -211,17 +240,22 @@ fun PersonDetailScreen(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     itemsIndexed(mediaEntries, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
+                        val path = entry.file.absolutePath
+                        val isSelected = path in selected
                         Box(
                             modifier = Modifier
                                 .aspectRatio(1f)
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .holdPreviewGestures(
-                                key = entry.file,
-                                onClick = { onOpenImage(mediaEntries, index) },
-                                onHoldStart = { previewEntry = entry },
-                                onHoldEnd = { previewEntry = null }
-                            )
+                                .then(
+                                    if (selecting) Modifier.clickable { selected = if (isSelected) selected - path else selected + path }
+                                    else Modifier.holdPreviewGestures(
+                                        key = entry.file,
+                                        onClick = { onOpenImage(mediaEntries, index) },
+                                        onHoldStart = { previewEntry = entry },
+                                        onHoldEnd = { previewEntry = null }
+                                    )
+                                )
                         ) {
                             AsyncImage(
                                 model = ImageRequest.Builder(context)
@@ -246,6 +280,15 @@ fun PersonDetailScreen(
                                         modifier = Modifier.size(28.dp)
                                     )
                                 }
+                            }
+                            if (selecting) {
+                                if (isSelected) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)))
+                                Icon(
+                                    if (isSelected) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                                    contentDescription = if (isSelected) "Selected" else "Not selected",
+                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else Color.White,
+                                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp)
+                                )
                             }
                         }
                     }
@@ -272,8 +315,8 @@ fun PersonDetailScreen(
                 Button(
                     onClick = {
                         if (renameInput.isNotBlank()) {
-                            db.renamePerson(personId, renameInput.trim())
-                            loadData()
+                            val name = renameInput.trim()
+                            scope.launch { scanner.renamePerson(personId, name); loadData() }
                         }
                         showRenameDialog = false
                     }
@@ -294,14 +337,13 @@ fun PersonDetailScreen(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("Remove Person") },
             text = {
-                Text("This will remove the person grouping. Your actual photos will not be deleted.")
+                Text("This person is hidden and their faces won't be grouped again. Your actual photos will not be deleted.")
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        db.deletePerson(personId)
                         showDeleteDialog = false
-                        onBack()
+                        scope.launch { scanner.deletePerson(personId); onBack() }
                     }
                 ) {
                     Text("Remove")
@@ -312,6 +354,29 @@ fun PersonDetailScreen(
                     Text("Cancel")
                 }
             }
+        )
+    }
+
+    if (showRemoveDialog) {
+        val n = selected.size
+        AlertDialog(
+            onDismissRequest = { showRemoveDialog = false },
+            title = { Text("Not ${currentPerson?.name ?: "this person"}?") },
+            text = {
+                Text("$n ${if (n == 1) "photo is" else "photos are"} removed from this person and won't be grouped with them again. Your photos are not deleted.")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showRemoveDialog = false
+                    val paths = selected.toList()
+                    scope.launch {
+                        scanner.removePhotosFromPerson(personId, paths)
+                        selected = emptySet(); selecting = false
+                        loadData()
+                    }
+                }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { showRemoveDialog = false }) { Text("Cancel") } }
         )
     }
 }

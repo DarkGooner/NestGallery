@@ -84,4 +84,8 @@ dependencies {
 
     // On-device face pipeline (100% offline): SCRFD detector + ArcFace MobileFaceNet, run by ONNX Runtime.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+
+    testImplementation("junit:junit:4.13.2")
+    // Desktop ONNX Runtime so OnnxKnn can be unit-tested on the JVM (the Android AAR's natives don't load there).
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.22.0")
 }

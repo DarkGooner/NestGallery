@@ -73,13 +73,24 @@ class FaceDatabase private constructor(context: Context) :
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_faces_file_path ON faces(file_path)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id)")
+        createRejections(db)
         db.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES('model', '${ArcFaceEmbedder.MODEL_ID}')")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Embeddings from the old FaceNet model live in a different vector space - they cannot be reused.
-        dropAll(db)
-        onCreate(db)
+        if (oldVersion < 3) {
+            // Embeddings from the old FaceNet model live in a different vector space - they cannot be reused.
+            dropAll(db)
+            onCreate(db)
+            return
+        }
+        // v4: "not this person" corrections. (A different embedding model is still caught by the check in onOpen.)
+        if (oldVersion < 4) createRejections(db)
+    }
+
+    /** face_id must never be grouped into person_id again (the user removed it from that person). */
+    private fun createRejections(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS face_rejections (face_id INTEGER NOT NULL, person_id INTEGER NOT NULL, PRIMARY KEY(face_id, person_id))")
     }
 
     override fun onOpen(db: SQLiteDatabase) {
@@ -90,7 +101,7 @@ class FaceDatabase private constructor(context: Context) :
     }
 
     private fun dropAll(db: SQLiteDatabase) {
-        for (t in listOf("faces", "people", "indexed_files", "meta")) db.execSQL("DROP TABLE IF EXISTS $t")
+        for (t in listOf("faces", "people", "indexed_files", "meta", "face_rejections")) db.execSQL("DROP TABLE IF EXISTS $t")
     }
 
     // ---- scanning ------------------------------------------------------------------------------
@@ -119,6 +130,7 @@ class FaceDatabase private constructor(context: Context) :
                 "INSERT INTO faces(file_path,rect_left,rect_top,rect_right,rect_bottom,landmarks,quality,person_id,embedding,created_at) VALUES(?,?,?,?,?,?,?,0,?,?)"
             )
             for (f in files) {
+                db.execSQL("DELETE FROM face_rejections WHERE face_id IN (SELECT id FROM faces WHERE file_path = ?)", arrayOf(f.path))
                 db.delete("faces", "file_path = ?", arrayOf(f.path))
                 val faceIds = ArrayList<Long>(f.faces.size)
                 for (face in f.faces) {
@@ -175,6 +187,7 @@ class FaceDatabase private constructor(context: Context) :
         db.beginTransaction()
         try {
             db.execSQL("UPDATE faces SET person_id = 0 WHERE person_id > 0 AND person_id NOT IN (SELECT id FROM people WHERE named = 1)")
+            db.execSQL("DELETE FROM face_rejections WHERE person_id NOT IN (SELECT id FROM people WHERE named = 1)")
             db.execSQL("DELETE FROM people WHERE named = 0")
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -204,11 +217,82 @@ class FaceDatabase private constructor(context: Context) :
                 update.bindLong(3, now); update.bindLong(4, personId); update.executeUpdateDelete()
             }
             insert.close(); update.close()
-            db.execSQL("DELETE FROM people WHERE id NOT IN (SELECT DISTINCT person_id FROM faces WHERE person_id > 0)")
+            db.execSQL("DELETE FROM people WHERE named = 0 AND id NOT IN (SELECT DISTINCT person_id FROM faces WHERE person_id > 0)")
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+    }
+
+    /** faceId -> person ids that face must never be grouped into again. */
+    fun loadRejections(): Map<Long, Set<Long>> {
+        val out = HashMap<Long, MutableSet<Long>>()
+        readableDatabase.rawQuery("SELECT face_id, person_id FROM face_rejections", null).use {
+            while (it.moveToNext()) out.getOrPut(it.getLong(0)) { HashSet() }.add(it.getLong(1))
+        }
+        return out
+    }
+
+    /**
+     * "Not this person": the faces of [personId] in [paths] become ungrouped and remember the rejection, so
+     * clustering never puts them back (they may still be grouped with someone else).
+     * @return ids of the faces that were removed
+     */
+    fun removePhotosFromPerson(personId: Long, paths: Collection<String>): List<Long> {
+        val db = writableDatabase
+        val removed = ArrayList<Long>()
+        db.beginTransaction()
+        try {
+            for (path in paths) {
+                db.rawQuery("SELECT id FROM faces WHERE person_id = ? AND file_path = ?", arrayOf(personId.toString(), path)).use {
+                    while (it.moveToNext()) removed.add(it.getLong(0))
+                }
+            }
+            val reject = db.compileStatement("INSERT OR IGNORE INTO face_rejections(face_id, person_id) VALUES(?, ?)")
+            val unassign = db.compileStatement("UPDATE faces SET person_id = 0 WHERE id = ?")
+            for (id in removed) {
+                reject.bindLong(1, id); reject.bindLong(2, personId); reject.executeInsert()
+                unassign.bindLong(1, id); unassign.executeUpdateDelete()
+            }
+            reject.close(); unassign.close()
+            refreshPersonCounts(db)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return removed
+    }
+
+    /**
+     * Moves every face of [sources] into [target]. If [target] has no name but one of the sources does, the target
+     * takes that name. Rejections of a source carry over to the target.
+     */
+    fun mergePeople(target: Long, sources: Collection<Long>) {
+        val others = sources.filter { it != target && it > 0 }
+        if (others.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val targetNamed = db.rawQuery("SELECT named FROM people WHERE id = ?", arrayOf(target.toString())).use { it.moveToFirst() && it.getInt(0) == 1 }
+            if (!targetNamed) {
+                val inList = others.joinToString(",")
+                db.rawQuery("SELECT name FROM people WHERE named = 1 AND id IN ($inList) ORDER BY face_count DESC LIMIT 1", null).use {
+                    if (it.moveToFirst()) db.execSQL("UPDATE people SET name = ?, named = 1 WHERE id = ?", arrayOf(it.getString(0), target))
+                }
+            }
+            for (src in others) {
+                db.execSQL("UPDATE faces SET person_id = ? WHERE person_id = ?", arrayOf(target, src))
+                db.execSQL("UPDATE OR IGNORE face_rejections SET person_id = ? WHERE person_id = ?", arrayOf(target, src))
+                db.execSQL("DELETE FROM face_rejections WHERE person_id = ?", arrayOf(src))
+                db.execSQL("DELETE FROM people WHERE id = ?", arrayOf(src))
+            }
+            refreshPersonCounts(db)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    private fun refreshPersonCounts(db: SQLiteDatabase) {
+        db.execSQL("UPDATE people SET face_count = (SELECT COUNT(*) FROM faces WHERE faces.person_id = people.id)")
+        // An unnamed person left without faces is gone; a named one is kept (the name is the user's work).
+        db.execSQL("DELETE FROM people WHERE named = 0 AND face_count = 0")
     }
 
     fun getFaceLocation(faceId: Long): FaceLocation? =
@@ -276,6 +360,7 @@ class FaceDatabase private constructor(context: Context) :
         db.beginTransaction()
         try {
             db.delete("people", "id = ?", arrayOf(personId.toString()))
+            db.delete("face_rejections", "person_id = ?", arrayOf(personId.toString()))
             db.update("faces", ContentValues().apply { put("person_id", -1L) }, "person_id = ?", arrayOf(personId.toString()))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -303,7 +388,7 @@ class FaceDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "nest_faces.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
         const val MIN_FACES_TO_SHOW = 2
 
         @Volatile private var INSTANCE: FaceDatabase? = null

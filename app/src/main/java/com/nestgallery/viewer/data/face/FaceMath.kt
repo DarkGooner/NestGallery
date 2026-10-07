@@ -83,13 +83,24 @@ object FaceMath {
         return out
     }
 
-    /**
-     * Maps a raw cosine similarity of the ArcFace embedding to a human-friendly 0..1 "match" score.
-     * Centre 0.38 / slope 14 chosen from the genuine/impostor distributions we measured
-     * (same-person median ~0.74, different-person median ~0.0, impostor tail ~0.25).
-     * Purely cosmetic - all decisions use the raw cosine.
+    /*
+     * Raw-cosine bands for "Find by face", read off the different-person score distribution of a mixed library
+     * (real people from LFW + CGI renders from DigiFace-1M; tools/face-eval/README.md). CGI faces look far more alike
+     * than real ones (99.9% of different-person pairs score < 0.21 on real photos but < 0.38 on renders), so the
+     * bands are set on the harder, mixed distribution.
      */
-    fun matchProbability(cosine: Float): Float = (1.0 / (1.0 + exp(-14.0 * (cosine - 0.38)))).toFloat()
+    /** ~1 in 100,000 different-person pairs score this high (98.6% of same-person pairs do). */
+    const val MATCH_STRONG = 0.45f
+    /** ~1 in 10,000 (99.4% of same-person pairs). */
+    const val MATCH_LIKELY = 0.39f
+    /** ~1 in 1,000 (99.8%): below this a "match" is mostly look-alikes. */
+    const val MATCH_POSSIBLE = 0.32f
+
+    /**
+     * Maps a raw cosine similarity to a human-friendly 0..1 "match" score: ~10% at [MATCH_POSSIBLE], 50% at
+     * [MATCH_LIKELY], ~90% at [MATCH_STRONG]. Purely cosmetic - all decisions use the raw cosine.
+     */
+    fun matchProbability(cosine: Float): Float = (1.0 / (1.0 + exp(-36.0 * (cosine - MATCH_LIKELY)))).toFloat()
 }
 
 /** One raw SCRFD detection in the coordinate space of the (letterboxed) detector input. */
@@ -176,10 +187,7 @@ object ScrfdDecoder {
     }
 }
 
-/**
- * Cheap, resolution-independent face quality estimate. Used so that only good faces can *start* a new
- * person; poor ones (tiny, blurry-sized, strong profile) may only join an existing person.
- */
+/** Cheap, resolution-independent face quality estimate (picks the cover face of a person). */
 object FaceQuality {
     /** Distance between eye centres. */
     fun eyeDistance(lm: FloatArray): Float {
@@ -208,11 +216,4 @@ object FaceQuality {
 
     /** Faces whose eye distance is below this (on an 800px-long-side rendering) are too small to embed reliably. */
     const val MIN_EYE_DIST = 12f
-
-    const val SEED_MIN_QUALITY = 0.50f
-    const val SEED_MAX_YAW = 0.45f
-    const val SEED_MIN_EYE_DIST = 22f
-
-    fun canSeed(quality: Float, eyeDistNorm: Float, yaw: Float): Boolean =
-        quality >= SEED_MIN_QUALITY && yaw <= SEED_MAX_YAW && eyeDistNorm >= SEED_MIN_EYE_DIST
 }

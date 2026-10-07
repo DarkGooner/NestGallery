@@ -2,6 +2,7 @@ package com.nestgallery.viewer.data.face
 
 import java.io.File
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -162,6 +163,12 @@ class FaceStore(val dim: Int = FaceMath.EMBED_DIM) {
         for (r in 0 until matrix.rows) if (alive[r] && personIds[r] > 0 && personIds[r] !in keep) personIds[r] = 0
     }
 
+    /** Writes the (dequantised) embeddings of [rows] back to back into [out], starting at its current position. */
+    fun copyEmbeddings(rows: IntArray, from: Int, to: Int, out: java.nio.FloatBuffer) = lock.read {
+        val tmp = FloatArray(dim)
+        for (i in from until to) { matrix.getRow(rows[i], tmp); out.put(tmp) }
+    }
+
     fun isAlive(row: Int) = lock.read { alive[row] }
     fun faceId(row: Int): Long = lock.read { faceIds[row] }
     fun fileIndex(row: Int): Int = lock.read { fileIdx[row] }
@@ -252,10 +259,63 @@ class FaceStore(val dim: Int = FaceMath.EMBED_DIM) {
         out
     }
 
+    /** Person id -> (sum of member embeddings, member count), for "which person is this face?" lookups. */
+    fun personSums(): Map<Long, Pair<FloatArray, Int>> = lock.read {
+        val out = HashMap<Long, Pair<FloatArray, Int>>()
+        val tmp = FloatArray(dim)
+        for (r in 0 until matrix.rows) {
+            if (!alive[r] || personIds[r] <= 0) continue
+            matrix.getRow(r, tmp)
+            val cur = out[personIds[r]]
+            val sum = cur?.first ?: FloatArray(dim)
+            for (i in 0 until dim) sum[i] += tmp[i]
+            out[personIds[r]] = sum to ((cur?.second ?: 0) + 1)
+        }
+        out
+    }
+
     private fun scopeMask(folderPath: String?): BooleanArray? {
         if (folderPath == null) return null
         val root = folderPath.trimEnd(File.separatorChar, '/')
         val prefix = root + File.separatorChar
         return BooleanArray(paths.size) { i -> paths[i] == root || paths[i].startsWith(prefix) }
+    }
+}
+
+/**
+ * Exact k-nearest-neighbour search with the int8 dot product, split over [threads] workers. Used by the JVM tests and
+ * as the fallback when the ONNX Runtime kernel (`OnnxKnn`) is unavailable; ~4x slower than it on Android.
+ */
+class BruteForceNeighborFinder(private val threads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)) : NeighborFinder {
+    override fun find(store: FaceStore, queries: IntArray, base: IntArray, k: Int, onProgress: ((Int, Int) -> Unit)?): KnnResult {
+        val rows = IntArray(queries.size * k) { -1 }
+        val sims = FloatArray(queries.size * k)
+        val done = java.util.concurrent.atomic.AtomicInteger()
+        val pool = Executors.newFixedThreadPool(threads)
+        try {
+            val step = 64
+            val futures = (queries.indices step step).map { from ->
+                pool.submit {
+                    for (i in from until minOf(queries.size, from + step)) {
+                        val q = store.qvec(queries[i])
+                        val r = IntArray(k); val s = FloatArray(k); var n = 0
+                        for (b in base) {
+                            if (b == queries[i]) continue
+                            val sim = store.dot(b, q)
+                            if (n == k && sim <= s[n - 1]) continue
+                            var j = if (n < k) n++ else k - 1
+                            while (j > 0 && s[j - 1] < sim) { r[j] = r[j - 1]; s[j] = s[j - 1]; j-- }
+                            r[j] = b; s[j] = sim
+                        }
+                        System.arraycopy(r, 0, rows, i * k, n); System.arraycopy(s, 0, sims, i * k, n)
+                    }
+                    onProgress?.invoke(done.addAndGet(minOf(step, queries.size - from)), queries.size)
+                }
+            }
+            futures.forEach { it.get() }
+        } finally {
+            pool.shutdown()
+        }
+        return KnnResult(k, rows, sims)
     }
 }

@@ -121,9 +121,12 @@ class ScrfdDetector(context: Context) {
 }
 
 /**
- * ArcFace MobileFaceNet (InsightFace "w600k_mbf", trained on WebFace600K). 112x112 aligned RGB in,
- * L2-normalised 512-d embedding out. Same input/output contract as the larger w600k_r50 model, so
- * swapping in the more accurate (but ~8x heavier) ResNet50 only means changing [ASSET] and [MODEL_ID].
+ * ArcFace ResNet-50 (InsightFace "w600k_r50", trained on WebFace600K), int8-quantised (convolutions only, see
+ * tools/face-eval/quant.py). 112x112 aligned RGB in, L2-normalised 512-d embedding out.
+ *
+ * Chosen over the old MobileFaceNet on measurements (tools/face-eval/README.md): on a mixed real + CGI library it
+ * accepts 98.6% of same-person pairs at a 1-in-100,000 false-match rate (MobileFaceNet: 93.6%), and the int8 model
+ * matches the fp32 one there at ~1/6 of its compute and 1/4 of its size.
  */
 class ArcFaceEmbedder(context: Context) {
     private val session: OrtSession
@@ -175,9 +178,92 @@ class ArcFaceEmbedder(context: Context) {
     fun close() = session.close()
 
     companion object {
-        const val ASSET = "arcface_mbf.onnx"
+        const val ASSET = "arcface_r50_int8.onnx"
         /** Stored in the DB; if it changes, old embeddings are discarded (they live in a different vector space). */
-        const val MODEL_ID = "scrfd500m+arcface_mbf_w600k:v1"
+        const val MODEL_ID = "scrfd500m+arcface_r50_w600k_int8:v1"
         const val SIZE = FaceMath.ALIGN_SIZE
+    }
+}
+
+/**
+ * k-nearest-neighbour search on ONNX Runtime (`face_knn.onnx` = Gemm + TopK, built by tools/face-eval/make_knn_model.py).
+ * Its matrix kernels are vectorised, unlike ART-compiled Kotlin, so this is ~4x faster than [BruteForceNeighborFinder]:
+ * a full rebuild of 40k faces is 40k x 40k x 512 multiply-adds.
+ *
+ * The base set is processed in blocks of [BLOCK] rows (32 MB as float32) and the per-block top-k lists are merged,
+ * so memory stays bounded however large the library gets.
+ */
+class OnnxKnn(modelFile: File) : NeighborFinder {
+    private val session: OrtSession
+
+    constructor(context: Context) : this(ModelFiles.materialize(context, ASSET))
+
+    init {
+        val file = modelFile
+        val opts = OrtSession.SessionOptions().apply {
+            setIntraOpNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(1, 6))
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        }
+        session = Ort.env.createSession(file.absolutePath, opts)
+    }
+
+    override fun find(store: FaceStore, queries: IntArray, base: IntArray, k: Int, onProgress: ((Int, Int) -> Unit)?): KnnResult {
+        val dim = store.dim
+        val rows = IntArray(queries.size * k) { -1 }
+        val sims = FloatArray(queries.size * k) { Float.NEGATIVE_INFINITY }
+        if (queries.isEmpty() || base.isEmpty()) return KnnResult(k, rows, sims)
+        val blocks = (base.size + BLOCK - 1) / BLOCK
+        val qBatches = (queries.size + QUERY_BATCH - 1) / QUERY_BATCH
+        val baseBuf = java.nio.ByteBuffer.allocateDirect(minOf(BLOCK, base.size) * dim * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+        val qBuf = java.nio.ByteBuffer.allocateDirect(minOf(QUERY_BATCH, queries.size) * dim * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+        var step = 0
+        for (blk in 0 until blocks) {
+            val b0 = blk * BLOCK; val b1 = minOf(base.size, b0 + BLOCK)
+            baseBuf.clear(); store.copyEmbeddings(base, b0, b1, baseBuf); baseBuf.flip()
+            // +1: a query that is itself in the base set finds itself first; it is skipped below.
+            val kk = minOf(k + 1, b1 - b0).toLong()
+            OnnxTensor.createTensor(Ort.env, baseBuf, longArrayOf((b1 - b0).toLong(), dim.toLong())).use { baseT ->
+                OnnxTensor.createTensor(Ort.env, longArrayOf(kk)).use { kT ->
+                    for (qb in 0 until qBatches) {
+                        val q0 = qb * QUERY_BATCH; val q1 = minOf(queries.size, q0 + QUERY_BATCH)
+                        qBuf.clear(); store.copyEmbeddings(queries, q0, q1, qBuf); qBuf.flip()
+                        OnnxTensor.createTensor(Ort.env, qBuf, longArrayOf((q1 - q0).toLong(), dim.toLong())).use { qT ->
+                            session.run(mapOf("queries" to qT, "base" to baseT, "k" to kT)).use { out ->
+                                val vals = (out.get(0) as OnnxTensor).floatBuffer
+                                val idx = (out.get(1) as OnnxTensor).longBuffer
+                                val w = kk.toInt()
+                                for (i in 0 until q1 - q0) {
+                                    val qi = q0 + i
+                                    for (j in 0 until w) {
+                                        val r = base[b0 + idx.get(i * w + j).toInt()]
+                                        if (r == queries[qi]) continue
+                                        insert(rows, sims, qi * k, k, r, vals.get(i * w + j))
+                                    }
+                                }
+                            }
+                        }
+                        onProgress?.invoke(++step, blocks * qBatches)
+                    }
+                }
+            }
+        }
+        for (i in sims.indices) if (rows[i] < 0) sims[i] = 0f
+        return KnnResult(k, rows, sims)
+    }
+
+    /** Inserts into the sorted (descending) slice [off, off+k); returns early once the candidate can't qualify. */
+    private fun insert(rows: IntArray, sims: FloatArray, off: Int, k: Int, row: Int, sim: Float) {
+        if (sim <= sims[off + k - 1]) return
+        var j = k - 1
+        while (j > 0 && sims[off + j - 1] < sim) { rows[off + j] = rows[off + j - 1]; sims[off + j] = sims[off + j - 1]; j-- }
+        rows[off + j] = row; sims[off + j] = sim
+    }
+
+    fun close() = session.close()
+
+    companion object {
+        const val ASSET = "face_knn.onnx"
+        private const val BLOCK = 16384
+        private const val QUERY_BATCH = 256
     }
 }

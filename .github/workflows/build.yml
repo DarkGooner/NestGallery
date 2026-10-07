@@ -26,6 +26,9 @@ jobs:
         with:
           gradle-version: 8.9
 
+      - name: Unit tests (face clustering + ONNX kNN)
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Build signed release APK
         run: gradle :app:assembleRelease --stacktrace
 

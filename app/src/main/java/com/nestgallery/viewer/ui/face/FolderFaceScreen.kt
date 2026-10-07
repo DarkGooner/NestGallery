@@ -9,7 +9,9 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,15 +30,20 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items as rowItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.CallMerge
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonSearch
@@ -48,6 +55,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
@@ -96,6 +105,7 @@ import com.nestgallery.viewer.data.face.FaceDatabase
 import com.nestgallery.viewer.data.face.FaceMatch
 import com.nestgallery.viewer.data.face.FaceScannerManager
 import com.nestgallery.viewer.data.face.PersonEntity
+import com.nestgallery.viewer.data.face.PersonMatch
 import com.nestgallery.viewer.data.face.ScanStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -133,14 +143,24 @@ fun FolderFaceScreen(
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
     var detectedFacesInQuery by remember { mutableStateOf<List<QueryFace>>(emptyList()) }
     var activeFaceIndex by remember { mutableIntStateOf(0) }
-    // Raw ArcFace cosine. Measured: same person median ~0.74 (min ~0.45), different people <= ~0.25.
-    var similarityThreshold by remember { mutableFloatStateOf(0.42f) }
+    // Raw cosine cut-off; the chips map to the calibrated bands in FaceMath.
+    var similarityThreshold by remember { mutableFloatStateOf(FaceMath.MATCH_LIKELY) }
+    var suggestedPeople by remember { mutableStateOf<List<PersonMatch>>(emptyList()) }
+
+    // People-tab selection (long-press) for merging, and the overflow menu
+    var selectedPeople by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var showMergeDialog by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showRebuildDialog by remember { mutableStateOf(false) }
     var isSearching by remember { mutableStateOf(false) }
     var matchResults by remember { mutableStateOf<List<FaceMatch>>(emptyList()) }
     var matchedDocEntries by remember { mutableStateOf<List<DocEntry>>(emptyList()) }
 
     fun refreshPeople() {
-        people = db.getPeopleInFolder(root.file.absolutePath)
+        scope.launch {
+            people = withContext(Dispatchers.IO) { db.getPeopleInFolder(root.file.absolutePath) }
+            selectedPeople = selectedPeople.filter { id -> people.any { it.id == id } }.toSet()
+        }
     }
 
     LaunchedEffect(root.file.absolutePath) {
@@ -156,6 +176,7 @@ fun FolderFaceScreen(
     fun runFaceSearch(embedding: FloatArray, threshold: Float) {
         scope.launch {
             isSearching = true
+            suggestedPeople = scanner.suggestPeople(embedding, root.file.absolutePath)
             val all = scanner.searchFaces(embedding, root.file.absolutePath, threshold)
             // drop photos that no longer exist, keeping matches and tiles index-aligned (stat calls off the main thread)
             val (matches, docs) = withContext(Dispatchers.IO) {
@@ -209,7 +230,21 @@ fun FolderFaceScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            if (selectedPeople.isNotEmpty()) TopAppBar(
+                title = { Text("${selectedPeople.size} selected") },
+                navigationIcon = {
+                    IconButton(onClick = { selectedPeople = emptySet() }) {
+                        Icon(Icons.Default.Close, contentDescription = "Clear selection")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { showMergeDialog = true }, enabled = selectedPeople.size >= 2) {
+                        Icon(Icons.Default.CallMerge, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Merge")
+                    }
+                }
+            ) else TopAppBar(
                 title = {
                     Column {
                         Text(
@@ -243,6 +278,18 @@ fun FolderFaceScreen(
                             )
                         } else {
                             Icon(Icons.Default.Refresh, contentDescription = "Scan / Rescan Faces")
+                        }
+                    }
+                    Box {
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                        }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Regroup people") },
+                                onClick = { showMenu = false; showRebuildDialog = true },
+                                enabled = scanStatus is ScanStatus.Idle || scanStatus is ScanStatus.Completed
+                            )
                         }
                     }
                 }
@@ -333,9 +380,16 @@ fun FolderFaceScreen(
                         modifier = Modifier.fillMaxSize()
                     ) {
                         items(people, key = { it.id }) { person ->
+                            val selected = person.id in selectedPeople
                             FolderPersonGridItem(
                                 person = person,
-                                onClick = { onOpenPerson(person.id) },
+                                selected = selected,
+                                onClick = {
+                                    if (selectedPeople.isNotEmpty()) {
+                                        selectedPeople = if (selected) selectedPeople - person.id else selectedPeople + person.id
+                                    } else onOpenPerson(person.id)
+                                },
+                                onLongClick = { selectedPeople = selectedPeople + person.id },
                                 onRename = {
                                     personToRename = person
                                     renameInput = person.name
@@ -455,7 +509,23 @@ fun FolderFaceScreen(
                                 }
                             }
 
-                            // Sensitivity = raw ArcFace cosine cut-off (same person: median ~0.74; different people: <= ~0.25)
+                            // "Looks like": people whose faces match the query on average (the clusterer's own score)
+                            if (suggestedPeople.isNotEmpty() && !isSearching) {
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    "Looks like",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    rowItems(suggestedPeople, key = { it.person.id }) { m ->
+                                        SuggestedPersonChip(m, onClick = { onOpenPerson(m.person.id) })
+                                    }
+                                }
+                            }
+
+                            // Sensitivity = raw cosine cut-off, mapped to the calibrated bands in FaceMath
                             Spacer(Modifier.height(12.dp))
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -467,7 +537,7 @@ fun FolderFaceScreen(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                listOf("Strict" to 0.52f, "Balanced" to 0.42f, "Broad" to 0.34f).forEach { (label, value) ->
+                                listOf("Strict" to FaceMath.MATCH_STRONG, "Balanced" to FaceMath.MATCH_LIKELY, "Broad" to FaceMath.MATCH_POSSIBLE).forEach { (label, value) ->
                                     FilterChip(
                                         selected = similarityThreshold == value,
                                         onClick = {
@@ -527,7 +597,8 @@ fun FolderFaceScreen(
                         ) {
                             itemsIndexed(matchedDocEntries, key = { _, doc -> doc.file.absolutePath }) { index, entry ->
                                 val match = matchResults.getOrNull(index)
-                                val matchPercent = match?.let { (FaceMath.matchProbability(it.similarity) * 100).roundToInt() } ?: 0
+                                val sim = match?.similarity ?: 0f
+                                val matchPercent = (FaceMath.matchProbability(sim) * 100).roundToInt()
 
                                 Box(
                                     modifier = Modifier
@@ -556,9 +627,7 @@ fun FolderFaceScreen(
                                             .align(Alignment.TopEnd)
                                             .padding(4.dp)
                                             .background(
-                                                color = if (matchPercent >= 75) Color(0xFF1B5E20).copy(alpha = 0.85f)
-                                                else if (matchPercent >= 50) Color(0xFF00695C).copy(alpha = 0.85f)
-                                                else Color(0xFFE65100).copy(alpha = 0.85f),
+                                                color = bandColor(sim),
                                                 shape = RoundedCornerShape(4.dp)
                                             )
                                             .padding(horizontal = 4.dp, vertical = 2.dp)
@@ -598,8 +667,8 @@ fun FolderFaceScreen(
                 Button(
                     onClick = {
                         if (renameInput.isNotBlank()) {
-                            db.renamePerson(person.id, renameInput.trim())
-                            refreshPeople()
+                            val name = renameInput.trim()
+                            scope.launch { scanner.renamePerson(person.id, name); refreshPeople() }
                         }
                         personToRename = null
                     }
@@ -614,18 +683,109 @@ fun FolderFaceScreen(
             }
         )
     }
+
+    if (showMergeDialog) {
+        // Merge into the person with a name, else the one with the most photos.
+        val chosen = people.filter { it.id in selectedPeople }
+        val target = chosen.firstOrNull { !it.name.startsWith("Person ") } ?: chosen.maxByOrNull { it.faceCount }
+        AlertDialog(
+            onDismissRequest = { showMergeDialog = false },
+            title = { Text("Merge ${chosen.size} people?") },
+            text = {
+                Text("Their photos will be combined under \"${target?.name ?: ""}\". Use this when the same person was split into several groups.")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showMergeDialog = false
+                    if (target != null) scope.launch {
+                        scanner.mergePeople(target.id, chosen.map { it.id })
+                        selectedPeople = emptySet()
+                        refreshPeople()
+                    }
+                }) { Text("Merge") }
+            },
+            dismissButton = { TextButton(onClick = { showMergeDialog = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showRebuildDialog) {
+        AlertDialog(
+            onDismissRequest = { showRebuildDialog = false },
+            title = { Text("Regroup people?") },
+            text = {
+                Text("Every person you have not named is grouped again from scratch. Named people and your corrections are kept. Photos are not rescanned.")
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showRebuildDialog = false
+                    scanner.rebuildPeople(root.file.absolutePath)
+                }) { Text("Regroup") }
+            },
+            dismissButton = { TextButton(onClick = { showRebuildDialog = false }) { Text("Cancel") } }
+        )
+    }
 }
 
+/** Badge colour for a raw cosine: strong / likely / possible match bands. */
+private fun bandColor(similarity: Float): Color = when {
+    similarity >= FaceMath.MATCH_STRONG -> Color(0xFF1B5E20)
+    similarity >= FaceMath.MATCH_LIKELY -> Color(0xFF00695C)
+    else -> Color(0xFFE65100)
+}.copy(alpha = 0.85f)
+
+@Composable
+private fun SuggestedPersonChip(match: PersonMatch, onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surface)
+                .border(2.dp, bandColor(match.similarity), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            val thumb = match.person.coverThumbnailPath
+            if (!thumb.isNullOrEmpty()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current).data(File(thumb)).build(),
+                    contentDescription = match.person.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Text(
+            match.person.name,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            "${(FaceMath.matchProbability(match.similarity) * 100).roundToInt()}%",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderPersonGridItem(
     person: PersonEntity,
+    selected: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onRename: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
@@ -634,7 +794,11 @@ private fun FolderPersonGridItem(
                 .aspectRatio(1f)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .border(2.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                .border(
+                    if (selected) 3.dp else 2.dp,
+                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                    CircleShape
+                ),
             contentAlignment = Alignment.Center
         ) {
             if (!person.coverThumbnailPath.isNullOrEmpty() && File(person.coverThumbnailPath).exists()) {
@@ -653,6 +817,15 @@ private fun FolderPersonGridItem(
                     contentDescription = null,
                     modifier = Modifier.size(40.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (selected) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)))
+                Icon(
+                    Icons.Default.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(32.dp)
                 )
             }
         }
@@ -734,7 +907,7 @@ private fun FolderScanProgressBanner(
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        if (grouping) "$scanned / $total" else "$scanned / $total ($faces faces)",
+                        if (grouping) "${if (total > 0) scanned * 100 / total else 0}%" else "$scanned / $total ($faces faces)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )

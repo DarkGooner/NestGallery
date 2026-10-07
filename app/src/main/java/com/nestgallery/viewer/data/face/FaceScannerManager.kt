@@ -46,6 +46,9 @@ sealed class ScanStatus {
 /** A face found in the photo the user picked for "Find by face". [aligned] is the 112px crop shown in the UI. */
 class QueryFace(val aligned: Bitmap, val embedding: FloatArray)
 
+/** A person the "Find by face" query probably is: [similarity] = average cosine to that person's faces. */
+class PersonMatch(val person: PersonEntity, val similarity: Float)
+
 /**
  * Face scanning, grouping and search, all on-device.
  *
@@ -60,7 +63,11 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     private val detector by lazy { ScrfdDetector(appContext) }
     private val embedder by lazy { ArcFaceEmbedder(appContext) }
     private val analyzer by lazy { FaceAnalyzer(detector, embedder) }
-    private val clusterer = ImmichClusterer()
+    private val clusterer = PeopleClusterer()
+    /** ONNX Runtime kNN kernel; the plain-Kotlin search is the (slower) fallback if it can't be loaded. */
+    private val neighborFinder: NeighborFinder by lazy {
+        try { OnnxKnn(appContext) } catch (e: Throwable) { e.printStackTrace(); BruteForceNeighborFinder() }
+    }
 
     /** In-memory index of every embedding; also what "Find by face" searches. */
     val store = FaceStore()
@@ -122,13 +129,13 @@ class FaceScannerManager private constructor(private val appContext: Context) {
                 scanned = result.first; faces = result.second
             } catch (e: CancellationException) {
                 // fall through to grouping whatever was saved, then rethrow below
-                withContext(NonCancellable) { groupPeople(folderPath, scanned, faces) }
+                withContext(NonCancellable) { if (needsGrouping(scanned)) groupPeople(folderPath, scanned, faces) }
                 _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
                 throw e
             } catch (e: Exception) {
                 e.printStackTrace()
             }
-            groupPeople(folderPath, scanned, faces)
+            if (needsGrouping(scanned)) groupPeople(folderPath, scanned, faces)
             _status.value = ScanStatus.Completed(scanned, faces)
             delay(1500)
             _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
@@ -210,32 +217,114 @@ class FaceScannerManager private constructor(private val appContext: Context) {
 
     // ---- grouping (clustering) -------------------------------------------------------------------
 
-    private suspend fun groupPeople(folderPath: String, scanned: Int, faces: Int) = withContext(Dispatchers.Default) {
+    private suspend fun groupPeople(folderPath: String, scanned: Int, faces: Int, rebuild: Boolean = false) = withContext(Dispatchers.Default) {
         if (!storeLoaded) return@withContext
-        _status.value = ScanStatus.Grouping(0, 1)
+        _status.value = ScanStatus.Grouping(0, 1000)
         val named = database.namedPersonIds()
-        // One-time: groups made by the previous (centroid-based) algorithm are rebuilt with the Immich-style one,
-        // which is what repairs people that were split in two. Names the user typed are kept.
-        if (database.getMeta(CLUSTER_ALGO_KEY) != CLUSTER_ALGO) {
+        // Groups made by an older algorithm (or a user-requested rebuild) are redone from scratch. Named people keep
+        // their faces; everything else is regrouped.
+        if (rebuild || database.getMeta(CLUSTER_ALGO_KEY) != CLUSTER_ALGO) {
             withContext(Dispatchers.IO) { database.unassignUnnamedPeople() }
             store.unassignExcept(named)
             database.setMeta(CLUSTER_ALGO_KEY, CLUSTER_ALGO)
         }
-        val nextId = max(database.maxPersonId(), store.maxPersonId()) + 1
+        val rejections = rejectionsByRow()
+        // Person ids only ever grow, so a rejection can never point at a different, later person.
+        val highWater = database.getMeta(MAX_PERSON_ID_KEY)?.toLongOrNull() ?: 0L
+        val nextId = maxOf(database.maxPersonId(), store.maxPersonId(), highWater) + 1
         var lastPublish = 0L
-        val res = clusterer.run(store, named, nextId) { done, total ->
+        val res = clusterer.run(store, neighborFinder, named, rejections, nextId) { done, total ->
             val now = System.currentTimeMillis()
-            if (now - lastPublish > 400) { lastPublish = now; _status.value = ScanStatus.Grouping(done, total) }
+            if (now - lastPublish > 300) { lastPublish = now; _status.value = ScanStatus.Grouping(done, total) }
         }
         val changed = res.changedRows.map { store.faceId(it) to store.personOf(it) }
         val covers = res.coverRowByPerson.mapValues { store.faceId(it.value) }
-        withContext(Dispatchers.IO) { database.applyClustering(changed, res.faceCountByPerson, covers) }
+        withContext(Dispatchers.IO) {
+            database.applyClustering(changed, res.faceCountByPerson, covers)
+            database.setMeta(MAX_PERSON_ID_KEY, (res.nextPersonId - 1).toString())
+        }
 
         _status.value = ScanStatus.Scanning(scanned, scanned, faces, "Preparing faces…")
         for ((personId, faceId) in covers) {
             if ((res.faceCountByPerson[personId] ?: 0) < FaceDatabase.MIN_FACES_TO_SHOW) continue
             ensureThumbnail(faceId)
         }
+    }
+
+    /** Nothing new was indexed and the grouping is current: skip the (neighbour-search heavy) regrouping. */
+    private fun needsGrouping(scanned: Int): Boolean = scanned > 0 || database.getMeta(CLUSTER_ALGO_KEY) != CLUSTER_ALGO
+
+    /** DB rejections (by face id) translated to store rows. */
+    private fun rejectionsByRow(): Map<Int, Set<Long>> {
+        val byFace = database.loadRejections()
+        if (byFace.isEmpty()) return emptyMap()
+        val out = HashMap<Int, Set<Long>>()
+        for (r in 0 until store.size) {
+            if (!store.isAlive(r)) continue
+            byFace[store.faceId(r)]?.let { out[r] = it }
+        }
+        return out
+    }
+
+    /**
+     * Regroups every person the user has not named from scratch (named people and "not this person" corrections on
+     * them are kept). Useful after big imports, or if the incremental grouping drifted.
+     */
+    fun rebuildPeople(folderPath: String) {
+        if (scanJob?.isActive == true) return
+        _status.value = ScanStatus.Grouping(0, 1000)
+        startForegroundService()
+        scanJob = scope.launch {
+            try {
+                ensureStoreLoaded()
+                groupPeople(folderPath, 0, 0, rebuild = true)
+            } catch (e: CancellationException) {
+                _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
+                throw e
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            _status.value = ScanStatus.Idle(database.getFolderStats(folderPath))
+        }
+    }
+
+    // ---- corrections (keep SQLite and the in-memory index in step) ---------------------------------------------------
+
+    suspend fun renamePerson(personId: Long, name: String) = withContext(Dispatchers.IO) { database.renamePerson(personId, name) }
+
+    /** "Not this person" for whole photos: their faces leave the person and will not be grouped back into it. */
+    suspend fun removePhotosFromPerson(personId: Long, paths: Collection<String>) = withContext(Dispatchers.IO) {
+        ensureStoreLoaded()
+        val removed = database.removePhotosFromPerson(personId, paths).toHashSet()
+        for (r in store.rowsOfPerson(personId)) if (store.faceId(r) in removed) store.setPerson(r, 0L)
+        refreshCover(personId)
+    }
+
+    /** Merges [sources] into [target] (e.g. the same person split in two). */
+    suspend fun mergePeople(target: Long, sources: Collection<Long>) = withContext(Dispatchers.IO) {
+        ensureStoreLoaded()
+        database.mergePeople(target, sources)
+        for (src in sources) if (src != target) for (r in store.rowsOfPerson(src)) store.setPerson(r, target)
+        refreshCover(target)
+    }
+
+    /** Hides a person: their faces are marked dismissed and never regrouped. */
+    suspend fun deletePerson(personId: Long) = withContext(Dispatchers.IO) {
+        ensureStoreLoaded()
+        for (r in store.rowsOfPerson(personId)) store.setPerson(r, -1L)
+        database.deletePerson(personId)
+    }
+
+    /** Picks a new cover if the old one left the person, keeping the stored face count in sync. */
+    private fun refreshCover(personId: Long) {
+        val rows = store.rowsOfPerson(personId)
+        if (rows.isEmpty()) return
+        val current = database.getPersonById(personId)?.coverFaceId
+        if (current != null && rows.any { store.faceId(it) == current }) return
+        val best = rows.maxByOrNull { store.qualityOf(it) } ?: return
+        val faceId = store.faceId(best)
+        database.applyClustering(emptyList(), mapOf(personId to rows.size), mapOf(personId to faceId))
+        ensureThumbnail(faceId)
     }
 
     private fun ensureThumbnail(faceId: Long) {
@@ -287,9 +376,24 @@ class FaceScannerManager private constructor(private val appContext: Context) {
             bestPerFile.entries.take(maxResults).map { (path, hit) -> FaceMatch(path, hit.similarity, null) }
         }
 
+    /**
+     * People in [folderPath] the query face most likely belongs to, best first: average cosine between the query and
+     * each person's faces (the same score the clusterer attaches faces with).
+     */
+    suspend fun suggestPeople(embedding: FloatArray, folderPath: String, max: Int = 6): List<PersonMatch> = withContext(Dispatchers.Default) {
+        ensureStoreLoaded()
+        val visible = withContext(Dispatchers.IO) { database.getPeopleInFolder(folderPath) }.associateBy { it.id }
+        store.personSums().mapNotNull { (pid, sc) ->
+            val person = visible[pid] ?: return@mapNotNull null
+            val sim = PeopleClusterer.dot(embedding, sc.first) / sc.second
+            if (sim >= FaceMath.MATCH_POSSIBLE) PersonMatch(person, sim) else null
+        }.sortedByDescending { it.similarity }.take(max)
+    }
+
     companion object {
         private const val CLUSTER_ALGO_KEY = "cluster_algo"
-        private const val CLUSTER_ALGO = "immich-v1"
+        private const val CLUSTER_ALGO = "avg-linkage-v1"
+        private const val MAX_PERSON_ID_KEY = "max_person_id"
         @Volatile private var INSTANCE: FaceScannerManager? = null
         fun getInstance(context: Context): FaceScannerManager =
             INSTANCE ?: synchronized(this) { INSTANCE ?: FaceScannerManager(context.applicationContext).also { INSTANCE = it } }
