@@ -88,6 +88,8 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.face.FaceImageLoader
+import com.nestgallery.viewer.ui.HoldPreviewOverlay
+import com.nestgallery.viewer.ui.holdPreviewGestures
 import com.nestgallery.viewer.data.face.FaceMath
 import com.nestgallery.viewer.data.face.QueryFace
 import com.nestgallery.viewer.data.face.FaceDatabase
@@ -128,6 +130,7 @@ fun FolderFaceScreen(
 
     // Reverse Face Search state
     var queryBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
     var detectedFacesInQuery by remember { mutableStateOf<List<QueryFace>>(emptyList()) }
     var activeFaceIndex by remember { mutableIntStateOf(0) }
     // Raw ArcFace cosine. Measured: same person median ~0.74 (min ~0.45), different people <= ~0.25.
@@ -181,6 +184,17 @@ fun FolderFaceScreen(
         }
     }
 
+    // Android 13+: the foreground-service progress notification needs this permission. Scanning works either way;
+    // without it the progress just isn't shown in the notification shade.
+    fun beginScan() = scanner.startScanForFiles(files.map { it.file }, root.file.absolutePath)
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { beginScan() }
+    fun startScan() {
+        val needs = android.os.Build.VERSION.SDK_INT >= 33 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (needs) notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS) else beginScan()
+    }
+
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -219,10 +233,7 @@ fun FolderFaceScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = {
-                            val candidateFiles = files.map { it.file }
-                            scanner.startScanForFiles(candidateFiles, root.file.absolutePath)
-                        }
+                        onClick = { startScan() }
                     ) {
                         if (scanStatus is ScanStatus.Scanning) {
                             CircularProgressIndicator(
@@ -238,11 +249,8 @@ fun FolderFaceScreen(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
+        Column(modifier = Modifier.fillMaxSize()) {
             // Scan progress banner
             FolderScanProgressBanner(
                 status = scanStatus,
@@ -308,10 +316,7 @@ fun FolderFaceScreen(
                             )
                             Spacer(Modifier.height(20.dp))
                             Button(
-                                onClick = {
-                                    val candidateFiles = files.map { it.file }
-                                    scanner.startScanForFiles(candidateFiles, root.file.absolutePath)
-                                }
+                                onClick = { startScan() }
                             ) {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
@@ -529,7 +534,12 @@ fun FolderFaceScreen(
                                         .aspectRatio(1f)
                                         .clip(RoundedCornerShape(4.dp))
                                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                                        .clickable { onOpenImage(matchedDocEntries, index) }
+                                        .holdPreviewGestures(
+                                            key = entry.file,
+                                            onClick = { onOpenImage(matchedDocEntries, index) },
+                                            onHoldStart = { previewEntry = entry },
+                                            onHoldEnd = { previewEntry = null }
+                                        )
                                 ) {
                                     AsyncImage(
                                         model = ImageRequest.Builder(context)
@@ -566,6 +576,8 @@ fun FolderFaceScreen(
                     }
                 }
             }
+        }
+        previewEntry?.let { HoldPreviewOverlay(entry = it) }
         }
     }
 
@@ -685,27 +697,22 @@ private fun FolderScanProgressBanner(
     onCancel: () -> Unit
 ) {
     AnimatedVisibility(
-        visible = status is ScanStatus.Scanning || status is ScanStatus.Paused
+        visible = status is ScanStatus.Scanning || status is ScanStatus.Paused || status is ScanStatus.Grouping
     ) {
+        val grouping = status is ScanStatus.Grouping
         val (scanned, total, faces, isPaused, currentFile) = when (status) {
-            is ScanStatus.Scanning -> Tuple5(
-                status.scannedCount,
-                status.totalCount,
-                status.facesFound,
-                false,
-                status.currentFileName
-            )
-            is ScanStatus.Paused -> Tuple5(
-                status.scannedCount,
-                status.totalCount,
-                status.facesFound,
-                true,
-                "Paused"
-            )
+            is ScanStatus.Scanning -> Tuple5(status.scannedCount, status.totalCount, status.facesFound, false, status.currentFileName)
+            is ScanStatus.Paused -> Tuple5(status.scannedCount, status.totalCount, status.facesFound, true, "Paused")
+            is ScanStatus.Grouping -> Tuple5(status.done, status.total, 0, false, "Matching faces to people. This can take a minute for large libraries.")
             else -> Tuple5(0, 0, 0, false, "")
         }
-
-        val progress = if (total > 0) scanned.toFloat() / total.toFloat() else 0f
+        val rate = (status as? ScanStatus.Scanning)?.photosPerSecond ?: 0f
+        val etaText = if (!grouping && rate > 0.05f && total > scanned) {
+            val sec = ((total - scanned) / rate).toInt()
+            " · " + (if (sec >= 3600) "${sec / 3600}h ${(sec % 3600) / 60}m" else if (sec >= 60) "${sec / 60} min" else "${sec}s") + " left"
+        } else ""
+        val rateText = if (!grouping && rate > 0.05f) "%.1f photos/s".format(rate) + etaText + " · " else ""
+        val progress = if (total > 1) scanned.toFloat() / total.toFloat() else 0f
 
         Card(
             modifier = Modifier
@@ -720,14 +727,14 @@ private fun FolderScanProgressBanner(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        if (isPaused) "Indexing Paused" else "Scanning Faces...",
+                        if (isPaused) "Indexing Paused" else if (grouping) "Grouping people..." else "Scanning Faces...",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        "$scanned / $total ($faces faces)",
+                        if (grouping) "$scanned / $total" else "$scanned / $total ($faces faces)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -763,7 +770,7 @@ private fun FolderScanProgressBanner(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    currentFile,
+                    rateText + currentFile,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     maxLines = 1,

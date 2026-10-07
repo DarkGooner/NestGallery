@@ -106,31 +106,34 @@ object ScrfdDecoder {
     private const val ANCHORS = 2
 
     /**
-     * @param scores per stride: g*g*2 values
-     * @param boxes  per stride: g*g*2*4 values (l,t,r,b distances in stride units)
-     * @param kps    per stride: g*g*2*10 values (landmark offsets in stride units)
-     * @param inputSize side of the square detector input (e.g. 640)
+     * @param scores per stride: gW*gH*2 values
+     * @param boxes  per stride: gW*gH*2*4 values (l,t,r,b distances in stride units)
+     * @param kps    per stride: gW*gH*2*10 values (landmark offsets in stride units)
+     * @param width  detector input width in pixels (multiple of 32); the grid at stride s is (width/s) x (height/s)
+     * @param height detector input height in pixels (multiple of 32)
      */
     fun decode(
         scores: Array<FloatArray>,
         boxes: Array<FloatArray>,
         kps: Array<FloatArray>,
-        inputSize: Int,
+        width: Int,
+        height: Int,
         scoreThreshold: Float = 0.5f,
         nmsIou: Float = 0.4f
     ): List<RawDetection> {
         val candidates = ArrayList<RawDetection>()
         for (k in STRIDES.indices) {
             val stride = STRIDES[k]
-            val g = inputSize / stride
+            val gw = width / stride
+            val gh = height / stride
             val sc = scores[k]
-            val count = g * g * ANCHORS
+            val count = gw * gh * ANCHORS
             for (i in 0 until count) {
                 val s = sc[i]
                 if (s < scoreThreshold) continue
                 val cell = i / ANCHORS
-                val cx = ((cell % g) * stride).toFloat()
-                val cy = ((cell / g) * stride).toFloat()
+                val cx = ((cell % gw) * stride).toFloat()
+                val cy = ((cell / gw) * stride).toFloat()
                 val b = boxes[k]; val p = kps[k]
                 val lm = FloatArray(10)
                 for (j in 0 until 5) {
@@ -202,6 +205,9 @@ object FaceQuality {
         val det = ((detScore - 0.5f) / 0.4f).coerceIn(0f, 1f)
         return 0.45f * size + 0.35f * pose + 0.20f * det
     }
+
+    /** Faces whose eye distance is below this (on an 800px-long-side rendering) are too small to embed reliably. */
+    const val MIN_EYE_DIST = 12f
 
     const val SEED_MIN_QUALITY = 0.50f
     const val SEED_MAX_YAW = 0.45f

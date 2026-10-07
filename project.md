@@ -161,7 +161,8 @@ Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect @640` -> `5-point si
 |---|---|---|
 | `FaceMath.kt` | yes | closed-form similarity transform, SCRFD head decoding + NMS, quality score, match-% calibration |
 | `FaceStore.kt` | yes | `Int8Matrix` (chunked int8 embeddings, ~4x smaller than float32) and `FaceStore`: thread-safe in-memory index with exact folder-scoped cosine search |
-| `PersonClusterer.kt` | yes | incremental clusterer (see below) |
+| `ImmichClusterer.kt` | yes | port of Immich's DBSCAN-style recognition clustering + duplicate-person reconciliation (see below) |
+| `FaceScanService.kt` | no | foreground service (data-sync) + wake lock + progress notification so scans survive minimising / screen-off |
 | `OnnxFaceModels.kt` | no | `ScrfdDetector`, `ArcFaceEmbedder` (ONNX Runtime, 1 intra-op thread per session so several images run in parallel) |
 | `FaceImage.kt` | no | `FaceImageLoader` (sampled decode, all 8 EXIF orientations), `FaceAligner` (Skia matrix warp), `FaceAnalyzer`, `FaceThumbnails` |
 | `FaceDatabase.kt` | no | SQLite v3 (WAL), batched writes, int8 embedding blobs, index-friendly folder range queries |
@@ -169,9 +170,13 @@ Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect @640` -> `5-point si
 
 **Scan pipeline** (`FaceScannerManager.runPipeline`): 1-2 decoder coroutines (IO) feed a bounded channel; 1-4 analysis workers (CPU) run detect+align+embed; one writer commits batches of up to 32 photos in a single transaction and appends to the in-memory index. Already-indexed files are skipped using one bulk query. Pause stops new decodes; cancel still groups what was saved.
 
-**Clustering** (`PersonClusterer`): only faces with `person_id = 0` are assigned (existing people and user-typed names are stable). Each face is compared to every person centroid (int8 dot), the 6 nearest get an exemplar comparison (up to 8 diverse exemplars per person via farthest-point sampling); join if `0.5*centroid + 0.5*best exemplar >= threshold`. Only faces with quality >= 0.5 may *start* a person. Two faces from the same photo are never the same person (cannot-link), and two people who co-occur in a photo are never merged. A final merge pass repairs fragmentation. Thresholds live in `ClusterConfig`. `person_id = -1` means the user dismissed the face.
+**Clustering** (`ImmichClusterer`): a port of Immich's `handleRecognizeFaces`. For each unassigned face, find the nearest faces within cosine distance 0.5 (exact int8 scan, multi-threaded). Faces with no neighbour are noise; a face with >= `minFaces` (2; Immich uses 3) faces in range is a *core* point; non-core faces are deferred until all others are processed. A face joins the person of its nearest assigned neighbour; a core face with none starts a new person. Two additions to Immich: (1) **reconcile** - Immich never merges people it has split, so when a core face bridges two people they are merged (this is what fixes "same person shows up as two"); (2) **same-photo rule** - faces in one photo are never the same person, never neighbours, and people sharing a photo are never merged. Named people are never merged with each other and always survive. `person_id = -1` is a dismissed face. On first run after upgrading, unnamed groups made by the old algorithm are rebuilt (`cluster_algo` meta key). Config in `ImmichConfig`.
 
-**Search**: exact brute-force cosine over the int8 index, scoped to the folder by path prefix. Raw cosine is stored/compared; `FaceMath.matchProbability` only converts it to the displayed percentage. Sensitivity chips: Strict 0.52 / Balanced 0.42 / Broad 0.34.
+**Background scanning**: `FaceScannerManager` starts `FaceScanService` (foreground, `dataSync`) when a scan starts. The service holds a partial wake lock, shows a progress notification (photos/s, Pause / Resume / Stop) and stops itself when the scan ends. Status is published before the service starts so it can't see a stale Idle. Progress is committed in batches, so if Android still kills the process the next scan resumes (indexed photos are skipped). Android 13+ asks for notification permission before the first scan; Android 15 limits dataSync services to ~6h/day, handled in `onTimeout`.
+
+**Scan speed**: detector input is the photo's own aspect ratio rounded up to a multiple of 32 instead of a fixed 640x640 square (about 40-55% less detector time on 4:3 / 16:9 photos in tests, same detections on 4 of 5 sample photos), detection score floor 0.7 and a minimum face size skip junk faces, faces of a photo are embedded in one batched model call (about 18% faster per face).
+
+**Search**: exact brute-force cosine over the int8 index, scoped to the folder by path prefix. Raw cosine is stored/compared; `FaceMath.matchProbability` only converts it to the displayed percentage. Sensitivity chips: Strict 0.52 / Balanced 0.42 / Broad 0.34. Long-press on a result (or on a person's photo) shows the same hold-to-preview as the gallery (`Modifier.holdPreviewGestures`).
 
 **Cover thumbnails** are rendered lazily, only for the face chosen as each (visible) person's cover, into `filesDir/face_thumbs/f<faceId>.jpg`.
 

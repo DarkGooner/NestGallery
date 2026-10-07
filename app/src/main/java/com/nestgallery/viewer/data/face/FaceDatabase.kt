@@ -162,6 +162,24 @@ class FaceDatabase private constructor(context: Context) :
         return out
     }
 
+    fun getMeta(key: String): String? =
+        readableDatabase.rawQuery("SELECT value FROM meta WHERE key = ?", arrayOf(key)).use { if (it.moveToFirst()) it.getString(0) else null }
+
+    fun setMeta(key: String, value: String) {
+        writableDatabase.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", arrayOf(key, value))
+    }
+
+    /** Un-groups every person the user has not named, so the next clustering run rebuilds them from scratch. */
+    fun unassignUnnamedPeople() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("UPDATE faces SET person_id = 0 WHERE person_id > 0 AND person_id NOT IN (SELECT id FROM people WHERE named = 1)")
+            db.execSQL("DELETE FROM people WHERE named = 0")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
     fun maxPersonId(): Long =
         readableDatabase.rawQuery("SELECT COALESCE(MAX(id),0) FROM people", null).use { if (it.moveToFirst()) it.getLong(0) else 0L }
 

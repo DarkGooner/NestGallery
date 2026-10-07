@@ -1,6 +1,8 @@
 package com.nestgallery.viewer.data.face
 
 import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Future
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -102,6 +104,9 @@ class Int8Matrix(val dim: Int, private val rowsPerChunk: Int = 2048) {
 
 class FaceHit(val row: Int, val similarity: Float)
 
+/** Nearest faces within a similarity floor, strongest first (at most `cap`). */
+class Neighbors(val rows: IntArray, val sims: FloatArray, val count: Int)
+
 /**
  * In-memory index of every face embedding plus the metadata the clusterer and search need.
  * Built once from SQLite (streamed), then kept in sync as the scanner adds faces. All public methods are
@@ -152,6 +157,11 @@ class FaceStore(val dim: Int = FaceMath.EMBED_DIM) {
     }
 
     fun maxPersonId(): Long = lock.read { var m = 0L; for (r in 0 until matrix.rows) if (alive[r] && personIds[r] > m) m = personIds[r]; m }
+    /** Sets person_id back to 0 for every live face whose person is not in [keep] (dismissed faces stay dismissed). */
+    fun unassignExcept(keep: Set<Long>) = lock.write {
+        for (r in 0 until matrix.rows) if (alive[r] && personIds[r] > 0 && personIds[r] !in keep) personIds[r] = 0
+    }
+
     fun isAlive(row: Int) = lock.read { alive[row] }
     fun faceId(row: Int): Long = lock.read { faceIds[row] }
     fun fileIndex(row: Int): Int = lock.read { fileIdx[row] }
@@ -190,6 +200,49 @@ class FaceStore(val dim: Int = FaceMath.EMBED_DIM) {
             if (hits.size > maxHits) hits.subList(maxHits, hits.size).clear()
             hits
         }
+
+    /**
+     * The (at most [cap]) most similar live faces with similarity >= [minSim], strongest first. Faces the user
+     * dismissed (person_id < 0) are ignored. With a [pool] the row range is split over [parts] workers; each
+     * takes the read lock itself, so the caller must NOT hold the store lock while calling this.
+     */
+    fun neighbors(query: QVec, minSim: Float, cap: Int, pool: ExecutorService? = null, parts: Int = 1): Neighbors {
+        val total = size
+        if (pool == null || parts <= 1 || total < 4096) return scanRange(query, minSim, cap, 0, total)
+        val step = (total + parts - 1) / parts
+        val futures = ArrayList<Future<Neighbors>>(parts)
+        var from = 0
+        while (from < total) {
+            val a = from; val b = minOf(total, from + step)
+            futures.add(pool.submit<Neighbors> { scanRange(query, minSim, cap, a, b) })
+            from = b
+        }
+        val rows = IntArray(cap); val sims = FloatArray(cap); var n = 0
+        for (f in futures) {
+            val part = f.get()
+            for (i in 0 until part.count) n = insertSorted(rows, sims, n, cap, part.rows[i], part.sims[i])
+        }
+        return Neighbors(rows, sims, n)
+    }
+
+    private fun scanRange(q: QVec, minSim: Float, cap: Int, from: Int, to: Int): Neighbors = lock.read {
+        val rows = IntArray(cap); val sims = FloatArray(cap); var n = 0
+        val end = minOf(to, matrix.rows)
+        for (r in from until end) {
+            if (!alive[r] || personIds[r] < 0) continue
+            val s = matrix.dot(r, q)
+            if (s >= minSim && (n < cap || s > sims[n - 1])) n = insertSorted(rows, sims, n, cap, r, s)
+        }
+        Neighbors(rows, sims, n)
+    }
+
+    private fun insertSorted(rows: IntArray, sims: FloatArray, n: Int, cap: Int, row: Int, sim: Float): Int {
+        if (n == cap && sim <= sims[n - 1]) return n
+        var k = if (n < cap) n else n - 1
+        while (k > 0 && sims[k - 1] < sim) { rows[k] = rows[k - 1]; sims[k] = sims[k - 1]; k-- }
+        rows[k] = row; sims[k] = sim
+        return if (n < cap) n + 1 else n
+    }
 
     /** Distinct person ids having at least one face inside [folderPath]. */
     fun personsInFolder(folderPath: String): Set<Long> = lock.read {

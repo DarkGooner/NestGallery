@@ -12,7 +12,7 @@ pip install onnxruntime numpy pillow
 # models: https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_s.zip  (det_500m.onnx, w600k_mbf.onnx)
 python fixtures.py                       # writes emb.txt, scrfd_raw.txt, ... next to Verify.kt
 D=../../app/src/main/java/com/nestgallery/viewer/data/face
-kotlinc $D/FaceMath.kt $D/FaceStore.kt $D/PersonClusterer.kt -d core.jar
+kotlinc $D/FaceMath.kt $D/FaceStore.kt $D/ImmichClusterer.kt -d core.jar
 kotlinc -cp core.jar jvm/Verify.kt -d verify.jar
 java -cp core.jar:verify.jar:$KOTLIN_HOME/lib/kotlin-stdlib.jar VerifyKt
 ```

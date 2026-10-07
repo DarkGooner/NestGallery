@@ -1,7 +1,9 @@
 package com.nestgallery.viewer.data.face
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +38,8 @@ sealed class ScanStatus {
         val photosPerSecond: Float = 0f
     ) : ScanStatus()
     data class Paused(val scannedCount: Int, val totalCount: Int, val facesFound: Int) : ScanStatus()
+    /** Photos are done; faces are being grouped into people. */
+    data class Grouping(val done: Int, val total: Int) : ScanStatus()
     data class Completed(val totalScanned: Int, val facesFound: Int) : ScanStatus()
 }
 
@@ -56,7 +60,7 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     private val detector by lazy { ScrfdDetector(appContext) }
     private val embedder by lazy { ArcFaceEmbedder(appContext) }
     private val analyzer by lazy { FaceAnalyzer(detector, embedder) }
-    private val clusterer = PersonClusterer()
+    private val clusterer = ImmichClusterer()
 
     /** In-memory index of every embedding; also what "Find by face" searches. */
     val store = FaceStore()
@@ -99,6 +103,9 @@ class FaceScannerManager private constructor(private val appContext: Context) {
             return
         }
         paused.value = false
+        // Publish a non-idle status *before* the service starts, so it never observes a stale Idle and quits.
+        _status.value = ScanStatus.Scanning(0, 0, 0, "Preparing…")
+        startForegroundService()
         scanJob = scope.launch {
             var scanned = 0
             var faces = 0
@@ -189,14 +196,37 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         Pair(scanned, facesFound)
     }
 
+    /**
+     * Keeps the process alive (and the CPU awake) while the app is minimised or the screen is off.
+     * If the OS refuses (e.g. restricted background start), the scan still runs - it just isn't protected.
+     */
+    private fun startForegroundService() {
+        try {
+            ContextCompat.startForegroundService(appContext, Intent(appContext, FaceScanService::class.java))
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     // ---- grouping (clustering) -------------------------------------------------------------------
 
     private suspend fun groupPeople(folderPath: String, scanned: Int, faces: Int) = withContext(Dispatchers.Default) {
         if (!storeLoaded) return@withContext
-        _status.value = ScanStatus.Scanning(scanned, scanned, faces, "Grouping people…")
+        _status.value = ScanStatus.Grouping(0, 1)
         val named = database.namedPersonIds()
+        // One-time: groups made by the previous (centroid-based) algorithm are rebuilt with the Immich-style one,
+        // which is what repairs people that were split in two. Names the user typed are kept.
+        if (database.getMeta(CLUSTER_ALGO_KEY) != CLUSTER_ALGO) {
+            withContext(Dispatchers.IO) { database.unassignUnnamedPeople() }
+            store.unassignExcept(named)
+            database.setMeta(CLUSTER_ALGO_KEY, CLUSTER_ALGO)
+        }
         val nextId = max(database.maxPersonId(), store.maxPersonId()) + 1
-        val res = clusterer.run(store, named, nextId)
+        var lastPublish = 0L
+        val res = clusterer.run(store, named, nextId) { done, total ->
+            val now = System.currentTimeMillis()
+            if (now - lastPublish > 400) { lastPublish = now; _status.value = ScanStatus.Grouping(done, total) }
+        }
         val changed = res.changedRows.map { store.faceId(it) to store.personOf(it) }
         val covers = res.coverRowByPerson.mapValues { store.faceId(it.value) }
         withContext(Dispatchers.IO) { database.applyClustering(changed, res.faceCountByPerson, covers) }
@@ -258,6 +288,8 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         }
 
     companion object {
+        private const val CLUSTER_ALGO_KEY = "cluster_algo"
+        private const val CLUSTER_ALGO = "immich-v1"
         @Volatile private var INSTANCE: FaceScannerManager? = null
         fun getInstance(context: Context): FaceScannerManager =
             INSTANCE ?: synchronized(this) { INSTANCE ?: FaceScannerManager(context.applicationContext).also { INSTANCE = it } }

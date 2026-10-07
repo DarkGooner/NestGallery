@@ -110,44 +110,54 @@ class AnalyzedFace(
 /** Detect -> align -> embed -> quality, for one decoded photo. Thread-safe (sessions are shared). */
 class FaceAnalyzer(private val detector: ScrfdDetector, private val embedder: ArcFaceEmbedder) {
 
+    private class Pending(val det: RawDetection, val aligned: Bitmap, val quality: Float, val detW: Float, val detH: Float)
+
     fun analyze(src: Bitmap, keepAligned: Boolean = false, maxFaces: Int = 40): List<AnalyzedFace> {
         val longSide = max(src.width, src.height)
         val scale = ScrfdDetector.INPUT_SIZE.toFloat() / longSide
         val detBmp = if (longSide == ScrfdDetector.INPUT_SIZE) src else Bitmap.createScaledBitmap(
             src, max(1, (src.width * scale).toInt()), max(1, (src.height * scale).toInt()), true
         )
+        val pending = ArrayList<Pending>()
         try {
-            val dets = detector.detect(detBmp)
+            val dets = detector.detect(detBmp, MIN_DET_SCORE)
                 .sortedByDescending { (it.x2 - it.x1) * (it.y2 - it.y1) }
                 .take(maxFaces)
-            val out = ArrayList<AnalyzedFace>(dets.size)
             val hiRes = src.width.toFloat() / detBmp.width
             for (d in dets) {
-                // Small faces are aligned from the larger decode (more real pixels); big faces from the detector image.
-                val useSrc = (d.x2 - d.x1) < FaceMath.ALIGN_SIZE && src !== detBmp
-                val source = if (useSrc) src else detBmp
-                val lm = if (useSrc) FloatArray(10) { d.landmarks[it] * hiRes } else d.landmarks
-                val aligned = FaceAligner.align(source, lm)
-                val emb = try { embedder.embed(aligned) } catch (e: Exception) { aligned.recycle(); continue }
-
                 val eyeNorm = FaceQuality.eyeDistance(d.landmarks) * 800f / ScrfdDetector.INPUT_SIZE
+                if (eyeNorm < FaceQuality.MIN_EYE_DIST) continue       // too small to embed reliably
                 val yaw = FaceQuality.yawProxy(d.landmarks)
                 var q = FaceQuality.score(d.score, eyeNorm, yaw)
                 if (!FaceQuality.canSeed(q, eyeNorm, yaw)) q = min(q, FaceQuality.SEED_MIN_QUALITY - 0.01f)
 
-                val w = detBmp.width.toFloat(); val h = detBmp.height.toFloat()
-                val bounds = RectF(
-                    (d.x1 / w).coerceIn(0f, 1f), (d.y1 / h).coerceIn(0f, 1f),
-                    (d.x2 / w).coerceIn(0f, 1f), (d.y2 / h).coerceIn(0f, 1f)
-                )
-                val lmNorm = FloatArray(10) { if (it % 2 == 0) d.landmarks[it] / w else d.landmarks[it] / h }
-                if (keepAligned) out.add(AnalyzedFace(bounds, lmNorm, emb, q, d.score, aligned))
-                else { aligned.recycle(); out.add(AnalyzedFace(bounds, lmNorm, emb, q, d.score, null)) }
+                // Small faces are aligned from the larger decode (more real pixels); big faces from the detector image.
+                val useSrc = (d.x2 - d.x1) < FaceMath.ALIGN_SIZE && src !== detBmp
+                val source = if (useSrc) src else detBmp
+                val lm = if (useSrc) FloatArray(10) { d.landmarks[it] * hiRes } else d.landmarks
+                pending.add(Pending(d, FaceAligner.align(source, lm), q, detBmp.width.toFloat(), detBmp.height.toFloat()))
             }
-            return out
+            if (pending.isEmpty()) return emptyList()
+
+            val embeddings = try { embedder.embedBatch(pending.map { it.aligned }) } catch (e: Exception) { return emptyList() }
+            return pending.mapIndexed { i, p ->
+                val d = p.det
+                val bounds = RectF(
+                    (d.x1 / p.detW).coerceIn(0f, 1f), (d.y1 / p.detH).coerceIn(0f, 1f),
+                    (d.x2 / p.detW).coerceIn(0f, 1f), (d.y2 / p.detH).coerceIn(0f, 1f)
+                )
+                val lmNorm = FloatArray(10) { if (it % 2 == 0) d.landmarks[it] / p.detW else d.landmarks[it] / p.detH }
+                AnalyzedFace(bounds, lmNorm, embeddings[i], p.quality, d.score, if (keepAligned) p.aligned else null)
+            }
         } finally {
             if (detBmp !== src) detBmp.recycle()
+            if (!keepAligned) for (p in pending) p.aligned.recycle()
         }
+    }
+
+    companion object {
+        /** Immich's default minimum detection score: biased towards precision (fewer junk "faces" polluting clusters). */
+        const val MIN_DET_SCORE = 0.7f
     }
 }
 

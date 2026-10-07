@@ -54,6 +54,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.nestgallery.viewer.ui.HoldPreviewOverlay
+import com.nestgallery.viewer.ui.holdPreviewGestures
 import coil.request.ImageRequest
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.face.FaceDatabase
@@ -73,6 +75,7 @@ fun PersonDetailScreen(
 
     var person by remember { mutableStateOf<PersonEntity?>(null) }
     var mediaEntries by remember { mutableStateOf<List<DocEntry>>(emptyList()) }
+    var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf("") }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -132,11 +135,8 @@ fun PersonDetailScreen(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
+        Column(modifier = Modifier.fillMaxSize()) {
             // Person Header Info
             currentPerson?.let { p ->
                 Row(
@@ -216,7 +216,12 @@ fun PersonDetailScreen(
                                 .aspectRatio(1f)
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .clickable { onOpenImage(mediaEntries, index) }
+                                .holdPreviewGestures(
+                                key = entry.file,
+                                onClick = { onOpenImage(mediaEntries, index) },
+                                onHoldStart = { previewEntry = entry },
+                                onHoldEnd = { previewEntry = null }
+                            )
                         ) {
                             AsyncImage(
                                 model = ImageRequest.Builder(context)
@@ -246,6 +251,8 @@ fun PersonDetailScreen(
                     }
                 }
             }
+        }
+        previewEntry?.let { HoldPreviewOverlay(entry = it) }
         }
     }
 

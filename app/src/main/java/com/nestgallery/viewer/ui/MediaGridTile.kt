@@ -127,6 +127,31 @@ fun MediaImageTile(
 }
 
 /**
+ * Tap = [onClick]; long-press shows the hold preview until the finger is lifted. Same arbitration as
+ * [MediaImageTile], reusable for tiles that draw their own content (face search results, person photos).
+ */
+fun Modifier.holdPreviewGestures(
+    key: Any,
+    onClick: () -> Unit,
+    onHoldStart: () -> Unit,
+    onHoldEnd: () -> Unit
+): Modifier = this.pointerInput(key) {
+    var holdStarted = false
+    detectTapGestures(
+        onTap = { onClick() },
+        onLongPress = {
+            holdStarted = true
+            onHoldStart()
+        },
+        onPress = {
+            holdStarted = false
+            tryAwaitRelease()
+            if (holdStarted) onHoldEnd()
+        }
+    )
+}
+
+/**
  * Instagram-style hold-to-preview.
  *
  * The surrounding area is a blurred, cropped copy of the selected media,

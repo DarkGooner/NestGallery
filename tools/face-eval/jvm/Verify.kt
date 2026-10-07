@@ -63,7 +63,7 @@ fun main() {
         val exp = File(dir + "scrfd_expected.txt").readLines()
         val s = exp[0].toFloat()
         val expected = exp.drop(1).map { floats(it) }
-        val dets = ScrfdDecoder.decode(scores, boxes, kps, 640)
+        val dets = ScrfdDecoder.decode(scores, boxes, kps, 640, 640)
         var err = 0f
         val okCount = dets.size == expected.size
         if (okCount) for (i in dets.indices) {
@@ -104,7 +104,7 @@ fun main() {
     // ---------- T4: clustering real embeddings (25 photos, 9 people) ----------
     fun clusterReal(order: List<Int>, batches: Int): Triple<Double, Double, Int> {
         val store = FaceStore(); val rowOf = IntArray(embs.size) { -1 }
-        val clusterer = PersonClusterer()
+        val clusterer = ImmichClusterer()
         var nextId = 1L
         val chunk = (order.size + batches - 1) / batches
         for (b in 0 until batches) {
@@ -133,7 +133,7 @@ fun main() {
         val e = embs[0]
         store.add(1, "/p/one.jpg", 0, 0.9f, e); store.add(2, "/p/one.jpg", 0, 0.9f, e)
         store.add(3, "/p/two.jpg", 0, 0.9f, e); store.add(4, "/p/three.jpg", 0, 0.9f, e)
-        PersonClusterer().run(store, emptySet(), 1)
+        ImmichClusterer().run(store, emptySet(), 1)
         val p1 = store.personOf(0); val p2 = store.personOf(1)
         check("T5 two faces in one photo never share a person", p1 != p2 && p1 > 0 && p2 > 0, "p1=$p1 p2=$p2")
     }
@@ -143,7 +143,7 @@ fun main() {
         val store = FaceStore()
         val a = store.add(1, "/p/a.jpg", 7, 0.9f, embs[0]); store.add(2, "/p/b.jpg", 0, 0.9f, embs[0])
         val lowq = store.add(3, "/p/c.jpg", 0, 0.2f, embs[10])   // different person, poor quality
-        val r = PersonClusterer().run(store, setOf(7L), 100)
+        val r = ImmichClusterer().run(store, setOf(7L), 100)
         check("T6 new face joins the user-named person (id 7)", store.personOf(1) == 7L)
         check("T6 low-quality unmatched face stays unassigned (does not create a person)", store.personOf(lowq) == 0L)
         check("T6 stable id: named person kept", r.faceCountByPerson[7L] == 2)
@@ -192,7 +192,7 @@ fun main() {
         val (e, tr, files) = synth(n / 8, per, 1)
         val (oa, oms) = oldHac(e, 0.62f)
         val store = FaceStore(); val rows = IntArray(e.size) { store.add(it.toLong(), "/f/${files[it]}", 0, 0.9f, e[it]) }
-        val t0 = System.nanoTime(); PersonClusterer().run(store, emptySet(), 1)
+        val t0 = System.nanoTime(); ImmichClusterer().run(store, emptySet(), 1)
         val nms = (System.nanoTime() - t0) / 1_000_000
         val (op, orc, oc) = pairMetrics(oa, tr)
         val (np, nr, nc) = pairMetrics(IntArray(e.size) { store.personOf(rows[it]).toInt() }, tr)
@@ -210,7 +210,7 @@ fun main() {
         while (idx < perm.size) { val k = if (r.nextInt(100) < 30) 3 else 1; for (j in 0 until k) if (idx + j < perm.size) files[perm[idx + j]] = ph; ph++; idx += k }
         val store = FaceStore()
         val rows = IntArray(e.size) { store.add(it.toLong(), "/f/${files[it]}", 0, if (it % 4 == 0) 0.3f else 0.8f, e[it]) }
-        val t0 = System.nanoTime(); val res = PersonClusterer().run(store, emptySet(), 1); val ms = (System.nanoTime() - t0) / 1_000_000
+        val t0 = System.nanoTime(); val res = ImmichClusterer().run(store, emptySet(), 1); val ms = (System.nanoTime() - t0) / 1_000_000
         val assign = IntArray(e.size) { store.personOf(rows[it]).toInt() }
         val (p, rc, c) = pairMetrics(assign, tr)
         val unassigned = assign.count { it == 0 }
