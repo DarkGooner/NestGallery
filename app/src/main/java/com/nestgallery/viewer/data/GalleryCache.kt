@@ -21,6 +21,11 @@ object GalleryCache {
         scrollPositions[key] = index to offset
     }
 
+    /** Drops every saved scroll position whose key starts with [prefix] (a screen opened afresh starts at the top). */
+    fun forgetScrolls(prefix: String) {
+        scrollPositions.keys.removeAll { it.startsWith(prefix) }
+    }
+
     fun getCount(key: String): Int? = counts[key]
     fun putCount(key: String, value: Int) {
         counts[key] = value

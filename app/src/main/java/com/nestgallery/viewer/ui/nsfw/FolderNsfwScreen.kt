@@ -91,6 +91,9 @@ import com.nestgallery.viewer.ui.FastScrollbar
 import com.nestgallery.viewer.ui.HoldPreviewOverlay
 import com.nestgallery.viewer.ui.MediaImageTile
 import com.nestgallery.viewer.ui.ScreenInsets
+import com.nestgallery.viewer.ui.ScrollKeys
+import com.nestgallery.viewer.ui.rememberKeptGridState
+import com.nestgallery.viewer.ui.rememberKeptListState
 import com.nestgallery.viewer.ui.TopBarInsets
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
@@ -119,8 +122,10 @@ fun FolderNsfwScreen(
     val filter = remember(rootPath) { NsfwFilterState.forFolder(rootPath) }
     val n = remember { NumberFormat.getInstance() }
 
+    // 0: Filters, 1: Photos. Kept per folder (the screen is rebuilt after the viewer), as are both scroll positions.
+    var selectedTab by filter::tab
+    val scrollKey = ScrollKeys.nsfw(rootPath)
     val photos = remember(files) { files.filter { !it.isVideo && NsfwScannerManager.isScannable(it.file) } }
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) }   // 0: Filters, 1: Photos
     var showMenu by remember { mutableStateOf(false) }
     var confirmForget by remember { mutableStateOf(false) }
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
@@ -229,13 +234,14 @@ fun FolderNsfwScreen(
                 }
 
                 if (selectedTab == 0) {
-                    FiltersTab(index, filter, active, shown.size, onShowPhotos = { selectedTab = 1 })
+                    FiltersTab(index, filter, active, shown.size, scrollKey + "filters", onShowPhotos = { selectedTab = 1 })
                 } else {
                     PhotosTab(
                         shown = shown,
                         index = index,
                         active = active,
                         filter = filter,
+                        scrollKey = scrollKey + "photos",
                         onOpen = { i -> onOpenImage(shown, i) },
                         onHold = { previewEntry = it }
                     )
@@ -271,7 +277,14 @@ private fun NsfwScanStatus.folderOf(): String? = when (this) {
 }
 
 @Composable
-private fun FiltersTab(index: NsfwFolderIndex, filter: NsfwFilterState, active: Map<Int, IntRange>, shownCount: Int, onShowPhotos: () -> Unit) {
+private fun FiltersTab(
+    index: NsfwFolderIndex,
+    filter: NsfwFilterState,
+    active: Map<Int, IntRange>,
+    shownCount: Int,
+    scrollKey: String,
+    onShowPhotos: () -> Unit
+) {
     val n = NumberFormat.getInstance()
     // (label index, group heading to show above it or null); ALL is ordered by group
     val rows = index.presentLabels.let { present ->
@@ -281,7 +294,7 @@ private fun FiltersTab(index: NsfwFolderIndex, filter: NsfwFilterState, active: 
         }
     }
     // Sliders, bars and chips ignore touches while this list scrolls and just after (no accidental changes)
-    val listState = rememberLazyListState()
+    val listState = rememberKeptListState(scrollKey, rows.size + 3)      // + summary, confidence, empty note
     val guard = rememberTouchGuard(listState)
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -351,10 +364,11 @@ private fun PhotosTab(
     index: NsfwFolderIndex,
     active: Map<Int, IntRange>,
     filter: NsfwFilterState,
+    scrollKey: String,
     onOpen: (Int) -> Unit,
     onHold: (DocEntry?) -> Unit
 ) {
-    val grid = rememberLazyGridState()
+    val grid = rememberKeptGridState(scrollKey, shown.size)
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
         if (active.isNotEmpty()) {

@@ -42,6 +42,9 @@ import coil.decode.VideoFrameDecoder
 import android.graphics.Bitmap
 import java.io.File
 import com.nestgallery.viewer.data.DocEntry
+import com.nestgallery.viewer.data.GalleryCache
+import com.nestgallery.viewer.ui.ScrollKeys
+import com.nestgallery.viewer.ui.nsfw.NsfwFilterState
 import com.nestgallery.viewer.data.storageRootEntry
 import com.nestgallery.viewer.ui.ExploreScreen
 import com.nestgallery.viewer.ui.GalleryScreen
@@ -227,10 +230,16 @@ private fun NestGalleryApp() {
                     onToggleShowNames = { showNames = !showNames },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
+                    // opened afresh: start at the top (returns from a person / the viewer keep their position)
                     onOpenFaces = { root, files ->
+                        GalleryCache.forgetScrolls(ScrollKeys.faces(root.file.absolutePath))
                         screen = Screen.FolderFaces(root = root, files = files, returnTo = s)
                     },
-                    onOpenNsfw = { root, files -> screen = Screen.FolderNsfw(root = root, files = files, returnTo = s) },
+                    onOpenNsfw = { root, files ->
+                        GalleryCache.forgetScrolls(ScrollKeys.nsfw(root.file.absolutePath))
+                        NsfwFilterState.forFolder(root.file.absolutePath).tab = 0
+                        screen = Screen.FolderNsfw(root = root, files = files, returnTo = s)
+                    },
                     onOpenSettings = { screen = Screen.Settings(returnTo = s) },
                     onBack = { screen = Screen.Browser }
                 )
@@ -259,6 +268,7 @@ private fun NestGalleryApp() {
                     files = s.files,
                     onBack = { screen = s.returnTo },
                     onOpenPerson = { personId ->
+                        GalleryCache.forgetScrolls(ScrollKeys.person(personId, s.root.file.absolutePath))
                         screen = Screen.PersonDetail(
                             personId = personId,
                             folderPath = s.root.file.absolutePath,

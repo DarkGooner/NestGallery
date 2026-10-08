@@ -51,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -74,6 +75,9 @@ import kotlin.math.sqrt
 @Stable
 class NsfwFilterState {
     var threshold by mutableFloatStateOf(DEFAULT_THRESHOLD)
+
+    /** Selected tab of the NSFW screen (0 Filters, 1 Photos): coming back from the viewer lands on Photos again. */
+    var tab by mutableIntStateOf(0)
 
     /** label index -> chosen range; last = [NsfwFilter.NO_MAX] means "and more". Absent = full range (no filter). */
     val ranges = mutableStateMapOf<Int, IntRange>()

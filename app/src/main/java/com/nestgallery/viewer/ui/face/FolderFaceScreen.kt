@@ -75,6 +75,8 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import com.nestgallery.viewer.ui.ScrollKeys
+import com.nestgallery.viewer.ui.rememberKeptGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -182,7 +184,8 @@ fun FolderFaceScreen(
     val review = remember(root.file.absolutePath) {
         reviewSession?.takeIf { it.folder == root.file.absolutePath } ?: ReviewSession(root.file.absolutePath).also { reviewSession = it }
     }
-    val peopleGrid = rememberLazyGridState()
+    // Kept across opening a person (or a photo) and coming back
+    val peopleGrid = rememberKeptGridState(ScrollKeys.faces(root.file.absolutePath) + "people", people.size + 1)
 
     fun refreshPeople() {
         scope.launch {

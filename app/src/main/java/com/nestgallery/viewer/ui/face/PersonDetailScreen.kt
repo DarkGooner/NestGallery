@@ -21,9 +21,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -51,6 +49,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import com.nestgallery.viewer.ui.ScrollKeys
+import com.nestgallery.viewer.ui.rememberKeptGridState
+import com.nestgallery.viewer.ui.rememberKeptListState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -106,8 +107,10 @@ fun PersonDetailScreen(
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showRemoveDialog by remember { mutableStateOf(false) }
-    val gridState = rememberLazyGridState()
-    val listState = rememberLazyListState()
+    // Kept across opening a photo and coming back (header + photos; grid and list remember their own position)
+    val scrollKey = ScrollKeys.person(personId, folderPath)
+    val gridState = rememberKeptGridState(scrollKey + "grid", mediaEntries.size + 1)
+    val listState = rememberKeptListState(scrollKey + "list", mediaEntries.size + 1)
 
     fun loadData() {
         scope.launch {

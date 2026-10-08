@@ -265,6 +265,15 @@ Every grouping run regroups all people the user has not curated (that costs a ne
   - Draggable thumb overlay with smooth enter/exit animations.
   - Calculates proportional jump offsets across thousands of items without freezing the Compose render thread.
 
+#### [`app/src/main/java/com/nestgallery/viewer/ui/KeptScroll.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/KeptScroll.kt)
+- **Role**: scroll positions that survive opening the viewer (or a person) and coming back. Navigation swaps whole
+  screens, so `remember` / `rememberSaveable` state is lost; `rememberKeptGridState` / `rememberKeptListState` keep the
+  position in `GalleryCache` and re-apply it once the (asynchronously loaded) content is long enough.
+- **Used by**: a person's photos (grid and list separately), the Faces screen's people grid, the NSFW screen's Photos
+  grid and Filters list (its selected tab is kept in `NsfwFilterState`). `MainActivity` calls
+  `GalleryCache.forgetScrolls(ScrollKeys.x(...))` when one of these screens is opened afresh, so only returns keep the
+  position. `ExploreScreen` has its own equivalent.
+
 ---
 
 ### NSFW Scan & Filters (`com.nestgallery.viewer.data.nsfw`, `ui.nsfw`)
