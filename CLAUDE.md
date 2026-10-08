@@ -56,11 +56,11 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
 ## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`)
 
 Own screen (`FolderNsfwScreen`, opened from the recursive view's shield icon, built like `FolderFaceScreen`): NudeNet
-320n @ 320 or 640m @ 640 (Settings, from the 3-dot menus) -> `YoloDecoder` -> `nest_nsfw.db` (rows keyed by model id) +
+320n @ 320 (640m dropped 2026-10-09: ~2 photos/s vs ~40) -> `YoloDecoder` -> `nest_nsfw.db` (rows keyed by model id) +
 in-memory map -> Filters tab (histogram + RangeSlider per label, AND) / Photos tab. EraX was removed on 2026-10-09 at
 the user's request. Mirrors the face scan (manager + foreground service), not Room/WorkManager. NMS is within
 `NsfwLabels.nmsGroup`; the counting threshold (default 0.45) is applied at load time, every box >= 0.25 is stored.
-**Models are Git LFS** (`nudenet_*.onnx`, 640m = 104 MB > GitHub's 100 MB limit; `git lfs install --local` done here
+**Models are Git LFS** (`nudenet_*.onnx`; `git lfs install --local` done here
 2026-10-09); CI pulls them with an actions/cache. `tools/nsfw-eval/README.md` has the checks. Not verified on a phone;
 no explicit-image accuracy measured. Eval venv: `%USERPROFILE%\nsfw-export-venv` (torch CPU + ultralytics).
 **Hardware (2026-10-09):** ORT is now `onnxruntime-android-qnn:1.22.0` (+ Qualcomm `qnn-runtime` 2.33), app arm64-only.
@@ -73,7 +73,9 @@ declaring `libcdsprpc.so` / `libOpenCL.so` as `uses-native-library`; HTP rejecte
 DFL Softmax, so the bundled models are now cut before decoding (`split_head.py`, Kotlin `YoloHeadDecoder`). Speed
 test "Copy details" gives the QNN log lines. Second run: GPU worked (640m 2.10 photos/s vs CPU 1.27), HTP rejected every
 float op even at fp16 (error 3110), so the NPU now loads QDQ copies (`nudenet_*_qdq.onnx`, A16W8, `quantize_qnn.py`;
-identical counts to float on 45 held-out photos).
+identical counts to float on 45 held-out photos). Then the DSP could not load the skel's libc++.so.1 /
+libc++abi.so.1 (no qnn-runtime / QAIRT ships them; /vendor/dsp/cdsp is closed to apps and even to adb on this Motorola):
+NPU unusable there without root. The Secure Folder was not a bottleneck (that comparison mixed 320n and 640m).
 
 ## Eval tooling (tools/face-eval)
 

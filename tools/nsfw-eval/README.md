@@ -11,7 +11,11 @@ Scripts behind the choices in `app/src/main/java/com/nestgallery/viewer/data/nsf
 
 Environment used: `%USERPROFILE%\nsfw-export-venv` = Python 3.13, onnxruntime 1.22, opencv. Run scripts with `python -I`.
 
-## Models (both bundled, Git LFS, picked in Settings)
+## Models (Git LFS)
+
+Bundled: NudeNet 320n (`nudenet_320n.onnx`) and its NPU copy (`nudenet_320n_qdq.onnx`). 640m (and its NPU copy) was
+bundled from 2026-10-08 to 2026-10-09 and dropped: about 2 photos/s on the Snapdragon 7 Gen 3's GPU against about 40
+for 320n. Its measurements below are kept for reference.
 
 - **NudeNet v3 `320n.onnx`** (YOLOv8n, 18 classes, 12 MB, AGPL-3.0): from the `nudenet` 3.4.2 PyPI wheel
   (`pip download nudenet --no-deps`; it is inside the wheel). sha256 `c15d8273...911f0f`.

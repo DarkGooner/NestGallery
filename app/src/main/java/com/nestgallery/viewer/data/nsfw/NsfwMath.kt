@@ -44,7 +44,7 @@ class NsfwResult(val width: Int, val height: Int, val detections: List<NsfwDetec
 }
 
 object NsfwLabels {
-    /** NudeNet v3 (320n / 640m) class order, from the model's own metadata. */
+    /** NudeNet v3 class order, from the model's own metadata. */
     val NUDENET = listOf(
         "FEMALE_GENITALIA_COVERED", "FACE_FEMALE", "BUTTOCKS_EXPOSED", "FEMALE_BREAST_EXPOSED",
         "FEMALE_GENITALIA_EXPOSED", "MALE_BREAST_EXPOSED", "ANUS_EXPOSED", "FEET_EXPOSED", "BELLY_COVERED",
@@ -89,7 +89,7 @@ object NsfwLabels {
 }
 
 /**
- * Decoder for Ultralytics YOLOv8 / YOLO11 detection heads exported to ONNX (NudeNet 320n and 640m are).
+ * Decoder for Ultralytics YOLOv8 / YOLO11 detection heads exported to ONNX (NudeNet is one).
  *
  * Output layout [1, 4 + classes, anchors]: per anchor cx, cy, w, h in model-input pixels, then one sigmoid score per
  * class. Matches nudenet.py's postprocessing (argmax class per anchor, NMS at IoU 0.45) except that NMS runs within

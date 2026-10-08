@@ -41,6 +41,15 @@ class NsfwDatabase private constructor(context: Context) :
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_nsfw_det_model_path ON nsfw_detections(model, path)")
     }
 
+    override fun onOpen(db: SQLiteDatabase) {
+        super.onOpen(db)
+        // results of models the app no longer ships (e.g. NudeNet 640m) are never shown again
+        if (db.isReadOnly) return
+        val keep = NsfwModels.ALL.joinToString(",") { "'${it.id}'" }
+        db.execSQL("DELETE FROM nsfw_detections WHERE model NOT IN ($keep)")
+        db.execSQL("DELETE FROM nsfw_files WHERE model NOT IN ($keep)")
+    }
+
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         // v1 held NudeNet + EraX results mixed under one model id: not reusable, the next scan redoes them.
         for (t in listOf("nsfw_files", "nsfw_detections", "meta")) db.execSQL("DROP TABLE IF EXISTS $t")
@@ -101,15 +110,6 @@ class NsfwDatabase private constructor(context: Context) :
                 val path = it.getString(0)
                 out[path] = NsfwResult(it.getInt(1), it.getInt(2), dets[path] ?: emptyList(), it.getLong(3))
             }
-        }
-        return out
-    }
-
-    /** How many photos each model has results for (Settings shows it). */
-    fun countByModel(): Map<String, Int> {
-        val out = HashMap<String, Int>()
-        readableDatabase.rawQuery("SELECT model, COUNT(*) FROM nsfw_files GROUP BY model", null).use {
-            while (it.moveToNext()) out[it.getString(0)] = it.getInt(1)
         }
         return out
     }

@@ -114,25 +114,6 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
         _revision.value++
     }
 
-    /**
-     * Switches the model. Refused (false) while a scan runs. Results of the old model stay in the database, so
-     * switching back shows them again; photos never scanned with the new model need a scan.
-     */
-    fun setModel(m: NsfwModel): Boolean {
-        if (isScanning()) return false
-        if (m.id == _model.value.id) return true
-        prefs.edit().putString(KEY_MODEL, m.id).apply()
-        dropAnalyzer()                                                     // the 640m session alone is >100 MB
-        _model.value = m
-        loadedModel = null
-        results.clear()
-        _revision.value++
-        return true
-    }
-
-    /** Photos each model has results for. */
-    suspend fun resultCounts(): Map<String, Int> = withContext(Dispatchers.IO) { database.countByModel() }
-
     /** Switches the hardware. Refused (false) while a scan runs. */
     fun setAccelerator(a: NsfwAccelerator): Boolean {
         if (isScanning()) return false

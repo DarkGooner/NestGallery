@@ -95,8 +95,8 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 #### [`app/keystore/release.keystore`](file:///d:/Projects/NestGallery/app/keystore/release.keystore)
 - **Role**: Pre-configured keystore for signing release APKs.
 
-#### `app/src/main/assets/nudenet_320n.onnx` (12 MB), `nudenet_640m.onnx` (104 MB) - Git LFS
-- **Role**: NudeNet v3 NSFW detectors (YOLOv8n / YOLOv8m, AGPL-3.0), picked in Settings. Input `[1,3,H,W]` RGB `/255`, dynamic H/W. Cut before box decoding (`tools/nsfw-eval/split_head.py`, the Snapdragon NPU / GPU reject those ops): outputs are the 3 head maps `[1, 64+18, H/s, W/s]`, decoded by `YoloHeadDecoder`. Stored with Git LFS (640m exceeds GitHub's 100 MB file limit). See the NSFW section.
+#### `app/src/main/assets/nudenet_320n.onnx` (12 MB), `nudenet_320n_qdq.onnx` (3.3 MB) - Git LFS
+- **Role**: NudeNet v3 320n NSFW detector (YOLOv8n, AGPL-3.0) and its quantised NPU copy (`tools/nsfw-eval/quantize_qnn.py`). Input `[1,3,H,W]` RGB `/255`, dynamic H/W. Cut before box decoding (`tools/nsfw-eval/split_head.py`, the Snapdragon NPU / GPU reject those ops): outputs are the 3 head maps `[1, 64+18, H/s, W/s]`, decoded by `YoloHeadDecoder`. Stored with Git LFS. See the NSFW section.
 
 #### `app/src/main/assets/scrfd_500m.onnx` (2.4 MB), `adaface_ir101_int8.onnx` (63 MB), `face_knn.onnx` (<1 KB)
 - **Role**: SCRFD-500MF face detector (InsightFace `buffalo_s`); AdaFace IR-101 recogniser (CVLFace `cvlface_adaface_ir101_webface12m`, exported with `tools/face-eval/export_adaface.py`, statically quantised to int8 QDQ with percentile calibration by `tools/face-eval/quant.py`; within ~1 point of fp32 TAR); the Gemm+TopK kNN kernel the clusterer runs on ONNX Runtime (`tools/face-eval/make_knn_model.py`). The class is still called `ArcFaceEmbedder` (same 112 px RGB `[-1,1]` interface). It replaced ArcFace ResNet-50 int8 (42 MB) on 2026-10-08: better on CGI expression/lighting changes, occlusion and pose, at ~2.5x the compute.
@@ -278,22 +278,22 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 
 ### NSFW Scan & Filters (`com.nestgallery.viewer.data.nsfw`, `ui.nsfw`)
 
-Pipeline: `decode (EXIF-upright, long side >= model size)` -> `NudeNet 320n @ 320` or `640m @ 640` (ONNX Runtime,
-chosen in Settings) -> `YoloDecoder` (boxes in original-photo pixels, NMS within label groups) -> SQLite (per model) +
+Pipeline: `decode (EXIF-upright, long side >= model size)` -> `NudeNet 320n @ 320` (ONNX Runtime;
+640m was dropped on 2026-10-09) -> `YoloDecoder` (boxes in original-photo pixels, NMS within label groups) -> SQLite (per model) +
 in-memory map (current model) -> per-folder counts -> range filter. Checked against nudenet.py and timed in
 `tools/nsfw-eval/README.md`.
 
 | File | Android-free? | Role |
 |---|---|---|
 | `NsfwMath.kt` | yes | `NsfwDetection` / `NsfwResult` (tag string, JSON), `NsfwLabels` (model class order, screen order + groups, NMS groups), `YoloHeadDecoder` (DFL + dist2bbox + sigmoid on the cut models' head maps -> the full model's output), `YoloDecoder` (Ultralytics `[4+C, anchors]` -> boxes + NMS), `NsfwFilter` (counts at a threshold, AND-of-ranges match), `NsfwFolderIndex` (per-photo counts, slider maxima, per-label histograms) |
-| `NsfwDetector.kt` | no | `NsfwModels` (320n / 640m: id, asset, input size, title), `YoloDetector` (aspect-ratio input padded to /32 on the CPU, the full square on NPU / GPU; runs take turns on an accelerator; reuses the face package's `ModelFiles` / `Ort`; refuses an LFS pointer with a clear message), `NsfwAnalyzer` (decode + detect for one model on one accelerator) |
+| `NsfwDetector.kt` | no | `NsfwModels` (320n: id, asset, NPU asset, input size, title), `YoloDetector` (aspect-ratio input padded to /32 on the CPU, the full square on NPU / GPU; runs take turns on an accelerator; reuses the face package's `ModelFiles` / `Ort`; refuses an LFS pointer with a clear message), `NsfwAnalyzer` (decode + detect for one model on one accelerator) |
 | `NsfwBackend.kt` | no | `NsfwAccelerator` (Auto / NPU / GPU / CPU), `NsfwSessions`: QNN session options (HTP `libQnnHtp.so` at fp16 with `ADSP_LIBRARY_PATH` set, or `libQnnGpu.so`; height/width pinned with `setSymbolicDimensionValue`; compiled HTP graph cached in `filesDir/qnn_ctx` via `ep.context_*`), photos-at-once per backend (CPU: by cores and RAM) |
 | `NsfwDatabase.kt` | no | `nest_nsfw.db` v2: `nsfw_files` (model, path, mtime, size, width, height, ms; width 0 = undecodable) and `nsfw_detections` (model, path, every box with score >= 0.25). Every row carries the model id, so each model keeps its own results |
-| `NsfwScannerManager.kt` | no | selected model and hardware (SharedPreferences `nsfw`; refused while scanning, close the old session); opens the model along the hardware's fallback chain, running it once per attempt, with a committed marker so a native crash is remembered and that accelerator skipped; `speedTest` (every option at scan parallelism on a synthetic 640x480 picture); same decode -> analyse -> batched-writer pipeline as the face scan (640m: fewer workers, 2 threads each), status with rate + ETA, `revision` flow (~1/s while scanning), pause / resume / stop, `clearFolder` |
+| `NsfwScannerManager.kt` | no | selected hardware (SharedPreferences `nsfw`; refused while scanning, closes the old session); opens the model along the hardware's fallback chain, running it once per attempt, with a committed marker so a native crash is remembered and that accelerator skipped; `speedTest` (every option at scan parallelism on a synthetic 640x480 picture); same decode -> analyse -> batched-writer pipeline as the face scan (640m: fewer workers, 2 threads each), status with rate + ETA, `revision` flow (~1/s while scanning), pause / resume / stop, `clearFolder` |
 | `NsfwScanService.kt` | no | foreground (data-sync) service + wake lock + progress notification (own channel), like `FaceScanService` |
 | `ui/nsfw/FolderNsfwScreen.kt` | no | the NSFW screen (structure of `FolderFaceScreen`): top bar (scan, overflow: Settings / forget results), progress card, tabs **Filters** and **Photos**, empty state |
 | `ui/nsfw/NsfwFilters.kt` | no | `NsfwFilterState` (threshold + label ranges, per folder for the process lifetime), confidence card, label card (histogram with tap-to-pick, slider, quick chips), active-filter chips, `rangeText`. `StepTrack` is a custom slider instead of Material's (which jumps on touch-down, so scrolling the list changed filters): it moves only when a thumb is dragged sideways past the touch slop; `TouchGuard` drops taps/drags while the list scrolls and 350 ms after; bars, labels and stops share one `StopGeometry`, so each bar sits over its stop |
-| `ui/SettingsScreen.kt` | no | Settings (from the 3-dot menus of the browser, the recursive view and the NSFW screen): NudeNet model choice with per-model result counts |
+| `ui/SettingsScreen.kt` | no | Settings (from the 3-dot menus of the browser, the recursive view and the NSFW screen): NSFW hardware choice and speed test |
 
 - **Entry point**: shield icon in `ExploreScreen`'s header (next to Faces) -> `Screen.FolderNsfw(root, files)`.
 - **Filter semantics**: a range equal to `0..max` is inactive; the top end stored as `NsfwFilter.NO_MAX` means "and more",

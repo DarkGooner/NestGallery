@@ -34,7 +34,10 @@ class NsfwModel(
     val npuAsset: String
 )
 
-/** The NudeNet v3 variants (YOLOv8, 18 body-part classes, AGPL-3.0), both bundled; Settings picks one. */
+/**
+ * NudeNet v3 320n (YOLOv8n, 18 body-part classes, AGPL-3.0). The 640m variant was dropped on 2026-10-09: ~30x the
+ * compute (2 photos/s on the Snapdragon 7 Gen 3's GPU vs ~40 for 320n) and the phone's NPU is closed to apps.
+ */
 object NsfwModels {
     val N320 = NsfwModel(
         "nudenet-320n:v1", "nudenet_320n.onnx", 320, NsfwLabels.NUDENET,
@@ -43,14 +46,7 @@ object NsfwModels {
             "distant regions are missed more often.",
         npuAsset = "nudenet_320n_qdq.onnx"
     )
-    val M640 = NsfwModel(
-        "nudenet-640m:v1", "nudenet_640m.onnx", 640, NsfwLabels.NUDENET,
-        "NudeNet 640m (accurate)",
-        "YOLOv8m at 640 px, 104 MB. Finds smaller regions and is more reliable, but about 30x slower on a CPU: " +
-            "a 20,000-photo library takes hours unless the NPU runs it (Settings > hardware).",
-        npuAsset = "nudenet_640m_qdq.onnx"
-    )
-    val ALL = listOf(N320, M640)
+    val ALL = listOf(N320)
     val DEFAULT = N320
 
     fun byId(id: String?): NsfwModel = ALL.firstOrNull { it.id == id } ?: DEFAULT

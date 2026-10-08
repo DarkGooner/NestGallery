@@ -96,32 +96,32 @@ every photo in the folder and its subfolders with NudeNet, on the device, and le
   because every detection down to 25% is stored. The summary card shows how many photos match, with **Clear filters**.
 - **Photos tab**: the matching photos, with the active filters as removable chips; tapping a photo opens the viewer on
   that set.
-- **Settings** (3-dot menu here, in the folder browser and in the recursive view): choose the model.
-  - *NudeNet 320n (fast, default)*: 12 MB, ~30 ms per photo per PC core.
-  - *NudeNet 640m (accurate)*: 104 MB, finds more and smaller regions but is ~30x slower (hours for a big library on a phone).
-
-  Each model keeps its own results, so switching back and forth never loses a scan. The model can't be changed while
-  a scan runs.
-- **Hardware** (Settings): *Auto* (default: NPU, then GPU, then CPU), *NPU* (Snapdragon Hexagon, through Qualcomm
-  QNN, fp16), *GPU* (Adreno, experimental) or *CPU*. Whatever fails on a phone falls back to the CPU; one that crashes
-  the app is skipped from then on (Settings can retry it). The first NPU run compiles the model for the chip (up to a
-  minute) and caches it. **Speed test** measures every option on the phone the way a scan runs (photos/s and the time
-  for 20,000 photos) and offers to switch to the fastest.
-- **NPU on phones that hide the DSP's C++ runtime** (e.g. Snapdragon 7 Gen 3 / Motorola: the speed test's details
-  say "Failed to initialize qnn_model_wrapper" and "libc++.so.1 (No such file)"): Qualcomm's NPU code needs the DSP's
-  own `libc++.so.1` and `libc++abi.so.1`, which live in `/vendor/dsp/cdsp/` where apps may not read them. Copy them
-  off the phone once with adb and the app uses them:
+- **Model**: NudeNet 320n (YOLOv8n, 12 MB). About 40 photos/s on a Snapdragon 7 Gen 3, so 20,000 photos take under
+  10 minutes. (The larger 640m variant was tried and dropped: about 2 photos/s on the same phone.)
+- **Hardware** (Settings, from the 3-dot menu here, in the folder browser and in the recursive view): *Auto* (default:
+  NPU, then GPU, then CPU), *NPU* (Snapdragon Hexagon through Qualcomm QNN, running a quantised copy of the model),
+  *GPU* (Adreno, experimental) or *CPU*. Whatever fails on a phone falls back to the CPU; one that crashes the app is
+  skipped from then on (Settings can retry it). The first NPU run compiles the model for the chip and caches it.
+  **Speed test** measures every option on the phone the way a scan runs (photos/s and the time for 20,000 photos) and
+  offers to switch to the fastest. The app is 64-bit only (arm64) because the QNN build of ONNX Runtime is.
+- **NPU on phones that hide the DSP's C++ runtime** (the speed test's details say "Failed to initialize
+  qnn_model_wrapper" and "libc++.so.1 (No such file)"): Qualcomm's NPU code needs the DSP's own `libc++.so.1` and
+  `libc++abi.so.1`, which live in `/vendor/dsp/cdsp/` where apps may not read them. If adb can read that folder, copy
+  them off the phone once and the app uses them:
 
   ```
   adb shell mkdir -p /sdcard/NestGallery/dsp
-  adb pull /vendor/dsp/cdsp/libc++.so.1 && adb pull /vendor/dsp/cdsp/libc++abi.so.1
+  adb pull /vendor/dsp/cdsp/libc++.so.1
+  adb pull /vendor/dsp/cdsp/libc++abi.so.1
   adb push libc++.so.1 libc++abi.so.1 /sdcard/NestGallery/dsp/
-  ``` The app is 64-bit only (arm64) because the QNN build of ONNX
-  Runtime is.
-- **Models** are bundled in `app/src/main/assets` (no download, no network) and stored with **Git LFS** (640m is over
-  GitHub's 100 MB file limit). After cloning, run `git lfs install` once and `git lfs pull` before building; an APK
-  built from a clone without them shows "...is a Git LFS pointer" when a scan starts. CI fetches them itself. Where
-  the models come from and how they were checked: `tools/nsfw-eval/README.md`. Licence: NudeNet is AGPL-3.0.
+  ```
+
+  On the motorola edge 50 pro even adb gets "Permission denied" there, so its NPU is out of reach without root;
+  320n on the CPU or GPU is fast enough anyway.
+- **Models** are bundled in `app/src/main/assets` (no download, no network) and stored with **Git LFS**. After
+  cloning, run `git lfs install` once and `git lfs pull` before building; an APK built from a clone without them shows
+  "...is a Git LFS pointer" when a scan starts. CI fetches them itself. Where the models come from and how they were
+  checked: `tools/nsfw-eval/README.md`. Licence: NudeNet is AGPL-3.0.
 - **Accuracy**: no detector is perfect, especially on drawings and 3D renders; expect misses and false hits around the
   threshold. The pipeline was checked against NudeNet's reference code, but recall on explicit images has not been
   measured.
