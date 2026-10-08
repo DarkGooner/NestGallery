@@ -23,11 +23,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -84,6 +82,13 @@ import kotlin.math.roundToInt
 
 import androidx.compose.material.icons.filled.PersonSearch
 import java.io.File
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.ui.text.style.TextOverflow
 
 @Composable
 fun ImageViewerScreen(
@@ -121,7 +126,7 @@ fun ImageViewerScreen(
             exit = fadeOut(),
             modifier = Modifier.fillMaxSize()
         ) {
-            Box(Modifier.fillMaxSize().statusBarsPadding().padding(8.dp)) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding().padding(8.dp)) {
                 IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart)) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                 }
@@ -132,7 +137,9 @@ fun ImageViewerScreen(
                     text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",
                     color = Color.White,
                     style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
                 )
             }
         }
@@ -383,7 +390,7 @@ private fun VideoPlayer(
                         .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)))
                 )
                 Box(
-                    Modifier.fillMaxWidth().statusBarsPadding().padding(8.dp)
+                    Modifier.fillMaxWidth().safeDrawingPadding().padding(8.dp)
                 ) {
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
@@ -467,7 +474,7 @@ private fun VideoControlBar(
     Column(
         modifier
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))))
-            .navigationBarsPadding()
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
             .padding(top = 16.dp, start = 16.dp, end = 16.dp, bottom = 12.dp)
     ) {
         Row(

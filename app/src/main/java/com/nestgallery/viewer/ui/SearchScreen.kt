@@ -157,7 +157,7 @@ fun SearchScreen(
     val bar = rememberCollapsingBar()
     val topPad = bar.contentTopPadding()
 
-    Scaffold { padding ->
+    Scaffold(contentWindowInsets = ScreenInsets) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
                 debouncedQuery.isEmpty() -> {

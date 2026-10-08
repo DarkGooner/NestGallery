@@ -117,6 +117,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.roundToInt
+import com.nestgallery.viewer.ui.ScreenInsets
+import com.nestgallery.viewer.ui.TopBarInsets
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.verticalScroll
 
 /**
  * "Same person?" progress in one folder. Opening a person from the card replaces this screen and coming back builds it
@@ -263,8 +268,10 @@ fun FolderFaceScreen(
     }
 
     Scaffold(
+        contentWindowInsets = ScreenInsets,
         topBar = {
             if (selectedPeople.isNotEmpty()) TopAppBar(
+                windowInsets = TopBarInsets,
                 title = { Text("${selectedPeople.size} selected") },
                 navigationIcon = {
                     IconButton(onClick = { selectedPeople = emptySet() }) {
@@ -279,6 +286,7 @@ fun FolderFaceScreen(
                     }
                 }
             ) else TopAppBar(
+                windowInsets = TopBarInsets,
                 title = {
                     Column {
                         Text(
@@ -367,7 +375,8 @@ fun FolderFaceScreen(
                     ) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.verticalScroll(rememberScrollState())
                         ) {
                             Box(
                                 modifier = Modifier
@@ -421,7 +430,7 @@ fun FolderFaceScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        if (showQuestion && question != null) {
+                        if (showQuestion) {
                             item(key = "same-person", span = { GridItemSpan(maxLineSpan) }) {
                                 SamePersonCard(
                                     suggestion = question,
@@ -832,6 +841,7 @@ private fun SuggestedPersonChip(match: PersonMatch, onClick: () -> Unit) {
  * different lighting / expression looks like this, but so do two look-alike characters). Yes merges them, No keeps
  * them apart for good; either way both are left as the user confirmed them.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SamePersonCard(
     suggestion: MergeSuggestion,
@@ -874,7 +884,11 @@ private fun SamePersonCard(
                 }
             }
             Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 TextButton(onClick = onSkip) { Text("Skip") }
                 OutlinedButton(onClick = { onAnswer(false) }) { Text("Different") }
                 Button(onClick = { onAnswer(true) }) { Text("Same person") }

@@ -153,7 +153,7 @@ fun ExploreScreen(
     val bar = rememberCollapsingBar()
     val topPad = bar.contentTopPadding()
 
-    Scaffold { padding ->
+    Scaffold(contentWindowInsets = ScreenInsets) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).nestedScroll(bar.connection)) {
             if (items.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(top = topPad), contentAlignment = Alignment.Center) {

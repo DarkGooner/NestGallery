@@ -145,7 +145,7 @@ fun GalleryScreen(
     val topPad = bar.contentTopPadding()
     val pullState = rememberPullToRefreshState()
 
-    Scaffold { padding ->
+    Scaffold(contentWindowInsets = ScreenInsets) { padding ->
         val currentEntries = entries
 
         Box(Modifier.fillMaxSize().padding(padding).nestedScroll(bar.connection)) {
