@@ -53,14 +53,16 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
   new x all) is the planned follow-up; the user said accuracy first, speed later.
 - Not done: real Daz3D / Blender / Honey Select test images (DigiFace is the stand-in), learned clustering, anime.
 
-## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`, 2026-10-08)
+## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`)
 
-Recursive view only (`ExploreScreen`): NudeNet 320n @ 320 + EraX YOLO11n @ 640 -> `YoloDecoder` -> `nest_nsfw.db` +
-in-memory map -> per-label RangeSliders (AND). Mirrors the face scan (manager + foreground service), not Room/WorkManager.
-NMS is within `NsfwLabels.nmsGroup` (not across all classes like nudenet.py, not per class); the counting threshold
-(default 0.45) is applied at load time, every box >= 0.25 is stored. Change models -> bump `NsfwModels.MODEL_ID`.
-`tools/nsfw-eval/README.md` has the checks (pipeline vs nudenet.py on COCO/LFW, timings). Not verified on a phone; no
-explicit-image accuracy measured. Export venv: `%USERPROFILE%\nsfw-export-venv` (torch CPU + ultralytics).
+Own screen (`FolderNsfwScreen`, opened from the recursive view's shield icon, built like `FolderFaceScreen`): NudeNet
+320n @ 320 or 640m @ 640 (Settings, from the 3-dot menus) -> `YoloDecoder` -> `nest_nsfw.db` (rows keyed by model id) +
+in-memory map -> Filters tab (histogram + RangeSlider per label, AND) / Photos tab. EraX was removed on 2026-10-09 at
+the user's request. Mirrors the face scan (manager + foreground service), not Room/WorkManager. NMS is within
+`NsfwLabels.nmsGroup`; the counting threshold (default 0.45) is applied at load time, every box >= 0.25 is stored.
+**Models are Git LFS** (`nudenet_*.onnx`, 640m = 104 MB > GitHub's 100 MB limit; `git lfs install --local` done here
+2026-10-09); CI pulls them with an actions/cache. `tools/nsfw-eval/README.md` has the checks. Not verified on a phone;
+no explicit-image accuracy measured. Eval venv: `%USERPROFILE%\nsfw-export-venv` (torch CPU + ultralytics).
 
 ## Eval tooling (tools/face-eval)
 

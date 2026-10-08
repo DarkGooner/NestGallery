@@ -6,7 +6,7 @@ is what Ultralytics' own predict() does), which costs up to ~45% less for 16:9 p
 instead of across classes, so a male and a female region that overlap (common in explicit photos) are both counted.
 This script runs both on the same images and reports how close they are.
 
-usage: python -I compare.py <nudenet_model.onnx> <image or folder>... [--size 320] [--erax erax.onnx --erax-size 640]
+usage: python -I compare.py <nudenet_model.onnx> <image or folder>... [--size 320] [--extra other.onnx:640 ...]
 """
 import argparse
 import math
@@ -151,8 +151,6 @@ def main():
     ap.add_argument("images", nargs="+")
     ap.add_argument("--size", type=int, default=320)
     ap.add_argument("--threshold", type=float, default=0.45, help="the app's default counting threshold")
-    ap.add_argument("--erax", help="optional EraX YOLO11 ONNX, timed on the same images")
-    ap.add_argument("--erax-size", type=int, default=640)
     ap.add_argument("--extra", nargs="*", default=[], help="more model.onnx:size pairs to time only")
     a = ap.parse_args()
 
@@ -193,7 +191,7 @@ def main():
     print(f"  identical per-label counts on {same_counts}/{n} images")
     print(f"  time per image (1 thread, incl. pre/post): reference square {1000 * t_ref / n:.1f} ms, app rect {1000 * t_app / n:.1f} ms")
 
-    timed = [(a.erax, a.erax_size)] if a.erax else []
+    timed = []
     for e in a.extra:
         m, s = e.rsplit(":", 1); timed.append((m, int(s)))
     for path, size in timed:

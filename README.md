@@ -71,34 +71,40 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
     Runtime; a parallel decode/analyse/write pipeline; clustering on an ONNX
     k-nearest-neighbour graph that keeps people you named or corrected exactly as you left them; an int8
     in-memory index that searches 50k faces in tens of milliseconds. Everything is local.
-- **NSFW scan and filters** (recursive view, fully on-device): see below.
+- **NSFW scan and filters** (own screen from the recursive view, fully on-device): see below.
 - Dark theme with Material You dynamic color on Android 12+.
 
 ## NSFW scan
 
-In the recursive view (tree icon), the **E** button scans every photo in the folder and all its subfolders with two
-on-device detectors, and the **filter** button that appears next to it narrows the view by what was found.
+In the recursive view (tree icon), the **shield** button opens the folder's NSFW screen (like **Faces**). It scans
+every photo in the folder and its subfolders with NudeNet, on the device, and lets you filter them by what was found.
 
-- **What is detected**: NudeNet v3 (`FACE_FEMALE`, `FACE_MALE`, `FEMALE_BREAST_EXPOSED` / `_COVERED`,
-  `FEMALE_GENITALIA_EXPOSED` / `_COVERED`, `MALE_GENITALIA_EXPOSED`, `BUTTOCKS_*`, `ANUS_*`, `BELLY_*`, `ARMPITS_*`,
-  `FEET_*`, `MALE_BREAST_EXPOSED`) and EraX-NSFW (`MAKE_LOVE` = a sex act, `PENIS`, `VAGINA`, `NIPPLE`, `ANUS`). Each
-  photo's result has the shape `{"width", "height", "labels", "detections": [{"label", "score", "box": [x, y, w, h]}],
-  "ms"}` (`NsfwResult.toJson()`), and the viewer's **i** sheet shows its tag string, e.g.
-  `2FACE_FEMALE, 1MALE_GENITALIA_EXPOSED, 1FEMALE_BREAST_COVERED`.
-- **Scanning** runs in the background like the face scan: a notification with progress, photos/s and time left,
-  Pause / Resume / Stop, and a progress card at the bottom of the folder view (count, rate, time left, current file).
-  Results are saved as they come in, so the filters work while the scan is still running, a stopped scan resumes where
-  it stopped, and later scans only look at new or changed photos (path + size + modified time). Videos are skipped.
-- **Filters**: one range slider per label found in the folder, from 0 to the highest count in any photo. A photo is
-  shown only if its count is inside **every** narrowed slider (e.g. Face female 2-2 = exactly two women's faces;
-  add Make love 1+ for "...and a sex act"). Sliders at full range don't filter. **Minimum confidence** (default 45%)
-  decides which detections count - changing it never needs a rescan, because every detection down to 25% is stored.
-  **Clear filters** resets them; tapping a photo opens the viewer on the filtered set.
-- **Models** are bundled in `app/src/main/assets`: `nudenet_320n.onnx` (12 MB) and `erax_nsfw_yolo11n.onnx` (11 MB). No
-  download, no network. To use different ones (e.g. a bigger EraX export), replace the file, update `NsfwModels` in
-  `data/nsfw/NsfwDetector.kt` (asset name, input size, labels) and change `MODEL_ID` - stored results of other models
-  are discarded and rescanned. Where the models come from and how they were checked: `tools/nsfw-eval/README.md`.
-  Licences: NudeNet is AGPL-3.0, EraX-NSFW Apache-2.0.
+- **What is detected** (NudeNet v3): `FACE_FEMALE`, `FACE_MALE`, `FEMALE_BREAST_EXPOSED` / `_COVERED`,
+  `FEMALE_GENITALIA_EXPOSED` / `_COVERED`, `MALE_GENITALIA_EXPOSED`, `MALE_BREAST_EXPOSED`, `BUTTOCKS_*`, `ANUS_*`,
+  `BELLY_*`, `ARMPITS_*`, `FEET_*`. Each photo's result has the shape `{"width", "height", "labels", "detections":
+  [{"label", "score", "box": [x, y, w, h]}], "ms"}` (`NsfwResult.toJson()`), and the viewer's **i** sheet shows its tag
+  string, e.g. `2FACE_FEMALE, 1MALE_GENITALIA_EXPOSED, 1FEMALE_BREAST_COVERED`.
+- **Scanning** (refresh button) runs in the background like the face scan: a notification with progress, photos/s and
+  time left, Pause / Resume / Stop, and the same progress card on the screen. Results are saved as they come in, so the
+  filters work while the scan runs, a stopped scan resumes, and later scans only look at new or changed photos. Videos
+  are skipped.
+- **Filters tab**: one card per label found in the folder, with a bar chart of how many photos have 0, 1, 2... of it
+  (tap a bar for "exactly that many"), a range slider from 0 to the highest count, and quick choices (Any / None /
+  1 or more / 2 or more). A photo passes only if it fits **every** narrowed card (e.g. Face female "Exactly 2" = two
+  women's faces). **Minimum confidence** (default 45%) decides which detections count; changing it never rescans,
+  because every detection down to 25% is stored. The summary card shows how many photos match, with **Clear filters**.
+- **Photos tab**: the matching photos, with the active filters as removable chips; tapping a photo opens the viewer on
+  that set.
+- **Settings** (3-dot menu here, in the folder browser and in the recursive view): choose the model.
+  - *NudeNet 320n (fast, default)*: 12 MB, ~30 ms per photo per PC core.
+  - *NudeNet 640m (accurate)*: 104 MB, finds more and smaller regions but is ~30x slower (hours for a big library on a phone).
+
+  Each model keeps its own results, so switching back and forth never loses a scan. The model can't be changed while
+  a scan runs.
+- **Models** are bundled in `app/src/main/assets` (no download, no network) and stored with **Git LFS** (640m is over
+  GitHub's 100 MB file limit). After cloning, run `git lfs install` once and `git lfs pull` before building; an APK
+  built from a clone without them shows "...is a Git LFS pointer" when a scan starts. CI fetches them itself. Where
+  the models come from and how they were checked: `tools/nsfw-eval/README.md`. Licence: NudeNet is AGPL-3.0.
 - **Accuracy**: no detector is perfect, especially on drawings and 3D renders; expect misses and false hits around the
   threshold. The pipeline was checked against NudeNet's reference code, but recall on explicit images has not been
   measured.

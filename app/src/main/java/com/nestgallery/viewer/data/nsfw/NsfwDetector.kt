@@ -15,20 +15,38 @@ import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-/** A bundled Ultralytics YOLO detector: asset name, the long side it runs at, and its class names in output order. */
-class NsfwModel(val asset: String, val inputSize: Int, val labels: List<String>)
+/**
+ * A bundled Ultralytics YOLO detector. [id] is stored with every result (each model keeps its own results, so
+ * switching back and forth never loses a scan); change it if the model or its pre/post-processing changes.
+ */
+class NsfwModel(
+    val id: String,
+    val asset: String,
+    /** Long side the photo is scaled to (the model's training size). */
+    val inputSize: Int,
+    val labels: List<String>,
+    val title: String,
+    val description: String
+)
 
+/** The NudeNet v3 variants (YOLOv8, 18 body-part classes, AGPL-3.0), both bundled; Settings picks one. */
 object NsfwModels {
-    /** NudeNet v3 320n (YOLOv8n, 18 body-part classes, AGPL-3.0), at its training size. */
-    val NUDENET = NsfwModel("nudenet_320n.onnx", 320, NsfwLabels.NUDENET)
+    val N320 = NsfwModel(
+        "nudenet-320n:v1", "nudenet_320n.onnx", 320, NsfwLabels.NUDENET,
+        "NudeNet 320n (fast)",
+        "YOLOv8n at 320 px, 12 MB. About 30 ms per photo per CPU core on a PC. Good for big libraries; small or " +
+            "distant regions are missed more often."
+    )
+    val M640 = NsfwModel(
+        "nudenet-640m:v1", "nudenet_640m.onnx", 640, NsfwLabels.NUDENET,
+        "NudeNet 640m (accurate)",
+        "YOLOv8m at 640 px, 104 MB. Finds smaller regions and is more reliable, but about 30x slower: a 20,000-photo " +
+            "library can take many hours on a phone."
+    )
+    val ALL = listOf(N320, M640)
+    val DEFAULT = N320
 
-    /** EraX-NSFW-V1.0 YOLO11n (anus / make_love / nipple / penis / vagina, Apache-2.0), at its training size. */
-    val ERAX = NsfwModel("erax_nsfw_yolo11n.onnx", 640, NsfwLabels.ERAX)
-
-    val ALL = listOf(NUDENET, ERAX)
-
-    /** Stored with the results; scans made with other models (or settings) are redone. */
-    const val MODEL_ID = "nudenet320n+erax-yolo11n@640:v1"
+    fun byId(id: String?): NsfwModel = ALL.firstOrNull { it.id == id } ?: DEFAULT
 }
 
 /**
@@ -44,8 +62,13 @@ class YoloDetector(context: Context, val model: NsfwModel) {
     private val pixelScratch = object : ThreadLocal<IntArray>() { override fun initialValue() = IntArray(size * size) }
 
     init {
-        // One thread per run (Ort.options), like the face models: the scanner keeps every core busy with several photos.
-        session = Ort.env.createSession(ModelFiles.materialize(context, model.asset).absolutePath, Ort.options())
+        val file = ModelFiles.materialize(context, model.asset)
+        // A clone without `git lfs pull` ships the ~130-byte pointer instead of the model; say so instead of an ORT error.
+        check(file.length() > 4096) { "${model.asset} is a Git LFS pointer, not the model. Run `git lfs pull` and rebuild." }
+        // The small model: one thread per run (Ort.options) like the face models, the scanner runs several photos at
+        // once. The big one runs fewer photos at a time (memory), so it gets two threads each.
+        val options = if (model.inputSize > 320) Ort.options().apply { setIntraOpNumThreads(2) } else Ort.options()
+        session = Ort.env.createSession(file.absolutePath, options)
         inputName = session.inputNames.first()
         val classes = (session.outputInfo.values.first().info as TensorInfo).shape[1] - 4
         require(classes == model.labels.size.toLong()) { "${model.asset}: $classes classes, expected ${model.labels.size}" }
@@ -97,12 +120,12 @@ class YoloDetector(context: Context, val model: NsfwModel) {
     fun close() = session.close()
 }
 
-/** Decode once, run every model. Thread-safe. */
-class NsfwAnalyzer(context: Context) {
-    private val detectors = NsfwModels.ALL.map { YoloDetector(context, it) }
-    private val decodeSide = NsfwModels.ALL.maxOf { it.inputSize }
+/** Decode + detect for one [model]. Thread-safe. */
+class NsfwAnalyzer(context: Context, val model: NsfwModel) {
+    private val detector = YoloDetector(context, model)
+    private val decodeSide = model.inputSize
 
-    /** Upright photo decoded small (long side in [640, 1280) for big photos) plus its original upright size. */
+    /** Upright photo decoded small (long side in [inputSize, 2*inputSize) for big photos) plus its original upright size. */
     class Decoded(val bitmap: Bitmap, val width: Int, val height: Int)
 
     fun decode(file: File): Decoded? {
@@ -117,7 +140,9 @@ class NsfwAnalyzer(context: Context) {
         return Decoded(bmp, if (sideways) bounds.outHeight else bounds.outWidth, if (sideways) bounds.outWidth else bounds.outHeight)
     }
 
-    fun analyze(d: Decoded): List<NsfwDetection> = detectors.flatMap { it.detect(d.bitmap, d.width, d.height) }
+    fun analyze(d: Decoded): List<NsfwDetection> = detector.detect(d.bitmap, d.width, d.height)
+
+    fun close() = detector.close()
 
     private companion object {
         val SIDEWAYS = setOf(

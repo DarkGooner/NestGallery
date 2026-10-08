@@ -47,6 +47,8 @@ import com.nestgallery.viewer.ui.ExploreScreen
 import com.nestgallery.viewer.ui.GalleryScreen
 import com.nestgallery.viewer.ui.ImageViewerScreen
 import com.nestgallery.viewer.ui.SearchScreen
+import com.nestgallery.viewer.ui.SettingsScreen
+import com.nestgallery.viewer.ui.nsfw.FolderNsfwScreen
 import com.nestgallery.viewer.ui.face.FolderFaceScreen
 import com.nestgallery.viewer.ui.face.PersonDetailScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
@@ -63,6 +65,8 @@ private sealed class Screen {
     data class Viewer(val images: List<DocEntry>, val startIndex: Int, val returnTo: Screen) : Screen()
     data class FolderFaces(val root: DocEntry, val files: List<DocEntry>, val returnTo: Screen) : Screen()
     data class PersonDetail(val personId: Long, val folderPath: String? = null, val returnTo: Screen) : Screen()
+    data class FolderNsfw(val root: DocEntry, val files: List<DocEntry>, val returnTo: Screen) : Screen()
+    data class Settings(val returnTo: Screen) : Screen()
 }
 
 private fun hasStorageAccess(): Boolean {
@@ -206,6 +210,7 @@ private fun NestGalleryApp() {
                     onGoHome = { pathStack = listOf(storageRootEntry()) },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onExploreFolder = { folder -> screen = Screen.Explore(folder) },
+                    onOpenSettings = { screen = Screen.Settings(returnTo = s) },
                     onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
                     onBack = { if (pathStack.size > 1) pathStack = pathStack.dropLast(1) },
                     canGoBack = pathStack.size > 1
@@ -225,6 +230,8 @@ private fun NestGalleryApp() {
                     onOpenFaces = { root, files ->
                         screen = Screen.FolderFaces(root = root, files = files, returnTo = s)
                     },
+                    onOpenNsfw = { root, files -> screen = Screen.FolderNsfw(root = root, files = files, returnTo = s) },
+                    onOpenSettings = { screen = Screen.Settings(returnTo = s) },
                     onBack = { screen = Screen.Browser }
                 )
             }
@@ -263,6 +270,16 @@ private fun NestGalleryApp() {
                     }
                 )
             }
+            is Screen.FolderNsfw -> {
+                FolderNsfwScreen(
+                    root = s.root,
+                    files = s.files,
+                    onBack = { screen = s.returnTo },
+                    onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
+                    onOpenSettings = { screen = Screen.Settings(returnTo = s) }
+                )
+            }
+            is Screen.Settings -> SettingsScreen(onBack = { screen = s.returnTo })
             is Screen.PersonDetail -> {
                 PersonDetailScreen(
                     personId = s.personId,

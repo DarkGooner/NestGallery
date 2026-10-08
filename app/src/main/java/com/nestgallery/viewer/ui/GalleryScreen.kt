@@ -29,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.LabelOff
@@ -93,6 +94,7 @@ fun GalleryScreen(
     onGoHome: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onExploreFolder: (DocEntry) -> Unit,
+    onOpenSettings: () -> Unit,
     onSearch: (DocEntry) -> Unit,
     onBack: () -> Unit,
     canGoBack: Boolean
@@ -278,7 +280,8 @@ fun GalleryScreen(
                 TopBarMenuItem(if (showNames) "Hide filenames" else "Show filenames",
                     if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, onToggleShowNames),
                 TopBarMenuItem(if (hideHidden) "Show hidden items" else "Hide hidden items",
-                    if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onToggleHideHidden)
+                    if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onToggleHideHidden),
+                TopBarMenuItem("Settings", Icons.Default.Settings, onOpenSettings)
             ),
             modifier = Modifier.align(Alignment.TopCenter).alpha(if (previewEntry == null) 1f else 0f)
         )

@@ -46,8 +46,9 @@ sealed class NsfwScanStatus {
 }
 
 /**
- * NSFW scan of a recursive folder view: every photo goes through NudeNet + EraX ([NsfwAnalyzer]), results are kept in
- * SQLite ([NsfwDatabase]) and in memory, so filtering is instant and unchanged photos are never scanned twice.
+ * NSFW scan of a recursive folder view: every photo goes through the NudeNet variant chosen in Settings ([model],
+ * [NsfwAnalyzer]); results are kept per model in SQLite ([NsfwDatabase]) and, for the current model, in memory, so
+ * filtering is instant and unchanged photos are never scanned twice.
  *
  * Same structure as the face scan: decoder threads (IO) -> analysis workers (CPU) -> one writer (batched SQLite
  * transaction + in-memory map), all overlapping and bounded by channel back-pressure. [NsfwScanService] keeps it alive
@@ -56,11 +57,20 @@ sealed class NsfwScanStatus {
 class NsfwScannerManager private constructor(private val appContext: Context) {
 
     val database = NsfwDatabase.getInstance(appContext)
-    private val analyzer by lazy { NsfwAnalyzer(appContext) }
+    private val prefs = appContext.getSharedPreferences("nsfw", Context.MODE_PRIVATE)
 
+    private val _model = MutableStateFlow(NsfwModels.byId(prefs.getString(KEY_MODEL, null)))
+    /** The NudeNet variant scans use and results are shown for (Settings). */
+    val model: StateFlow<NsfwModel> = _model.asStateFlow()
+
+    private var analyzer: NsfwAnalyzer? = null
+    private val analyzerLock = Any()
+
+    /** Results of [model] only; reloaded when the model changes. */
     private val results = ConcurrentHashMap<String, NsfwResult>()
     private val loadMutex = Mutex()
-    @Volatile private var loaded = false
+    /** Model id whose results [results] holds; null = not loaded. */
+    @Volatile private var loadedModel: String? = null
 
     /** Bumped (at most about once a second while scanning) whenever new results are visible through [result]. */
     private val _revision = MutableStateFlow(0)
@@ -73,17 +83,41 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
     private val _status = MutableStateFlow<NsfwScanStatus>(NsfwScanStatus.Idle)
     val status: StateFlow<NsfwScanStatus> = _status.asStateFlow()
 
-    private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
 
     suspend fun ensureLoaded() {
-        if (loaded) return
+        val id = _model.value.id
+        if (loadedModel == id) return
         loadMutex.withLock {
-            if (loaded) return
-            val all = withContext(Dispatchers.IO) { database.loadAll() }
-            for ((k, v) in all) results.putIfAbsent(k, v)
-            loaded = true
+            if (loadedModel == id) return
+            val all = withContext(Dispatchers.IO) { database.loadAll(id) }
+            results.clear()
+            results.putAll(all)
+            loadedModel = id
         }
         _revision.value++
+    }
+
+    /**
+     * Switches the model. Refused (false) while a scan runs. Results of the old model stay in the database, so
+     * switching back shows them again; photos never scanned with the new model need a scan.
+     */
+    fun setModel(m: NsfwModel): Boolean {
+        if (isScanning()) return false
+        if (m.id == _model.value.id) return true
+        prefs.edit().putString(KEY_MODEL, m.id).apply()
+        synchronized(analyzerLock) { analyzer?.close(); analyzer = null }   // the 640m session alone is >100 MB
+        _model.value = m
+        loadedModel = null
+        results.clear()
+        _revision.value++
+        return true
+    }
+
+    /** Photos each model has results for. */
+    suspend fun resultCounts(): Map<String, Int> = withContext(Dispatchers.IO) { database.countByModel() }
+
+    private fun analyzerFor(m: NsfwModel): NsfwAnalyzer = synchronized(analyzerLock) {
+        analyzer?.takeIf { it.model.id == m.id } ?: NsfwAnalyzer(appContext, m).also { analyzer?.close(); analyzer = it }
     }
 
     fun result(path: String): NsfwResult? = results[path]
@@ -115,15 +149,16 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
             var total = 0
             try {
                 ensureLoaded()
-                val indexed = withContext(Dispatchers.IO) { database.loadIndexedFiles(folderPath) }
+                val m = _model.value
+                val indexed = withContext(Dispatchers.IO) { database.loadIndexedFiles(m.id, folderPath) }
                 val todo = withContext(Dispatchers.IO) {
-                    files.filter { it.extension.lowercase() in imageExtensions }.filter { f ->
+                    files.filter { isScannable(it) }.filter { f ->
                         val s = indexed[f.absolutePath]
                         s == null || s.first != f.lastModified() || s.second != f.length()
                     }
                 }
                 total = todo.size
-                scanned = runPipeline(todo, folderPath)
+                scanned = runPipeline(todo, folderPath, m)
             } catch (e: CancellationException) {
                 _revision.value++
                 _status.value = NsfwScanStatus.Idle
@@ -145,13 +180,14 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
     }
 
     /** @return photos processed */
-    private suspend fun runPipeline(todo: List<File>, folderPath: String): Int = coroutineScope {
+    private suspend fun runPipeline(todo: List<File>, folderPath: String, model: NsfwModel): Int = coroutineScope {
         val total = todo.size
         if (total == 0) return@coroutineScope 0
-        analyzer                                         // load the models before the clock starts (and fail early)
+        val analyzer = analyzerFor(model)                // load the model before the clock starts (and fail early)
         val cores = Runtime.getRuntime().availableProcessors()
         val decoderCount = (cores / 4).coerceIn(1, 2)
-        val analysisCount = (cores / 2).coerceIn(1, 4)
+        // 640m: fewer photos in flight (each run holds far more memory), two threads each (see YoloDetector)
+        val analysisCount = if (model.inputSize > 320) (cores / 4).coerceIn(1, 2) else (cores / 2).coerceIn(1, 4)
         val decoded = Channel<Decoded>(2)
         val out = Channel<NsfwScannedFile>(64)
         val next = AtomicInteger(0)
@@ -195,7 +231,7 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
             val first = out.receiveCatching().getOrNull() ?: break
             batch.add(first)
             while (batch.size < 32) { batch.add(out.tryReceive().getOrNull() ?: break) }
-            withContext(Dispatchers.IO) { database.saveBatch(batch) }
+            withContext(Dispatchers.IO) { database.saveBatch(model.id, batch) }
             for (f in batch) results[f.path] = f.result
             scanned += batch.size
             val now = System.nanoTime()
@@ -243,13 +279,19 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
     suspend fun clearFolder(folderPath: String) {
         if (isScanning()) return
         ensureLoaded()
-        withContext(Dispatchers.IO) { database.clearFolder(folderPath) }
+        withContext(Dispatchers.IO) { database.clearFolder(_model.value.id, folderPath) }
         val root = folderPath.trimEnd('/')
         results.keys.removeIf { it == root || it.startsWith("$root/") }
         _revision.value++
     }
 
     companion object {
+        private const val KEY_MODEL = "model"
+        private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
+
+        /** Photos the scan looks at (videos and other files are skipped). */
+        fun isScannable(file: File): Boolean = file.extension.lowercase() in imageExtensions
+
         @Volatile private var INSTANCE: NsfwScannerManager? = null
         fun getInstance(context: Context): NsfwScannerManager =
             INSTANCE ?: synchronized(this) { INSTANCE ?: NsfwScannerManager(context.applicationContext).also { INSTANCE = it } }

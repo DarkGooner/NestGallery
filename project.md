@@ -95,8 +95,8 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 #### [`app/keystore/release.keystore`](file:///d:/Projects/NestGallery/app/keystore/release.keystore)
 - **Role**: Pre-configured keystore for signing release APKs.
 
-#### `app/src/main/assets/nudenet_320n.onnx` (12 MB), `erax_nsfw_yolo11n.onnx` (11 MB)
-- **Role**: NSFW detectors (NudeNet v3 YOLOv8n, AGPL-3.0; EraX-NSFW-V1.0 YOLO11n, Apache-2.0, exported by `tools/nsfw-eval/export_erax.py`). Input `[1,3,H,W]` RGB `/255`, dynamic H/W; output `[1, 4+classes, anchors]`. See the NSFW section.
+#### `app/src/main/assets/nudenet_320n.onnx` (12 MB), `nudenet_640m.onnx` (104 MB) - Git LFS
+- **Role**: NudeNet v3 NSFW detectors (YOLOv8n / YOLOv8m, AGPL-3.0), picked in Settings. Input `[1,3,H,W]` RGB `/255`, dynamic H/W; output `[1, 22, anchors]`. Stored with Git LFS (640m exceeds GitHub's 100 MB file limit). See the NSFW section.
 
 #### `app/src/main/assets/scrfd_500m.onnx` (2.4 MB), `adaface_ir101_int8.onnx` (63 MB), `face_knn.onnx` (<1 KB)
 - **Role**: SCRFD-500MF face detector (InsightFace `buffalo_s`); AdaFace IR-101 recogniser (CVLFace `cvlface_adaface_ir101_webface12m`, exported with `tools/face-eval/export_adaface.py`, statically quantised to int8 QDQ with percentile calibration by `tools/face-eval/quant.py`; within ~1 point of fp32 TAR); the Gemm+TopK kNN kernel the clusterer runs on ONNX Runtime (`tools/face-eval/make_knn_model.py`). The class is still called `ArcFaceEmbedder` (same 112 px RGB `[-1,1]` interface). It replaced ArcFace ResNet-50 int8 (42 MB) on 2026-10-08: better on CGI expression/lighting changes, occlusion and pose, at ~2.5x the compute.
@@ -221,7 +221,7 @@ Every grouping run regroups all people the user has not curated (that costs a ne
   - Recursively discovers all media nested in subdirectories using `exploreMediaFlow`.
   - Displays media in a unified grid with sub-labels indicating relative folder paths.
   - `NestTopBar`: the recursive button doubles as **rescan** (active tint + progress ring while walking the tree); **Faces in folder** sits in the header tier; filenames / hidden items in the overflow menu.
-  - **NSFW scan** (E icon) and **NSFW filters** (appears after a scan) in the header tier; see the NSFW section below.
+  - **NSFW** (shield icon) next to Faces opens `FolderNsfwScreen`; **Settings** in the overflow menu. See the NSFW section below.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/ImageViewerScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/ImageViewerScreen.kt)
 - **Role**: Fullscreen photo viewer and video player.
@@ -269,27 +269,30 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 
 ### NSFW Scan & Filters (`com.nestgallery.viewer.data.nsfw`, `ui.nsfw`)
 
-Pipeline: `decode (EXIF-upright, long side >= 640)` -> `NudeNet 320n @ 320` + `EraX YOLO11n @ 640` (ONNX Runtime) ->
-`YoloDecoder` (boxes in original-photo pixels, NMS within label groups) -> SQLite + in-memory map -> per-view counts ->
-range filter. Checked against nudenet.py and timed in `tools/nsfw-eval/README.md`.
+Pipeline: `decode (EXIF-upright, long side >= model size)` -> `NudeNet 320n @ 320` or `640m @ 640` (ONNX Runtime,
+chosen in Settings) -> `YoloDecoder` (boxes in original-photo pixels, NMS within label groups) -> SQLite (per model) +
+in-memory map (current model) -> per-folder counts -> range filter. Checked against nudenet.py and timed in
+`tools/nsfw-eval/README.md`.
 
 | File | Android-free? | Role |
 |---|---|---|
-| `NsfwMath.kt` | yes | `NsfwDetection` / `NsfwResult` (tag string, JSON), `NsfwLabels` (model class orders, sheet order, NMS groups), `YoloDecoder` (Ultralytics `[4+C, anchors]` head), `NsfwFilter` (counts at a threshold, AND-of-ranges match), `NsfwFolderIndex` (per-item counts + slider maxima for one view) |
-| `NsfwDetector.kt` | no | `NsfwModels` (assets, input sizes, `MODEL_ID`), `YoloDetector` (aspect-ratio input padded to /32, reuses the face package's `ModelFiles` / `Ort`), `NsfwAnalyzer` (decode once, run both models) |
-| `NsfwDatabase.kt` | no | `nest_nsfw.db`: `nsfw_files` (path, mtime, size, width, height, ms; width 0 = undecodable) and `nsfw_detections` (every box with score >= 0.25). Different `MODEL_ID` -> wiped |
-| `NsfwScannerManager.kt` | no | same decode -> analyse -> batched-writer pipeline as the face scan; status (`Scanning` with rate + ETA, `Paused`, `Completed`, `Failed`), `revision` flow (bumped ~1/s while scanning), pause / resume / stop, skip of unchanged files, `clearFolder` |
+| `NsfwMath.kt` | yes | `NsfwDetection` / `NsfwResult` (tag string, JSON), `NsfwLabels` (model class order, screen order + groups, NMS groups), `YoloDecoder` (Ultralytics `[4+C, anchors]` head), `NsfwFilter` (counts at a threshold, AND-of-ranges match), `NsfwFolderIndex` (per-photo counts, slider maxima, per-label histograms) |
+| `NsfwDetector.kt` | no | `NsfwModels` (320n / 640m: id, asset, input size, title), `YoloDetector` (aspect-ratio input padded to /32; reuses the face package's `ModelFiles` / `Ort`; refuses an LFS pointer with a clear message), `NsfwAnalyzer` (decode + detect for one model) |
+| `NsfwDatabase.kt` | no | `nest_nsfw.db` v2: `nsfw_files` (model, path, mtime, size, width, height, ms; width 0 = undecodable) and `nsfw_detections` (model, path, every box with score >= 0.25). Every row carries the model id, so each model keeps its own results |
+| `NsfwScannerManager.kt` | no | selected model (SharedPreferences `nsfw`; `setModel` refused while scanning, closes the old session), same decode -> analyse -> batched-writer pipeline as the face scan (640m: fewer workers, 2 threads each), status with rate + ETA, `revision` flow (~1/s while scanning), pause / resume / stop, `clearFolder` |
 | `NsfwScanService.kt` | no | foreground (data-sync) service + wake lock + progress notification (own channel), like `FaceScanService` |
-| `ui/nsfw/NsfwFilterSheet.kt` | no | `NsfwFilterState` (threshold + label ranges, kept per folder for the process lifetime), the filter bottom sheet (confidence slider, one `RangeSlider` per detected label, grouped), `NsfwScanBanner` |
+| `ui/nsfw/FolderNsfwScreen.kt` | no | the NSFW screen (structure of `FolderFaceScreen`): top bar (scan, overflow: Settings / forget results), progress card, tabs **Filters** and **Photos**, empty state |
+| `ui/nsfw/NsfwFilters.kt` | no | `NsfwFilterState` (threshold + label ranges, per folder for the process lifetime), confidence card, label card (histogram with tap-to-pick, RangeSlider, quick chips), active-filter chips, `rangeText` |
+| `ui/SettingsScreen.kt` | no | Settings (from the 3-dot menus of the browser, the recursive view and the NSFW screen): NudeNet model choice with per-model result counts |
 
-- **Where it lives**: `ExploreScreen` (recursive view) only - header actions **E** (scan, progress ring) and **filter**
-  (appears once anything in the view is scanned, tinted while active); bottom progress card while this folder is
-  scanning; the shown list (and the list handed to the viewer) is the filtered one. `MediaInfoSheet` shows the tag string.
+- **Entry point**: shield icon in `ExploreScreen`'s header (next to Faces) -> `Screen.FolderNsfw(root, files)`.
 - **Filter semantics**: a range equal to `0..max` is inactive; the top end stored as `NsfwFilter.NO_MAX` means "and more",
-  so it keeps up with a scan still raising the maximum. With any active range, videos and unscanned photos are hidden.
+  so it keeps up with a scan still raising the maximum. The Photos tab lists scanned photos that pass every active range.
 - **Threshold** is applied at count time, so the confidence slider never rescans.
-- **Changing models**: replace the asset, edit `NsfwModels`, change `MODEL_ID`; add labels to `NsfwLabels` (`ALL` order =
-  sheet order, `nmsGroup` for mutually exclusive variants); re-run `tools/nsfw-eval/compare.py` / `make_fixture.py`.
+- **Models are Git LFS objects** (`.gitattributes`: `app/src/main/assets/nudenet_*.onnx`); CI pulls them with a cache.
+- **Changing models**: add the asset (LFS-tracked if named `nudenet_*.onnx`), add an `NsfwModel` with a new id to
+  `NsfwModels`; labels go in `NsfwLabels` (`ALL` order = screen order, `nmsGroup` for mutually exclusive variants);
+  re-run `tools/nsfw-eval/compare.py` / `make_fixture.py`.
 
 ---
 

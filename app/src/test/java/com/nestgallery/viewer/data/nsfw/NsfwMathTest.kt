@@ -72,12 +72,12 @@ class NsfwMathTest {
         assertEquals("BREAST", NsfwLabels.nmsGroup("FEMALE_BREAST_COVERED"))
         assertEquals("FEMALE_GENITALIA", NsfwLabels.nmsGroup("FEMALE_GENITALIA_EXPOSED"))
         assertEquals("MALE_GENITALIA", NsfwLabels.nmsGroup("MALE_GENITALIA_EXPOSED"))
-        assertEquals("MAKE_LOVE", NsfwLabels.nmsGroup("MAKE_LOVE"))
+        assertEquals("FEET", NsfwLabels.nmsGroup("FEET_COVERED"))
     }
 
     @Test
     fun everyModelLabelIsListedOnce() {
-        assertEquals((NsfwLabels.NUDENET + NsfwLabels.ERAX).toSet(), NsfwLabels.ALL.toSet())
+        assertEquals(NsfwLabels.NUDENET.toSet(), NsfwLabels.ALL.toSet())
         assertEquals(NsfwLabels.ALL.size, NsfwLabels.ALL.toSet().size)
         assertEquals(18, NsfwLabels.NUDENET.size)
     }
@@ -118,10 +118,10 @@ class NsfwMathTest {
 
     @Test
     fun countsRespectTheThreshold() {
-        val r = result(det("FACE_FEMALE", 0.81f), det("FACE_FEMALE", 0.77f), det("FACE_FEMALE", 0.3f), det("MAKE_LOVE", 0.5f))
+        val r = result(det("FACE_FEMALE", 0.81f), det("FACE_FEMALE", 0.77f), det("FACE_FEMALE", 0.3f), det("BELLY_EXPOSED", 0.5f))
         val c = NsfwFilter.counts(r, 0.45f)
         assertEquals(2, c[i("FACE_FEMALE")])
-        assertEquals(1, c[i("MAKE_LOVE")])
+        assertEquals(1, c[i("BELLY_EXPOSED")])
         assertEquals(3, NsfwFilter.counts(r, 0.25f)[i("FACE_FEMALE")])
     }
 
@@ -179,22 +179,35 @@ class NsfwMathTest {
     fun folderIndexGivesSliderRanges() {
         val results = listOf(
             result(det("FACE_FEMALE"), det("FACE_FEMALE"), det("FACE_FEMALE")),
-            result(det("FACE_FEMALE"), det("MAKE_LOVE")),
+            result(det("FACE_FEMALE"), det("BELLY_EXPOSED")),
             null,                                                   // a video / not scanned
             NsfwResult(0, 0, emptyList(), 5)                        // could not be decoded
         )
         val idx = NsfwFolderIndex.build(results, 0.45f)
         assertEquals(2, idx.scanned)
         assertEquals(3, idx.maxCounts[i("FACE_FEMALE")])
-        assertEquals(1, idx.maxCounts[i("MAKE_LOVE")])
-        assertEquals(0, idx.maxCounts[i("ANUS")])
+        assertEquals(1, idx.maxCounts[i("BELLY_EXPOSED")])
+        assertEquals(0, idx.maxCounts[i("ANUS_EXPOSED")])
         assertEquals(2, idx.photosWithLabel[i("FACE_FEMALE")])
-        assertEquals(listOf(i("FACE_FEMALE"), i("MAKE_LOVE")), idx.presentLabels)
+        assertEquals(listOf(i("FACE_FEMALE"), i("BELLY_EXPOSED")), idx.presentLabels)
+        // photos with exactly 0, 1, 2, 3 female faces (only the 2 scanned photos count)
+        assertArrayEquals(intArrayOf(0, 1, 0, 1), idx.histograms[i("FACE_FEMALE")])
+        assertArrayEquals(intArrayOf(1, 1), idx.histograms[i("BELLY_EXPOSED")])
         assertTrue(idx.counts[2] == null && idx.counts[3] == null)
 
         assertTrue(NsfwFilter.isActive(1..3, 3))
         assertTrue(NsfwFilter.isActive(0..2, 3))
         assertFalse(NsfwFilter.isActive(0..3, 3))
         assertArrayEquals(IntArray(NsfwLabels.ALL.size), NsfwFolderIndex.build(emptyList(), 0.45f).maxCounts)
+    }
+
+    @Test
+    fun rangeTexts() {
+        assertEquals("Any", com.nestgallery.viewer.ui.nsfw.rangeText(0, 4, 4))
+        assertEquals("None", com.nestgallery.viewer.ui.nsfw.rangeText(0, 0, 4))
+        assertEquals("Exactly 2", com.nestgallery.viewer.ui.nsfw.rangeText(2, 2, 4))
+        assertEquals("1 or more", com.nestgallery.viewer.ui.nsfw.rangeText(1, 4, 4))
+        assertEquals("Up to 2", com.nestgallery.viewer.ui.nsfw.rangeText(0, 2, 4))
+        assertEquals("1 – 3", com.nestgallery.viewer.ui.nsfw.rangeText(1, 3, 4))
     }
 }

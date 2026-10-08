@@ -2,7 +2,7 @@ name: Build and Sign APK
 
 on:
   push:
-    branches: [ "main", "face" ]
+    branches: [ "main", "face", "NSFW" ]
   workflow_dispatch:
 
 permissions:
@@ -15,6 +15,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # The NudeNet models are Git LFS objects (see .gitattributes). Without them the APK would ship ~130-byte pointer
+      # files. They are cached by content, so a build only downloads them (counting against the repo's LFS bandwidth)
+      # when a model changes.
+      - name: List LFS objects
+        run: git lfs ls-files --long | cut -d ' ' -f1 | sort > .lfs-assets-id
+
+      - name: Restore LFS cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+
+      - name: Fetch LFS objects
+        run: git lfs pull
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -26,7 +41,7 @@ jobs:
         with:
           gradle-version: 8.9
 
-      - name: Unit tests (face clustering + ONNX kNN)
+      - name: Unit tests (face clustering + ONNX kNN, NSFW decoding + filters)
         run: gradle :app:testDebugUnitTest --stacktrace
 
       - name: Build signed release APK

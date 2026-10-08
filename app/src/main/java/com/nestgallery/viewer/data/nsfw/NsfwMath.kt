@@ -51,15 +51,11 @@ object NsfwLabels {
         "ANUS_COVERED", "FEMALE_BREAST_COVERED", "BUTTOCKS_COVERED"
     )
 
-    /** EraX-NSFW-V1.0 class order (anus, make_love, nipple, penis, vagina), upper-cased to match NudeNet's style. */
-    val ERAX = listOf("ANUS", "MAKE_LOVE", "NIPPLE", "PENIS", "VAGINA")
-
-    /** Every label, in the order the filter sheet lists them (faces, exposed, explicit/acts, covered). */
+    /** Every label, in the order the filter screen lists them (faces, exposed, covered). */
     val ALL = listOf(
         "FACE_FEMALE", "FACE_MALE",
         "FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "BUTTOCKS_EXPOSED",
         "ANUS_EXPOSED", "MALE_BREAST_EXPOSED", "BELLY_EXPOSED", "ARMPITS_EXPOSED", "FEET_EXPOSED",
-        "MAKE_LOVE", "PENIS", "VAGINA", "NIPPLE", "ANUS",
         "FEMALE_BREAST_COVERED", "FEMALE_GENITALIA_COVERED", "BUTTOCKS_COVERED", "ANUS_COVERED",
         "BELLY_COVERED", "ARMPITS_COVERED", "FEET_COVERED"
     )
@@ -67,12 +63,11 @@ object NsfwLabels {
 
     fun indexOf(label: String): Int = INDEX[label] ?: -1
 
-    /** Section heading the filter sheet groups [label] under. */
+    /** Section heading the filter screen groups [label] under. */
     fun group(label: String): String = when {
         label.startsWith("FACE_") -> "Faces"
-        label in ERAX -> "Explicit & acts (EraX)"
-        label.endsWith("_EXPOSED") -> "Exposed (NudeNet)"
-        else -> "Covered (NudeNet)"
+        label.endsWith("_EXPOSED") -> "Exposed"
+        else -> "Covered"
     }
 
     /**
@@ -93,7 +88,7 @@ object NsfwLabels {
 }
 
 /**
- * Decoder for Ultralytics YOLOv8 / YOLO11 detection heads exported to ONNX (NudeNet and EraX both are).
+ * Decoder for Ultralytics YOLOv8 / YOLO11 detection heads exported to ONNX (NudeNet 320n and 640m are).
  *
  * Output layout [1, 4 + classes, anchors]: per anchor cx, cy, w, h in model-input pixels, then one sigmoid score per
  * class. Matches nudenet.py's postprocessing (argmax class per anchor, NMS at IoU 0.45) except that NMS runs within
@@ -210,21 +205,33 @@ object NsfwFilter {
 }
 
 /**
- * Counts for one recursive view, aligned with its file list: [counts] (null = not scanned / not decodable),
- * per-label [maxCounts] (the sliders' upper ends) and how many photos have each label at least once.
+ * Counts for one folder, aligned with its file list: [counts] (null = not scanned / not decodable), per-label
+ * [maxCounts] (the sliders' upper ends), how many photos have each label at least once, and per-label [histograms]
+ * (histograms[label][n] = photos with exactly n regions of it) for the filter screen's bars.
  */
-class NsfwFolderIndex(val counts: List<IntArray?>, val maxCounts: IntArray, val photosWithLabel: IntArray, val scanned: Int) {
+class NsfwFolderIndex(
+    val counts: List<IntArray?>,
+    val maxCounts: IntArray,
+    val photosWithLabel: IntArray,
+    val histograms: List<IntArray>,
+    val scanned: Int
+) {
     /** Labels found at least once, in [NsfwLabels.ALL] order (one slider each). */
     val presentLabels: List<Int> get() = maxCounts.indices.filter { maxCounts[it] > 0 }
 
     companion object {
-        val EMPTY = NsfwFolderIndex(emptyList(), IntArray(NsfwLabels.ALL.size), IntArray(NsfwLabels.ALL.size), 0)
+        val EMPTY = build(emptyList(), 1f)
 
         fun build(results: List<NsfwResult?>, threshold: Float): NsfwFolderIndex {
             val counts = results.map { r -> if (r != null && r.decoded) NsfwFilter.counts(r, threshold) else null }
+            val max = NsfwFilter.maxCounts(counts)
             val with = IntArray(NsfwLabels.ALL.size)
-            for (c in counts) if (c != null) for (i in with.indices) if (c[i] > 0) with[i]++
-            return NsfwFolderIndex(counts, NsfwFilter.maxCounts(counts), with, counts.count { it != null })
+            val hist = List(NsfwLabels.ALL.size) { IntArray(max[it] + 1) }
+            for (c in counts) if (c != null) for (i in with.indices) {
+                if (c[i] > 0) with[i]++
+                hist[i][c[i]]++
+            }
+            return NsfwFolderIndex(counts, max, with, hist, counts.count { it != null })
         }
     }
 }
