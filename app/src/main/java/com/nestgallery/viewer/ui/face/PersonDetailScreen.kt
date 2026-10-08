@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -184,9 +185,8 @@ fun PersonDetailScreen(
             )
         }
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Person Header Info
+        // Person header: the first item of the list / grid, so it scrolls away with the photos
+        val header: @Composable () -> Unit = {
             currentPerson?.let { p ->
                 Row(
                     modifier = Modifier
@@ -237,8 +237,12 @@ fun PersonDetailScreen(
                     }
                 }
             }
+        }
 
+        Box(Modifier.fillMaxSize().padding(padding)) {
+        Column(modifier = Modifier.fillMaxSize()) {
             if (mediaEntries.isEmpty()) {
+                header()
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -256,6 +260,7 @@ fun PersonDetailScreen(
                 Box(Modifier.fillMaxSize()) {
                     if (listMode) {
                         LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                            item(key = "header") { header() }
                             itemsIndexed(mediaEntries, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                                 PersonPhoto(
                                     entry = entry, square = false, selecting = selecting,
@@ -268,7 +273,7 @@ fun PersonDetailScreen(
                             }
                         }
                         FastScrollbar(
-                            itemCount = mediaEntries.size,
+                            itemCount = mediaEntries.size + 1,
                             visibleCount = listState.layoutInfo.visibleItemsInfo.size,
                             firstVisibleIndex = listState.firstVisibleItemIndex,
                             isScrolling = listState.isScrollInProgress,
@@ -284,6 +289,7 @@ fun PersonDetailScreen(
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                             modifier = Modifier.fillMaxSize()
                         ) {
+                            item(key = "header", span = { GridItemSpan(maxLineSpan) }) { header() }
                             gridItemsIndexed(mediaEntries, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
                                 PersonPhoto(
                                     entry = entry, square = true, selecting = selecting,
@@ -295,7 +301,7 @@ fun PersonDetailScreen(
                             }
                         }
                         FastScrollbar(
-                            itemCount = mediaEntries.size,
+                            itemCount = mediaEntries.size + 1,
                             visibleCount = gridState.layoutInfo.visibleItemsInfo.size,
                             firstVisibleIndex = gridState.firstVisibleItemIndex,
                             isScrolling = gridState.isScrollInProgress,

@@ -277,7 +277,7 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 #### [`app/src/main/java/com/nestgallery/viewer/ui/face/PersonDetailScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/face/PersonDetailScreen.kt)
 - **Role**: Detailed gallery of photos containing a specific person cluster.
 - **Functionality**:
-  - Displays circular hero cover and cluster statistics.
+  - Displays circular hero cover and cluster statistics (first item of the list / grid, so it scrolls away with the photos).
   - All photos in which this person's face was identified, as a square grid or a full-width list (toggle in the top
     bar; the choice is held in `MainActivity` so it sticks across people), with the shared `FastScrollbar`.
   - **Select** -> **Not this person**: removes the selected photos from the person and remembers it (they are never grouped back into this person).
