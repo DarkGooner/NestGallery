@@ -54,7 +54,7 @@ internal object NsfwSessions {
             val qnn = HashMap<String, String>()
             if (accel == NsfwAccelerator.NPU) {
                 // The DSP loads its half of QNN (libQnnHtpV*Skel.so) from ADSP_LIBRARY_PATH.
-                setDspLibraryPath(libDir)
+                setDspLibraryPath(context, libDir)
                 qnn["backend_path"] = "$libDir/libQnnHtp.so"
                 // the QDQ model (NsfwModel.npuAsset) runs as integers; this HTP (SM7550) rejects float ops even at fp16
                 qnn["htp_performance_mode"] = "burst"
@@ -72,9 +72,59 @@ internal object NsfwSessions {
         }
     }
 
-    private fun setDspLibraryPath(libDir: String) {
-        val path = "$libDir;/system/lib/rfsa/adsp;/system/vendor/lib/rfsa/adsp;/vendor/lib/rfsa/adsp;/dsp"
+    /**
+     * Folders the DSP loads its libraries from, app first (so the skel matches our libQnnHtp.so). The HTP skels up to
+     * V79 need the DSP's own C++ runtime (libc++.so.1, libc++abi.so.1), which no qnn-runtime release ships: phones
+     * keep it in /vendor/dsp/cdsp. Without that folder the SM7550 failed with "fopen ... libc++.so.1 (No such file)".
+     */
+    private val DSP_SYSTEM_DIRS = listOf(
+        "/vendor/dsp/cdsp", "/vendor/lib/rfsa/adsp", "/odm/lib/rfsa/adsp", "/system/lib/rfsa/adsp",
+        "/system/vendor/lib/rfsa/adsp", "/vendor/dsp", "/dsp"
+    )
+
+    private fun setDspLibraryPath(context: Context, libDir: String) {
+        val path = (listOfNotNull(libDir, userDspRuntime(context)?.absolutePath) + DSP_SYSTEM_DIRS).joinToString(";")
         try { android.system.Os.setenv("ADSP_LIBRARY_PATH", path, true) } catch (_: Exception) {}
+    }
+
+    /** The DSP C++ runtime files the HTP skel links against. */
+    private val DSP_RUNTIME = listOf("libc++.so.1", "libc++abi.so.1")
+
+    /** Where the user can put the DSP C++ runtime copied off their own phone (see README: NSFW scan > NPU). */
+    fun userDspSource(): File = File(android.os.Environment.getExternalStorageDirectory(), "NestGallery/dsp")
+
+    /**
+     * On phones whose DSP image keeps libc++.so.1 where apps may not read it (SM7550 / Motorola: /vendor/dsp is
+     * SELinux-closed to apps, and an app's NPU code gets its files through the app), the user can copy the two files
+     * off the phone with adb into [userDspSource]. They are copied into private storage (the DSP loader reads them
+     * through this app) and that folder goes on ADSP_LIBRARY_PATH. Null if they aren't there.
+     */
+    private fun userDspRuntime(context: Context): File? {
+        val src = userDspSource()
+        val dst = File(context.filesDir, "dsp")
+        val have = DSP_RUNTIME.all { File(src, it).isFile }
+        if (!have) return if (DSP_RUNTIME.all { File(dst, it).isFile }) dst else null
+        dst.mkdirs()
+        for (name in DSP_RUNTIME) {
+            val from = File(src, name); val to = File(dst, name)
+            if (!to.isFile || to.length() != from.length()) from.copyTo(to, overwrite = true)
+        }
+        return dst
+    }
+
+    /** Which DSP folders hold the C++ runtime the HTP skel needs (for the speed test's details). */
+    fun dspLibraryReport(context: Context): String {
+        val user = userDspRuntime(context)
+        val system = DSP_SYSTEM_DIRS.joinToString("; ") { dir ->
+            val f = File(dir, "libc++.so.1")
+            "$dir " + when {
+                f.canRead() -> "readable"
+                f.exists() -> "present, not readable"
+                File(dir).exists() -> "missing"
+                else -> "no folder"
+            }
+        }
+        return "DSP libc++.so.1 from ${userDspSource()}: " + (if (user != null) "found, in use" else "not there") + "\nSystem: $system"
     }
 
     /** The NPU's cached compiled graph for [model] (tied to the ONNX Runtime / QNN version via [CACHE_VERSION]). */
