@@ -17,6 +17,9 @@ internal object ModelFiles {
             val tmp = File(out.path + ".tmp")
             context.assets.open(assetName).use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
             tmp.renameTo(out)
+            // Copies of models an older version shipped (e.g. the 42 MB ResNet-50) would otherwise stay forever.
+            val shipped = context.assets.list("")?.toSet() ?: emptySet()
+            out.parentFile?.listFiles()?.forEach { if (it.name !in shipped && !it.name.endsWith(".tmp")) it.delete() }
         }
         return out
     }
@@ -121,12 +124,14 @@ class ScrfdDetector(context: Context) {
 }
 
 /**
- * ArcFace ResNet-50 (InsightFace "w600k_r50", trained on WebFace600K), int8-quantised (convolutions only, see
- * tools/face-eval/quant.py). 112x112 aligned RGB in, L2-normalised 512-d embedding out.
+ * Face recogniser: AdaFace IR-101 trained on WebFace12M (CVLFace release), int8-quantised (convolutions only,
+ * percentile calibration, see tools/face-eval/quant.py). 112x112 aligned RGB in, L2-normalised 512-d embedding out.
+ * The class keeps its old name; it is the ArcFace-style 112px pipeline either way.
  *
- * Chosen over the old MobileFaceNet on measurements (tools/face-eval/README.md): on a mixed real + CGI library it
- * accepts 98.6% of same-person pairs at a 1-in-100,000 false-match rate (MobileFaceNet: 93.6%), and the int8 model
- * matches the fp32 one there at ~1/6 of its compute and 1/4 of its size.
+ * Chosen over the previous ArcFace ResNet-50 (w600k_r50) on measurements (tools/face-eval/README.md): at a
+ * 1-in-10,000 false-match rate it accepts 77.5% vs 73.2% of same-character pairs on CGI renders with varied
+ * expression / lighting / accessories, and is ahead on synthetic hand/food occlusion and cross-pose photos too.
+ * It costs about 2.5x the compute of ResNet-50 per face.
  */
 class ArcFaceEmbedder(context: Context) {
     private val session: OrtSession
@@ -178,9 +183,9 @@ class ArcFaceEmbedder(context: Context) {
     fun close() = session.close()
 
     companion object {
-        const val ASSET = "arcface_r50_int8.onnx"
+        const val ASSET = "adaface_ir101_int8.onnx"
         /** Stored in the DB; if it changes, old embeddings are discarded (they live in a different vector space). */
-        const val MODEL_ID = "scrfd500m+arcface_r50_w600k_int8:v1"
+        const val MODEL_ID = "scrfd500m+adaface_ir101_webface12m_int8:v1"
         const val SIZE = FaceMath.ALIGN_SIZE
     }
 }

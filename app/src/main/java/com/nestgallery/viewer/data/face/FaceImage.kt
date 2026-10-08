@@ -162,17 +162,37 @@ class FaceAnalyzer(private val detector: ScrfdDetector, private val embedder: Ar
 /** Renders the round cover images for people - only for the faces that are actually used as covers. */
 object FaceThumbnails {
     private const val SIZE = 128
-    /** ArcFace template shrunk 28% around the centre of a 128 canvas => a little head-room around the face. */
-    private val TEMPLATE = FloatArray(10) { i ->
-        val c = 64f
-        (FaceMath.ARCFACE_TEMPLATE[i] - FaceMath.ALIGN_SIZE / 2f) * 0.72f + c
+    /**
+     * ArcFace template scaled by [zoom] around the centre of a 128 canvas. 0.72 = a little head-room around the face;
+     * larger values crop tighter (1.14 is about the 112 px recognition crop).
+     */
+    private fun template(zoom: Float) = FloatArray(10) { i ->
+        (FaceMath.ARCFACE_TEMPLATE[i] - FaceMath.ALIGN_SIZE / 2f) * zoom + SIZE / 2f
+    }
+    private val ZOOMS = floatArrayOf(0.72f, 0.8f, 0.88f, 0.96f, 1.05f, 1.14f)
+
+    /**
+     * Least zoom whose crop lies inside the photo. A tilted face near the photo edge otherwise samples outside it,
+     * which showed as black wedges on cover thumbnails.
+     */
+    private fun fittingTemplate(lm: FloatArray, w: Int, h: Int): FloatArray {
+        for (z in ZOOMS) {
+            val tpl = template(z)
+            val inv = FaceMath.estimateSimilarity(lm, tpl).inverse()      // thumbnail pixel -> photo pixel
+            val fits = listOf(0f to 0f, SIZE.toFloat() to 0f, 0f to SIZE.toFloat(), SIZE.toFloat() to SIZE.toFloat()).all { (x, y) ->
+                val sx = inv.a * x - inv.b * y + inv.tx; val sy = inv.b * x + inv.a * y + inv.ty
+                sx >= -1f && sy >= -1f && sx <= w + 1f && sy <= h + 1f
+            }
+            if (fits) return tpl
+        }
+        return template(ZOOMS.last())                                     // still clipped: the smallest wedge
     }
 
     fun render(file: File, landmarksNorm: FloatArray, out: File): Boolean {
         val bmp = FaceImageLoader.decodeFile(file) ?: return false
         return try {
             val lm = FloatArray(10) { if (it % 2 == 0) landmarksNorm[it] * bmp.width else landmarksNorm[it] * bmp.height }
-            val thumb = FaceAligner.align(bmp, lm, SIZE, TEMPLATE)
+            val thumb = FaceAligner.align(bmp, lm, SIZE, fittingTemplate(lm, bmp.width, bmp.height))
             out.parentFile?.mkdirs()
             FileOutputStream(out).use { thumb.compress(Bitmap.CompressFormat.JPEG, 85, it) }
             thumb.recycle()

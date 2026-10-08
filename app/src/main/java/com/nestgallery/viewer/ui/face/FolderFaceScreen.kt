@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -64,6 +65,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
@@ -104,6 +106,7 @@ import com.nestgallery.viewer.data.face.QueryFace
 import com.nestgallery.viewer.data.face.FaceDatabase
 import com.nestgallery.viewer.data.face.FaceMatch
 import com.nestgallery.viewer.data.face.FaceScannerManager
+import com.nestgallery.viewer.data.face.MergeSuggestion
 import com.nestgallery.viewer.data.face.PersonEntity
 import com.nestgallery.viewer.data.face.PersonMatch
 import com.nestgallery.viewer.data.face.ScanStatus
@@ -156,10 +159,15 @@ fun FolderFaceScreen(
     var matchResults by remember { mutableStateOf<List<FaceMatch>>(emptyList()) }
     var matchedDocEntries by remember { mutableStateOf<List<DocEntry>>(emptyList()) }
 
+    // "Same person?" questions (best first); skipped ones stay hidden until the screen is reopened
+    var suggestions by remember { mutableStateOf<List<MergeSuggestion>>(emptyList()) }
+    var skipped by remember { mutableStateOf<Set<Pair<Long, Long>>>(emptySet()) }
+
     fun refreshPeople() {
         scope.launch {
             people = withContext(Dispatchers.IO) { db.getPeopleInFolder(root.file.absolutePath) }
             selectedPeople = selectedPeople.filter { id -> people.any { it.id == id } }.toSet()
+            suggestions = scanner.mergeSuggestions(root.file.absolutePath).filter { (it.a.id to it.b.id) !in skipped }
         }
     }
 
@@ -379,6 +387,25 @@ fun FolderFaceScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
+                        val idle = scanStatus is ScanStatus.Idle || scanStatus is ScanStatus.Completed
+                        val question = suggestions.firstOrNull()
+                        if (question != null && idle && selectedPeople.isEmpty()) {
+                            item(key = "same-person", span = { GridItemSpan(maxLineSpan) }) {
+                                SamePersonCard(
+                                    suggestion = question,
+                                    remaining = suggestions.size,
+                                    onOpenPerson = onOpenPerson,
+                                    onAnswer = { same ->
+                                        suggestions = suggestions.drop(1)
+                                        scope.launch { scanner.answerSuggestion(question, same); refreshPeople() }
+                                    },
+                                    onSkip = {
+                                        skipped = skipped + (question.a.id to question.b.id)
+                                        suggestions = suggestions.drop(1)
+                                    }
+                                )
+                            }
+                        }
                         items(people, key = { it.id }) { person ->
                             val selected = person.id in selectedPeople
                             FolderPersonGridItem(
@@ -399,9 +426,16 @@ fun FolderFaceScreen(
                     }
                 }
             } else {
-                // Tab 1: Find by Face (Reverse Search in this folder)
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Query card
+                // Tab 1: Find by Face (Reverse Search in this folder). The query card is the first item of the results
+                // grid, so it scrolls away with the results instead of staying pinned over half the screen.
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 110.dp),
+                    contentPadding = PaddingValues(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    item(key = "query", span = { GridItemSpan(maxLineSpan) }) {
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -550,51 +584,37 @@ fun FolderFaceScreen(
                             }
                         }
                     }
+                    }
 
                     // Results
+                    val message: String? = when {
+                        isSearching -> null
+                        queryBitmap == null -> "Pick any photo above to search for matching faces within this folder."
+                        matchedDocEntries.isEmpty() -> "No matches found in ${root.name}.\nTry setting sensitivity to 'Broad' or rescan faces."
+                        else -> null
+                    }
                     if (isSearching) {
-                        Box(
-                            modifier = Modifier.fillMaxSize().padding(32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        item(key = "searching", span = { GridItemSpan(maxLineSpan) }) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.fillMaxWidth().padding(32.dp)
+                            ) {
                                 CircularProgressIndicator()
                                 Spacer(Modifier.height(12.dp))
                                 Text("Searching ${root.name}…")
                             }
                         }
-                    } else if (queryBitmap == null) {
-                        Box(
-                            modifier = Modifier.fillMaxSize().padding(32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
+                    } else if (message != null) {
+                        item(key = "message", span = { GridItemSpan(maxLineSpan) }) {
                             Text(
-                                "Pick any photo above to search for matching faces within this folder.",
+                                message,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    } else if (matchedDocEntries.isEmpty()) {
-                        Box(
-                            modifier = Modifier.fillMaxSize().padding(32.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                "No matches found in ${root.name}.\nTry setting sensitivity to 'Broad' or rescan faces.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(32.dp)
                             )
                         }
                     } else {
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 110.dp),
-                            contentPadding = PaddingValues(2.dp),
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
                             itemsIndexed(matchedDocEntries, key = { _, doc -> doc.file.absolutePath }) { index, entry ->
                                 val match = matchResults.getOrNull(index)
                                 val sim = match?.similarity ?: 0f
@@ -641,7 +661,6 @@ fun FolderFaceScreen(
                                     }
                                 }
                             }
-                        }
                     }
                 }
             }
@@ -770,6 +789,61 @@ private fun SuggestedPersonChip(match: PersonMatch, onClick: () -> Unit) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+/**
+ * "Same person?" - two people whose faces match well but not well enough to merge on their own (the same character in
+ * different lighting / expression looks like this, but so do two look-alike characters). Yes merges them, No keeps
+ * them apart for good; either way both are left as the user confirmed them.
+ */
+@Composable
+private fun SamePersonCard(
+    suggestion: MergeSuggestion,
+    remaining: Int,
+    onOpenPerson: (Long) -> Unit,
+    onAnswer: (same: Boolean) -> Unit,
+    onSkip: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("Same person?", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                if (remaining > 1) Text("$remaining to review", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+                for ((i, p) in listOf(suggestion.a, suggestion.b).withIndex()) {
+                    if (i == 1) Text("?", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(horizontal = 16.dp))
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(96.dp).clickable { onOpenPerson(p.id) }) {
+                        Box(
+                            Modifier.size(80.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val thumb = p.coverThumbnailPath
+                            if (!thumb.isNullOrEmpty() && File(thumb).exists()) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(LocalContext.current).data(File(thumb)).build(),
+                                    contentDescription = p.name, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()
+                                )
+                            } else Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text(p.name, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${p.faceCount} photos", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onSkip) { Text("Skip") }
+                OutlinedButton(onClick = { onAnswer(false) }) { Text("Different") }
+                Button(onClick = { onAnswer(true) }) { Text("Same person") }
+            }
+        }
     }
 }
 

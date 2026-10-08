@@ -85,16 +85,16 @@ object FaceMath {
 
     /*
      * Raw-cosine bands for "Find by face", read off the different-person score distribution of a mixed library
-     * (real people from LFW + CGI renders from DigiFace-1M; tools/face-eval/README.md). CGI faces look far more alike
-     * than real ones (99.9% of different-person pairs score < 0.21 on real photos but < 0.38 on renders), so the
-     * bands are set on the harder, mixed distribution.
+     * (real people from LFW + CGI renders from DigiFace-1M; tools/face-eval/README.md) for the AdaFace IR-101 int8
+     * recogniser. CGI faces look far more alike than real ones (99.9% of different-person pairs score below ~0.2 on
+     * real photos but only below 0.38 on renders), so the bands are set on the harder, mixed distribution.
      */
-    /** ~1 in 100,000 different-person pairs score this high (98.6% of same-person pairs do). */
+    /** ~1 in 100,000 different-person pairs score this high (98.9% of same-person pairs do). */
     const val MATCH_STRONG = 0.45f
-    /** ~1 in 10,000 (99.4% of same-person pairs). */
+    /** ~1 in 10,000 (99.6% of same-person pairs). */
     const val MATCH_LIKELY = 0.39f
-    /** ~1 in 1,000 (99.8%): below this a "match" is mostly look-alikes. */
-    const val MATCH_POSSIBLE = 0.32f
+    /** ~1 in 1,000 (99.85%): below this a "match" is mostly look-alikes. */
+    const val MATCH_POSSIBLE = 0.31f
 
     /**
      * Maps a raw cosine similarity to a human-friendly 0..1 "match" score: ~10% at [MATCH_POSSIBLE], 50% at

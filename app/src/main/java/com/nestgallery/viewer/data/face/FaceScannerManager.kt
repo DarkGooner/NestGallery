@@ -49,13 +49,16 @@ class QueryFace(val aligned: Bitmap, val embedding: FloatArray)
 /** A person the "Find by face" query probably is: [similarity] = average cosine to that person's faces. */
 class PersonMatch(val person: PersonEntity, val similarity: Float)
 
+/** "Same person?": two people whose faces match well on average but were not merged automatically. */
+class MergeSuggestion(val a: PersonEntity, val b: PersonEntity, val similarity: Float)
+
 /**
  * Face scanning, grouping and search, all on-device.
  *
  * Scan pipeline (everything overlaps, bounded by channel back-pressure):
  *   decoder threads (IO)  ->  [decoded bitmaps]  ->  analysis workers (CPU: SCRFD + ArcFace)
  *   ->  [results]  ->  one writer (batched SQLite transaction + in-memory index)
- * Afterwards: incremental clustering, then cover thumbnails for the visible people.
+ * Afterwards: clustering (people the user curated are kept, the rest regrouped), then cover thumbnails.
  */
 class FaceScannerManager private constructor(private val appContext: Context) {
 
@@ -63,7 +66,8 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     private val detector by lazy { ScrfdDetector(appContext) }
     private val embedder by lazy { ArcFaceEmbedder(appContext) }
     private val analyzer by lazy { FaceAnalyzer(detector, embedder) }
-    private val clusterer = PeopleClusterer()
+    private val clusterConfig = ClusterConfig()
+    private val clusterer = PeopleClusterer(clusterConfig)
     /** ONNX Runtime kNN kernel; the plain-Kotlin search is the (slower) fallback if it can't be loaded. */
     private val neighborFinder: NeighborFinder by lazy {
         try { OnnxKnn(appContext) } catch (e: Throwable) { e.printStackTrace(); BruteForceNeighborFinder() }
@@ -221,19 +225,23 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         if (!storeLoaded) return@withContext
         _status.value = ScanStatus.Grouping(0, 1000)
         val named = database.namedPersonIds()
-        // Groups made by an older algorithm (or a user-requested rebuild) are redone from scratch. Named people keep
-        // their faces; everything else is regrouped.
+        // "Regroup people" (or groups made by an older algorithm): also drop the user's merges / corrections on
+        // unnamed people. Named people keep their faces.
         if (rebuild || database.getMeta(CLUSTER_ALGO_KEY) != CLUSTER_ALGO) {
             withContext(Dispatchers.IO) { database.unassignUnnamedPeople() }
             store.unassignExcept(named)
             database.setMeta(CLUSTER_ALGO_KEY, CLUSTER_ALGO)
         }
+        // Every run regroups all people the user has not curated (and they keep their ids), so earlier scans never
+        // freeze a wrong merge or a split. This costs a neighbour search over those faces each time.
+        val kept = withContext(Dispatchers.IO) { database.keptPersonIds() }
+        val notSame = withContext(Dispatchers.IO) { database.notSamePairs() }
         val rejections = rejectionsByRow()
         // Person ids only ever grow, so a rejection can never point at a different, later person.
         val highWater = database.getMeta(MAX_PERSON_ID_KEY)?.toLongOrNull() ?: 0L
         val nextId = maxOf(database.maxPersonId(), store.maxPersonId(), highWater) + 1
         var lastPublish = 0L
-        val res = clusterer.run(store, neighborFinder, named, rejections, nextId) { done, total ->
+        val res = clusterer.run(store, neighborFinder, named, rejections, nextId, kept, notSame) { done, total ->
             val now = System.currentTimeMillis()
             if (now - lastPublish > 300) { lastPublish = now; _status.value = ScanStatus.Grouping(done, total) }
         }
@@ -306,6 +314,29 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         database.mergePeople(target, sources)
         for (src in sources) if (src != target) for (r in store.rowsOfPerson(src)) store.setPerson(r, target)
         refreshCover(target)
+    }
+
+    /** "Same person?" questions for the people shown in [folderPath], most likely first. */
+    suspend fun mergeSuggestions(folderPath: String, max: Int = 30): List<MergeSuggestion> = withContext(Dispatchers.Default) {
+        ensureStoreLoaded()
+        val visible = withContext(Dispatchers.IO) { database.getPeopleInFolder(folderPath) }.associateBy { it.id }
+        val named = withContext(Dispatchers.IO) { database.namedPersonIds() }
+        val notSame = withContext(Dispatchers.IO) { database.notSamePairs() }
+        PeopleClusterer.suggestMerges(store, visible.keys, named, notSame, clusterConfig.askThreshold, max)
+            .map { (a, b, sim) -> MergeSuggestion(visible.getValue(a), visible.getValue(b), sim) }
+    }
+
+    /** The user's answer to a "Same person?" question: merge them, or remember that they are different. */
+    suspend fun answerSuggestion(s: MergeSuggestion, same: Boolean) {
+        if (same) {
+            // Keep the named one, else the bigger one (its id and cover are what the user has been seeing).
+            val aNamed = !s.a.name.startsWith("Person "); val bNamed = !s.b.name.startsWith("Person ")
+            val target = when {
+                aNamed != bNamed -> if (aNamed) s.a else s.b
+                else -> if (s.a.faceCount >= s.b.faceCount) s.a else s.b
+            }
+            mergePeople(target.id, listOf(s.a.id, s.b.id))
+        } else withContext(Dispatchers.IO) { database.markNotSame(s.a.id, s.b.id) }
     }
 
     /** Hides a person: their faces are marked dismissed and never regrouped. */
@@ -392,7 +423,7 @@ class FaceScannerManager private constructor(private val appContext: Context) {
 
     companion object {
         private const val CLUSTER_ALGO_KEY = "cluster_algo"
-        private const val CLUSTER_ALGO = "avg-linkage-v1"
+        private const val CLUSTER_ALGO = "avg-linkage-v2"
         private const val MAX_PERSON_ID_KEY = "max_person_id"
         @Volatile private var INSTANCE: FaceScannerManager? = null
         fun getInstance(context: Context): FaceScannerManager =

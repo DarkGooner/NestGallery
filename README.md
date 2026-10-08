@@ -58,13 +58,15 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   - **Edge-case resilience**: safely handles cut/cropped faces near photo borders
     without crashes, aligns tilted/rotated faces via Euler angle correction,
     detects partial profiles, and includes fallback center cropping for pre-cropped face inputs.
-  - **Real people and 3D renders** (Daz3D, Blender, game characters): ArcFace ResNet-50
-    (int8) embeddings and average-linkage clustering, measured on real photos (LFW) and
-    CGI renders (DigiFace-1M) at 99.5%+ grouping precision (BCubed; the previous
-    clusterer merged different CGI characters wholesale - details in `tools/face-eval/README.md`).
-  - **Engineered for 10,000-20,000+ photos**: SCRFD detector + ArcFace run through ONNX
-    Runtime; a parallel decode/analyse/write pipeline; incremental clustering on an ONNX
-    k-nearest-neighbour graph that never reshuffles people you've already named; an int8
+  - **Real people and 3D renders** (Daz3D, Blender, game characters): AdaFace IR-101
+    (int8) embeddings and average-linkage clustering, measured on real photos (LFW, cross-pose
+    and cross-age LFW) and CGI renders (DigiFace-1M, including 72 renders per character with
+    varied expression, lighting and synthetic hand/food occlusion) at 99%+ grouping precision
+    (BCubed). Borderline pairs are asked as **"Same person?"** instead of guessed - details in
+    `tools/face-eval/README.md`.
+  - **Engineered for 10,000-20,000+ photos**: SCRFD detector + AdaFace run through ONNX
+    Runtime; a parallel decode/analyse/write pipeline; clustering on an ONNX
+    k-nearest-neighbour graph that keeps people you named or corrected exactly as you left them; an int8
     in-memory index that searches 50k faces in tens of milliseconds. Everything is local.
 - Dark theme with Material You dynamic color on Android 12+.
 

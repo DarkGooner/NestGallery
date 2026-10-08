@@ -29,7 +29,7 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 
 ### Key Architectural Tenets
 1. **Zero-SAF Direct Filesystem Access**: Rather than slow cross-process Storage Access Framework (`SAF`) queries, NestGallery requests `MANAGE_EXTERNAL_STORAGE` (All Files Access) on Android 11+ (API 30+) to read the storage directly using standard `java.io.File`.
-2. **On-Device Facial Recognition**: InsightFace **SCRFD-500MF** (detector, 5 landmarks) + **ArcFace ResNet-50 / WebFace600K, int8-quantised** (512-d embeddings) executed by ONNX Runtime. Faces are aligned to the ArcFace 112x112 template from the landmarks. All processing runs 100% locally. *Model licence: InsightFace's pretrained models are non-commercial research only.*
+2. **On-Device Facial Recognition**: InsightFace **SCRFD-500MF** (detector, 5 landmarks) + **AdaFace IR-101 / WebFace12M, int8-quantised** (512-d embeddings) executed by ONNX Runtime. Faces are aligned to the ArcFace 112x112 template from the landmarks. All processing runs 100% locally. *Model licences: InsightFace's pretrained models (SCRFD) are non-commercial research only; AdaFace is trained on WebFace12M, whose licence is also non-commercial.*
 3. **Folder-Scoped Processing**: Heavy operations like recursive exploration, media indexing, and facial clustering are strictly scoped to user-selected directory trees rather than locking up the entire device storage.
 4. **Resilient Video Playback**: Uses native **LibVLC** (`libvlc-all:3.7.6`) instead of ExoPlayer/Media3 to guarantee playback of legacy and esoteric video containers and codecs (e.g. AVI, MKV, legacy DivX/Xvid, 10-bit H.264).
 
@@ -95,8 +95,8 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 #### [`app/keystore/release.keystore`](file:///d:/Projects/NestGallery/app/keystore/release.keystore)
 - **Role**: Pre-configured keystore for signing release APKs.
 
-#### `app/src/main/assets/scrfd_500m.onnx` (2.4 MB), `arcface_r50_int8.onnx` (42 MB), `face_knn.onnx` (<1 KB)
-- **Role**: SCRFD-500MF face detector (InsightFace `buffalo_s`); ArcFace ResNet-50 recogniser (`w600k_r50` from `buffalo_l`, statically quantised to int8 QDQ with `tools/face-eval/quant.py`, ~9x faster than fp32 with no measurable accuracy loss); the Gemm+TopK kNN kernel the clusterer runs on ONNX Runtime (`tools/face-eval/make_knn_model.py`).
+#### `app/src/main/assets/scrfd_500m.onnx` (2.4 MB), `adaface_ir101_int8.onnx` (63 MB), `face_knn.onnx` (<1 KB)
+- **Role**: SCRFD-500MF face detector (InsightFace `buffalo_s`); AdaFace IR-101 recogniser (CVLFace `cvlface_adaface_ir101_webface12m`, exported with `tools/face-eval/export_adaface.py`, statically quantised to int8 QDQ with percentile calibration by `tools/face-eval/quant.py`; within ~1 point of fp32 TAR); the Gemm+TopK kNN kernel the clusterer runs on ONNX Runtime (`tools/face-eval/make_knn_model.py`). The class is still called `ArcFaceEmbedder` (same 112 px RGB `[-1,1]` interface). It replaced ArcFace ResNet-50 int8 (42 MB) on 2026-10-08: better on CGI expression/lighting changes, occlusion and pose, at ~2.5x the compute.
 - **Contract**: detector input `[1,3,H,W]` (RGB, `(x-127.5)/128`, H/W = photo size rounded up to 32), 9 outputs (score/box/5-landmark per stride 8/16/32). Recogniser input `[N,3,112,112]` (RGB, `(x-127.5)/127.5`), output 512-d.
 - **Swapping the recogniser**: any ArcFace-style 112x112 model with the same contract works. Replace the asset, change `ArcFaceEmbedder.ASSET`, bump `MODEL_ID` (the DB drops incompatible embeddings automatically) and re-measure the thresholds with `tools/face-eval` - they depend on the model.
 
@@ -165,20 +165,22 @@ Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect` -> `5-point similar
 | `FaceScanService.kt` | no | foreground service (data-sync) + wake lock + progress notification so scans survive minimising / screen-off |
 | `OnnxFaceModels.kt` | no | `ScrfdDetector`, `ArcFaceEmbedder`, `OnnxKnn` (ONNX Runtime) |
 | `FaceImage.kt` | no | `FaceImageLoader` (sampled decode, all 8 EXIF orientations), `FaceAligner` (Skia matrix warp), `FaceAnalyzer`, `FaceThumbnails` |
-| `FaceDatabase.kt` | no | SQLite v4 (WAL), batched writes, int8 embedding blobs, folder range queries, `face_rejections` ("not this person"), merge |
-| `FaceScannerManager.kt` | no | parallel scan pipeline, grouping, corrections (rename / merge / remove / hide - always DB **and** in-memory index), cover thumbnails, search + person suggestions |
+| `FaceDatabase.kt` | no | SQLite v5 (WAL), batched writes, int8 embedding blobs, folder range queries, `face_rejections` ("not this person"), `people.locked` (curated by the user), `person_not_same` ("different people" answers), merge |
+| `FaceScannerManager.kt` | no | parallel scan pipeline, grouping, corrections (rename / merge / remove / hide / "same person?" answers - always DB **and** in-memory index), cover thumbnails, search + person suggestions, merge suggestions |
 
 **Scan pipeline** (`FaceScannerManager.runPipeline`): 1-2 decoder coroutines (IO) feed a bounded channel; 1-4 analysis workers (CPU) run detect+align+embed; one writer commits batches of up to 32 photos in a single transaction and appends to the in-memory index. Already-indexed files are skipped using one bulk query. Pause stops new decodes; cancel still groups what was saved. If a scan indexed nothing new, grouping is skipped.
 
 **Clustering** (`PeopleClusterer`, measured in `tools/face-eval/README.md`):
-1. *Neighbours*: every ungrouped face gets its 24 nearest faces through `OnnxKnn` (`face_knn.onnx`: Gemm + TopK in blocks of 16k rows, ~4x faster than Kotlin because ART does not vectorise). A full rebuild of 40k faces is one 40k x 40k pass.
-2. *Merge*: existing people start as groups, ungrouped faces as singletons. The pair of groups with the highest **average** cosine over all their face pairs is merged while it is >= `linkThreshold` (0.45). For unit vectors that average is `sumA . sumB / (|A||B|)`, so a group is just a running sum. Average linkage never increases on a merge, so stale heap entries are upper bounds and are re-scored lazily (no neighbour lists to maintain).
-3. *Attach*: a face still alone joins the person it matches best on average if that is >= `attachThreshold` (0.35) **and** beats the runner-up by `attachMargin` (0.06); ambiguous faces stay ungrouped instead of being guessed.
-4. *Constraints* (every merge and attach): faces of one photo are different people; two named people never merge; a face the user removed from a person never returns to it (`face_rejections`).
+1. *Neighbours*: every face being (re)grouped gets its 24 nearest faces through `OnnxKnn` (`face_knn.onnx`: Gemm + TopK in blocks of 16k rows, ~4x faster than Kotlin because ART does not vectorise). A full rebuild of 40k faces is one 40k x 40k pass.
+2. *Merge*: **kept** people (named, or `locked` = curated by the user) start as groups, every other face as a singleton. The pair of groups with the highest **average** cosine over all their face pairs is merged while it is >= `linkThreshold` (0.42). For unit vectors that average is `sumA . sumB / (|A||B|)`, so a group is just a running sum. Average linkage never increases on a merge, so stale heap entries are upper bounds and are re-scored lazily (no neighbour lists to maintain).
+3. *Attach*: a face still alone joins the person it matches best on average if that is >= `attachThreshold` (0.33) **and** beats the runner-up by `attachMargin` (0.06); ambiguous faces stay ungrouped instead of being guessed.
+4. *Ids*: a regrouped person takes back the old id it overlaps most (largest overlaps first), so "Person 12" stays Person 12.
+5. *Constraints* (every merge and attach): faces of one photo are different people; two named people never merge; people answered "different" (`person_not_same`) never merge; a face the user removed from a person never returns to it (`face_rejections`).
+6. *"Same person?"* (`PeopleClusterer.suggestMerges`, card at the top of the People tab): pairs of people with average linkage in [`askThreshold` 0.36, 0.42), best first. In that band the score cannot tell one character split by lighting/expression from two look-alike characters, so the user decides: *Same person* merges (target locked), *Different* records the pair and locks both, *Skip* hides it until the screen is reopened.
 
 Why not the previous Immich-style DBSCAN: it is single-link, so one look-alike face chains two people together, and its "reconcile" step merged any groups that touched. On CGI renders (where different characters look much more alike than real people) its pairwise precision was 0.035 - a few groups swallowed many characters. Average linkage: 0.996.
 
-Existing people are never split by a normal run; **Regroup people** (Faces screen menu) re-clusters everything unnamed from scratch. Person ids only grow (`max_person_id` meta key), so a stored rejection can never point at a later, unrelated person. On first run after an algorithm change (`cluster_algo` meta key) unnamed people are rebuilt automatically.
+Every grouping run regroups all people the user has not curated (that costs a neighbour search over those faces per scan that found new faces). Freezing groups scan by scan locked in early mistakes both ways: in tools/face-eval, scanning a mixed library in 4 passes tripled the impure groups, and a character split early stayed split because two existing people were never compared again. Curated people only grow. **Regroup people** (Faces screen menu) also drops the locks, merges and "different" answers on unnamed people. Person ids only grow (`max_person_id` meta key), so a stored rejection can never point at a later, unrelated person. On first run after an algorithm change (`cluster_algo` meta key) unnamed people are rebuilt automatically.
 
 **Corrections** (Google Photos style): long-press people to multi-select and **Merge**; in a person, **Select** photos -> **Not this person** (removed + remembered); rename; hide (faces marked `person_id = -1`, never regrouped).
 
@@ -291,7 +293,7 @@ Existing people are never split by a normal run; **Regroup people** (Faces scree
 3. Provide an `onBack: () -> Unit` callback that updates `screen = s.returnTo`.
 
 ### How to Adjust Face Recognition Precision
-- **Grouping**: `ClusterConfig` in `PeopleClusterer.kt`. `linkThreshold` higher (e.g. `0.5f`) = fewer wrong merges, more people split in two; lower (`0.42f`) = the reverse. `attachThreshold` / `attachMargin` control how readily leftover faces join a person. Bump `CLUSTER_ALGO` in `FaceScannerManager` to regroup existing libraries, and measure with `tools/face-eval/cluster.py` first.
+- **Grouping**: `ClusterConfig` in `PeopleClusterer.kt`. `linkThreshold` higher (e.g. `0.45f`) = fewer wrong merges, more people split in two; lower (`0.40f`) = the reverse; `askThreshold` sets how far below it "Same person?" questions go. `attachThreshold` / `attachMargin` control how readily leftover faces join a person. Bump `CLUSTER_ALGO` in `FaceScannerManager` to regroup existing libraries, and measure with `tools/face-eval/cluster.py` first.
 - **Find by face bands**: `MATCH_STRONG / MATCH_LIKELY / MATCH_POSSIBLE` in `FaceMath.kt` (raw cosine, model specific).
 - **Detection**: `FaceAnalyzer.MIN_DET_SCORE` and `FaceQuality.MIN_EYE_DIST`.
 

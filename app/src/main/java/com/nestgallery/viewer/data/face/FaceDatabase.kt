@@ -59,10 +59,12 @@ class FaceDatabase private constructor(context: Context) :
                 path TEXT PRIMARY KEY, last_modified INTEGER NOT NULL, size INTEGER NOT NULL,
                 face_count INTEGER NOT NULL, scanned_at INTEGER NOT NULL)"""
         )
+        // locked = the user curated this person (merged, corrected, answered "same person?"): never regrouped.
         db.execSQL(
             """CREATE TABLE IF NOT EXISTS people (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, named INTEGER NOT NULL DEFAULT 0,
-                cover_face_id INTEGER DEFAULT 0, face_count INTEGER DEFAULT 0, updated_at INTEGER NOT NULL)"""
+                cover_face_id INTEGER DEFAULT 0, face_count INTEGER DEFAULT 0, updated_at INTEGER NOT NULL,
+                locked INTEGER NOT NULL DEFAULT 0)"""
         )
         db.execSQL(
             """CREATE TABLE IF NOT EXISTS faces (
@@ -74,6 +76,7 @@ class FaceDatabase private constructor(context: Context) :
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_faces_file_path ON faces(file_path)")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces(person_id)")
         createRejections(db)
+        createNotSame(db)
         db.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES('model', '${ArcFaceEmbedder.MODEL_ID}')")
     }
 
@@ -86,11 +89,21 @@ class FaceDatabase private constructor(context: Context) :
         }
         // v4: "not this person" corrections. (A different embedding model is still caught by the check in onOpen.)
         if (oldVersion < 4) createRejections(db)
+        // v5: people the user curated are locked; "same person?" answered "no" is remembered.
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE people ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+            createNotSame(db)
+        }
     }
 
     /** face_id must never be grouped into person_id again (the user removed it from that person). */
     private fun createRejections(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS face_rejections (face_id INTEGER NOT NULL, person_id INTEGER NOT NULL, PRIMARY KEY(face_id, person_id))")
+    }
+
+    /** The user said persons a and b (a < b) are different people: never merged, never asked again. */
+    private fun createNotSame(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS person_not_same (a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY(a, b))")
     }
 
     override fun onOpen(db: SQLiteDatabase) {
@@ -101,7 +114,7 @@ class FaceDatabase private constructor(context: Context) :
     }
 
     private fun dropAll(db: SQLiteDatabase) {
-        for (t in listOf("faces", "people", "indexed_files", "meta", "face_rejections")) db.execSQL("DROP TABLE IF EXISTS $t")
+        for (t in listOf("faces", "people", "indexed_files", "meta", "face_rejections", "person_not_same")) db.execSQL("DROP TABLE IF EXISTS $t")
     }
 
     // ---- scanning ------------------------------------------------------------------------------
@@ -174,6 +187,36 @@ class FaceDatabase private constructor(context: Context) :
         return out
     }
 
+    /** People a grouping run keeps as they are: named, or curated by the user (locked). */
+    fun keptPersonIds(): Set<Long> {
+        val out = HashSet<Long>()
+        readableDatabase.rawQuery("SELECT id FROM people WHERE named = 1 OR locked = 1", null).use { while (it.moveToNext()) out.add(it.getLong(0)) }
+        return out
+    }
+
+    fun lockPeople(ids: Collection<Long>) {
+        if (ids.isEmpty()) return
+        writableDatabase.execSQL("UPDATE people SET locked = 1 WHERE id IN (${ids.joinToString(",")})")
+    }
+
+    fun notSamePairs(): Set<Pair<Long, Long>> {
+        val out = HashSet<Pair<Long, Long>>()
+        readableDatabase.rawQuery("SELECT a, b FROM person_not_same", null).use { while (it.moveToNext()) out.add(it.getLong(0) to it.getLong(1)) }
+        return out
+    }
+
+    /** "Same person?" answered no: [a] and [b] stay apart and are locked (the user has looked at both). */
+    fun markNotSame(a: Long, b: Long) {
+        if (a == b) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("INSERT OR IGNORE INTO person_not_same(a, b) VALUES(?, ?)", arrayOf(minOf(a, b), maxOf(a, b)))
+            db.execSQL("UPDATE people SET locked = 1 WHERE id IN (?, ?)", arrayOf(a, b))
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
     fun getMeta(key: String): String? =
         readableDatabase.rawQuery("SELECT value FROM meta WHERE key = ?", arrayOf(key)).use { if (it.moveToFirst()) it.getString(0) else null }
 
@@ -181,7 +224,10 @@ class FaceDatabase private constructor(context: Context) :
         writableDatabase.execSQL("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", arrayOf(key, value))
     }
 
-    /** Un-groups every person the user has not named, so the next clustering run rebuilds them from scratch. */
+    /**
+     * Un-groups every person the user has not named - including merges and corrections on unnamed people - so the
+     * next clustering run rebuilds them from scratch ("Regroup people").
+     */
     fun unassignUnnamedPeople() {
         val db = writableDatabase
         db.beginTransaction()
@@ -189,6 +235,7 @@ class FaceDatabase private constructor(context: Context) :
             db.execSQL("UPDATE faces SET person_id = 0 WHERE person_id > 0 AND person_id NOT IN (SELECT id FROM people WHERE named = 1)")
             db.execSQL("DELETE FROM face_rejections WHERE person_id NOT IN (SELECT id FROM people WHERE named = 1)")
             db.execSQL("DELETE FROM people WHERE named = 0")
+            dropDanglingPairs(db)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
     }
@@ -218,6 +265,7 @@ class FaceDatabase private constructor(context: Context) :
             }
             insert.close(); update.close()
             db.execSQL("DELETE FROM people WHERE named = 0 AND id NOT IN (SELECT DISTINCT person_id FROM faces WHERE person_id > 0)")
+            dropDanglingPairs(db)
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
@@ -255,6 +303,7 @@ class FaceDatabase private constructor(context: Context) :
                 unassign.bindLong(1, id); unassign.executeUpdateDelete()
             }
             reject.close(); unassign.close()
+            if (removed.isNotEmpty()) db.execSQL("UPDATE people SET locked = 1 WHERE id = ?", arrayOf(personId))
             refreshPersonCounts(db)
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -262,8 +311,9 @@ class FaceDatabase private constructor(context: Context) :
     }
 
     /**
-     * Moves every face of [sources] into [target]. If [target] has no name but one of the sources does, the target
-     * takes that name. Rejections of a source carry over to the target.
+     * Moves every face of [sources] into [target], which becomes locked (the user built it). If [target] has no name
+     * but one of the sources does, the target takes that name. Rejections and "not the same as" answers of a source
+     * carry over to the target.
      */
     fun mergePeople(target: Long, sources: Collection<Long>) {
         val others = sources.filter { it != target && it > 0 }
@@ -271,6 +321,13 @@ class FaceDatabase private constructor(context: Context) :
         val db = writableDatabase
         db.beginTransaction()
         try {
+            db.execSQL("UPDATE people SET locked = 1 WHERE id = ?", arrayOf(target))
+            val inherited = HashSet<Long>()
+            db.rawQuery("SELECT a, b FROM person_not_same WHERE a IN (${others.joinToString(",")}) OR b IN (${others.joinToString(",")})", null).use {
+                while (it.moveToNext()) { val a = it.getLong(0); val b = it.getLong(1); inherited.add(if (a in others) b else a) }
+            }
+            for (o in inherited) if (o != target && o !in others)
+                db.execSQL("INSERT OR IGNORE INTO person_not_same(a, b) VALUES(?, ?)", arrayOf(minOf(o, target), maxOf(o, target)))
             val targetNamed = db.rawQuery("SELECT named FROM people WHERE id = ?", arrayOf(target.toString())).use { it.moveToFirst() && it.getInt(0) == 1 }
             if (!targetNamed) {
                 val inList = others.joinToString(",")
@@ -293,6 +350,11 @@ class FaceDatabase private constructor(context: Context) :
         db.execSQL("UPDATE people SET face_count = (SELECT COUNT(*) FROM faces WHERE faces.person_id = people.id)")
         // An unnamed person left without faces is gone; a named one is kept (the name is the user's work).
         db.execSQL("DELETE FROM people WHERE named = 0 AND face_count = 0")
+        dropDanglingPairs(db)
+    }
+
+    private fun dropDanglingPairs(db: SQLiteDatabase) {
+        db.execSQL("DELETE FROM person_not_same WHERE a NOT IN (SELECT id FROM people) OR b NOT IN (SELECT id FROM people)")
     }
 
     fun getFaceLocation(faceId: Long): FaceLocation? =
@@ -361,6 +423,7 @@ class FaceDatabase private constructor(context: Context) :
         try {
             db.delete("people", "id = ?", arrayOf(personId.toString()))
             db.delete("face_rejections", "person_id = ?", arrayOf(personId.toString()))
+            dropDanglingPairs(db)
             db.update("faces", ContentValues().apply { put("person_id", -1L) }, "person_id = ?", arrayOf(personId.toString()))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -388,7 +451,7 @@ class FaceDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "nest_faces.db"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 5
         const val MIN_FACES_TO_SHOW = 2
 
         @Volatile private var INSTANCE: FaceDatabase? = null

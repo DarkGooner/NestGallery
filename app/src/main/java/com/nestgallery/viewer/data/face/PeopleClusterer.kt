@@ -14,22 +14,30 @@ class ClusterResult(
 )
 
 /**
- * Tunables for [PeopleClusterer]. Defaults were measured on real people (LFW) and on CGI renders (DigiFace-1M),
- * see tools/face-eval: they keep wrong merges under ~1% while still grouping ~95% of a person's faces.
+ * Tunables for [PeopleClusterer], measured for the AdaFace IR-101 int8 recogniser (they are model-specific) on real
+ * people (LFW), CGI renders (DigiFace-1M, incl. 72 renders per character) and a mix of both, see tools/face-eval.
  */
 class ClusterConfig(
     /**
      * Two groups merge only while the *average* cosine similarity over every pair of their faces is at least this.
      * Average linkage is what stops one look-alike face from chaining two people together (the old single-link
-     * clusterer merged whole groups through one bridging face).
+     * clusterer merged whole groups through one bridging face). 0.42 rather than 0.45: on CGI characters with varied
+     * expression / lighting it halves the "same character split in two" cases (69% -> 50% of characters) for ~0.3
+     * points of grouping precision (mixed library 0.996 -> 0.994).
      */
-    val linkThreshold: Float = 0.45f,
+    val linkThreshold: Float = 0.42f,
     /** A face left alone after merging joins the person whose faces it matches best on average, if at least this… */
-    val attachThreshold: Float = 0.35f,
+    val attachThreshold: Float = 0.33f,
     /** …and if that person beats the runner-up by this much (an ambiguous face is better left ungrouped). */
     val attachMargin: Float = 0.06f,
     /** Neighbours looked up per face. Only these pairs can start a merge or an attach. */
-    val k: Int = 24
+    val k: Int = 24,
+    /**
+     * Two people whose faces match at least this well on average (but below [linkThreshold]) are offered to the user
+     * as "Same person?" instead of being merged: in that band the score cannot tell one character split by lighting
+     * or expression from two look-alikes.
+     */
+    val askThreshold: Float = 0.36f
 )
 
 /** Finds, for each query row, the [k] most similar rows of [base] (cosine, best first). */
@@ -43,9 +51,9 @@ class KnnResult(val k: Int, val rows: IntArray, val sims: FloatArray)
 /**
  * Groups faces into people with constrained average-linkage agglomerative clustering.
  *
- * 1. **Neighbours.** Every not-yet-grouped face gets its [ClusterConfig.k] nearest faces (through ONNX Runtime on the
+ * 1. **Neighbours.** Every face being (re)grouped gets its [ClusterConfig.k] nearest faces (through ONNX Runtime on the
  *    device, see `OnnxKnn`). Only those pairs are ever considered, so the cost is linear in the face count.
- * 2. **Merge.** Start with every existing person as one group and every ungrouped face on its own; repeatedly merge
+ * 2. **Merge.** Start with every kept person as one group and every other face on its own; repeatedly merge
  *    the two groups with the highest average similarity while it is >= [ClusterConfig.linkThreshold]. For unit
  *    vectors the average pairwise cosine is `sumA . sumB / (|A| |B|)`, so each group only keeps a running sum.
  *    Average linkage never rises when groups merge, so stale heap entries are upper bounds and are re-scored lazily.
@@ -55,10 +63,14 @@ class KnnResult(val k: Int, val rows: IntArray, val sims: FloatArray)
  * Hard constraints, checked on every merge and attach:
  *  - faces in the same photo are different people;
  *  - two people the user named are never merged;
+ *  - two people the user said are different ([notSame]) are never merged;
  *  - a face the user removed from a person never goes back to that person ([rejections]).
  *
- * Existing people are never split, so a run only adds to what the user already sees. A full rebuild is done by
- * un-assigning the unnamed people first (see FaceScannerManager).
+ * People in [fixedPersons] (named or otherwise curated by the user) are kept exactly as they are and only grow. Every
+ * other person is regrouped from scratch on each run and then takes back the id of the old person it overlaps most,
+ * so ids stay stable. Regrouping matters: grouping scan by scan and freezing the result locks in early mistakes in both
+ * directions (tools/face-eval: 4 incremental passes tripled the impure groups on a mixed library, and a character
+ * split early stayed split because two existing people were never compared again).
  */
 class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
 
@@ -69,10 +81,15 @@ class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
         /** store row -> person ids that face must never join */
         rejections: Map<Int, Set<Long>>,
         firstNewPersonId: Long,
+        /** People kept as they are; every other person is regrouped. null = keep every existing person. */
+        fixedPersons: Set<Long>? = null,
+        /** Person id pairs (smaller id first) the user said are different people. */
+        notSame: Set<Pair<Long, Long>> = emptySet(),
         onProgress: ((done: Int, total: Int) -> Unit)? = null
     ): ClusterResult {
         val n = store.size
         val original = LongArray(n)
+        val previous = LongArray(n)                      // old person of a face being regrouped (for id reuse)
         val parent = IntArray(n) { it }
         val size = IntArray(n)
         val pid = LongArray(n)                           // person id of the group whose root is this row (0 = none)
@@ -100,7 +117,7 @@ class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
             if (p < 0) continue                              // dismissed by the user
             base.add(r)
             size[r] = 1
-            if (p == 0L) { queries.add(r); continue }
+            if (p == 0L || (fixedPersons != null && p !in fixedPersons)) { previous[r] = p; queries.add(r); continue }
             var root = rootOfPerson[p] ?: -1
             if (root < 0) {
                 root = r; rootOfPerson[p] = r; pid[r] = p
@@ -116,7 +133,7 @@ class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
         fun sumOf(root: Int): FloatArray = sums[root] ?: store.embedding(root).also { sums[root] = it }
         fun filesOf(root: Int): HashSet<Int> = files[root] ?: hashSetOf(store.fileIndex(root)).also { files[root] = it }
 
-        if (queries.isEmpty()) return finish(store, n, original, ::find, size, pid, sums, firstNewPersonId, ::sumOf)
+        if (queries.isEmpty()) return finish(store, n, original, previous, ::find, size, pid, sums, firstNewPersonId, ::sumOf)
 
         // ---- 1. neighbours ----------------------------------------------------------------------------------------
         // Progress is reported in per-mille: the neighbour search is ~90% of the work.
@@ -131,6 +148,7 @@ class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
         fun allowed(a: Int, b: Int): Boolean {
             val pa = pid[a]; val pb = pid[b]
             if (pa > 0 && pb > 0 && pa in namedPersons && pb in namedPersons) return false
+            if (pa > 0 && pb > 0 && notSame.isNotEmpty() && (minOf(pa, pb) to maxOf(pa, pb)) in notSame) return false
             if (pb > 0 && rejects[a]?.contains(pb) == true) return false
             if (pa > 0 && rejects[b]?.contains(pa) == true) return false
             val fa = filesOf(a); val fb = filesOf(b)
@@ -217,13 +235,28 @@ class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
             if (!filesOf(root).contains(store.fileIndex(q))) merge(root, find(q))   // re-check: two faces of one photo
         }
 
-        return finish(store, n, original, ::find, size, pid, sums, firstNewPersonId, ::sumOf)
+        return finish(store, n, original, previous, ::find, size, pid, sums, firstNewPersonId, ::sumOf)
     }
 
     private fun finish(
-        store: FaceStore, n: Int, original: LongArray, find: (Int) -> Int, size: IntArray, pid: LongArray,
-        sums: Array<FloatArray?>, firstNewPersonId: Long, sumOf: (Int) -> FloatArray
+        store: FaceStore, n: Int, original: LongArray, previous: LongArray, find: (Int) -> Int, size: IntArray,
+        pid: LongArray, sums: Array<FloatArray?>, firstNewPersonId: Long, sumOf: (Int) -> FloatArray
     ): ClusterResult {
+        // A regrouped person takes back the old id it shares the most faces with (largest overlaps first, each old id
+        // once), so "Person 12" stays Person 12 across scans; only genuinely new groups get new ids.
+        val reuse = HashMap<Int, Long>()
+        val overlap = HashMap<Int, HashMap<Long, Int>>()
+        for (r in 0 until n) {
+            if (previous[r] <= 0 || !store.isAlive(r) || original[r] < 0) continue
+            val root = find(r)
+            if (pid[root] > 0 || size[root] < 2) continue
+            overlap.getOrPut(root) { HashMap() }.merge(previous[r], 1, Int::plus)
+        }
+        val used = HashSet<Long>()
+        overlap.flatMap { (root, counts) -> counts.map { (p, c) -> Triple(c, root, p) } }
+            .sortedWith(compareByDescending<Triple<Int, Int, Long>> { it.first }.thenBy { it.third })
+            .forEach { (_, root, p) -> if (root !in reuse && p !in used) { reuse[root] = p; used.add(p) } }
+
         var nextId = firstNewPersonId
         val members = HashMap<Long, ArrayList<Int>>()
         val rootPid = HashMap<Int, Long>()
@@ -233,7 +266,7 @@ class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
             val p = rootPid.getOrPut(root) {
                 when {
                     pid[root] > 0 -> pid[root]
-                    size[root] >= 2 -> nextId++
+                    size[root] >= 2 -> reuse[root] ?: nextId++
                     else -> 0L
                 }
             }
@@ -257,6 +290,42 @@ class PeopleClusterer(private val cfg: ClusterConfig = ClusterConfig()) {
     }
 
     companion object {
+        /**
+         * "Same person?" questions: pairs of [persons] whose faces match well on average (average linkage >= [minSim])
+         * but were not merged automatically, best first. Below the merge threshold the score alone cannot tell a
+         * character split by lighting / expression from two look-alike characters (tools/face-eval: in the 0.36-0.40
+         * band 97% of pairs were one character on DigiFace-72, but nearly none on a set dense with look-alikes), so
+         * the user decides. Pairs sharing a photo, two named people and pairs answered "different" are skipped.
+         */
+        fun suggestMerges(
+            store: FaceStore, persons: Set<Long>, namedPersons: Set<Long>, notSame: Set<Pair<Long, Long>>,
+            minSim: Float, max: Int
+        ): List<Triple<Long, Long, Float>> {
+            val sums = HashMap<Long, FloatArray>(); val counts = HashMap<Long, Int>(); val files = HashMap<Long, HashSet<Int>>()
+            for (r in 0 until store.size) {
+                if (!store.isAlive(r)) continue
+                val p = store.personOf(r)
+                if (p !in persons) continue
+                addInto(sums.getOrPut(p) { FloatArray(store.dim) }, store.embedding(r))
+                counts.merge(p, 1, Int::plus); files.getOrPut(p) { HashSet() }.add(store.fileIndex(r))
+            }
+            val ids = sums.keys.sorted()
+            val means = ids.map { p -> val s = sums[p]!!; val c = counts[p]!!.toFloat(); FloatArray(s.size) { s[it] / c } }
+            val out = ArrayList<Triple<Long, Long, Float>>()
+            for (i in ids.indices) for (j in i + 1 until ids.size) {
+                val sim = dot(means[i], means[j])                   // = average cosine over every pair of their faces
+                if (sim < minSim) continue
+                val a = ids[i]; val b = ids[j]
+                if (a in namedPersons && b in namedPersons) continue
+                if ((a to b) in notSame) continue
+                val fa = files[a]!!; val fb = files[b]!!
+                if (if (fa.size <= fb.size) fa.any { it in fb } else fb.any { it in fa }) continue
+                out.add(Triple(a, b, sim))
+            }
+            out.sortByDescending { it.third }
+            return if (out.size > max) out.subList(0, max) else out
+        }
+
         fun dot(a: FloatArray, b: FloatArray): Float {
             var s0 = 0f; var s1 = 0f; var s2 = 0f; var s3 = 0f
             var i = 0

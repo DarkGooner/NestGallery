@@ -153,6 +153,70 @@ class PeopleClustererTest {
     }
 
     @Test
+    fun regroupingKeepsPersonIds() {
+        val r = Random(15)
+        val store = FaceStore()
+        val centres = List(4) { unit(gaussian(r)) }
+        for ((k, c) in centres.withIndex()) repeat(6) { store.add(store.size.toLong(), "/s/$k-$it.jpg", 0, 0.9f, faceOf(c, r, 0.6f)) }
+        val first = run(store)
+        val before = LongArray(store.size) { store.personOf(it) }
+        repeat(2) { store.add(store.size.toLong(), "/s/new$it.jpg", 0, 0.9f, faceOf(centres[1], r, 0.6f)) }
+        val second = PeopleClusterer().run(store, finder, emptySet(), emptyMap(), first.nextPersonId, fixedPersons = emptySet())
+        for (i in before.indices) assertEquals("person id changed on regroup", before[i], store.personOf(i))
+        assertEquals(before[6], store.personOf(store.size - 1))                   // new faces joined, no new person
+        assertEquals(first.nextPersonId, second.nextPersonId)
+    }
+
+    @Test
+    fun regroupingHealsASplitFromAnEarlierScan() {
+        // One character, two existing people (an earlier scan split it). Keeping people frozen never compares them
+        // again; regrouping does.
+        val r = Random(17)
+        val c = unit(gaussian(r))
+        val store = FaceStore()
+        repeat(6) { store.add(it.toLong(), "/h/a$it.jpg", 3, 0.9f, faceOf(c, r, 0.6f)) }
+        repeat(6) { store.add(10L + it, "/h/b$it.jpg", 4, 0.9f, faceOf(c, r, 0.6f)) }
+        run(store, firstId = 5)
+        assertNotEquals("frozen people should stay as they are", store.personOf(0), store.personOf(6))
+        PeopleClusterer().run(store, finder, emptySet(), emptyMap(), 5, fixedPersons = emptySet())
+        val p = store.personOf(0)
+        assertTrue(p == 3L || p == 4L)                                            // an old id is reused
+        for (i in 0 until 12) assertEquals(p, store.personOf(i))
+    }
+
+    @Test
+    fun curatedPeopleAreKeptAndDifferentAnswersRespected() {
+        val r = Random(19)
+        val c = unit(gaussian(r))
+        val store = FaceStore()
+        repeat(6) { store.add(it.toLong(), "/k/a$it.jpg", 3, 0.9f, faceOf(c, r, 0.6f)) }
+        repeat(6) { store.add(10L + it, "/k/b$it.jpg", 4, 0.9f, faceOf(c, r, 0.6f)) }
+        repeat(3) { store.add(20L + it, "/k/n$it.jpg", 0, 0.9f, faceOf(c, r, 0.6f)) }
+        // The user said 3 and 4 are different people: they stay apart even though they look alike.
+        PeopleClusterer().run(store, finder, emptySet(), emptyMap(), 5, fixedPersons = setOf(3L, 4L), notSame = setOf(3L to 4L))
+        for (i in 0 until 6) assertEquals(3L, store.personOf(i))
+        for (i in 6 until 12) assertEquals(4L, store.personOf(i))
+        for (i in 12 until 15) assertTrue(store.personOf(i) in setOf(3L, 4L))
+    }
+
+    @Test
+    fun suggestionsOfferASplitButNotAnsweredOrSharedPhotoPairs() {
+        val r = Random(23)
+        val c = unit(gaussian(r)); val other = unit(gaussian(r))
+        val store = FaceStore()
+        repeat(5) { store.add(it.toLong(), "/q/a$it.jpg", 3, 0.9f, faceOf(c, r, 0.9f)) }
+        repeat(5) { store.add(10L + it, "/q/b$it.jpg", 4, 0.9f, faceOf(c, r, 0.9f)) }
+        repeat(5) { store.add(20L + it, "/q/o$it.jpg", 5, 0.9f, faceOf(other, r, 0.9f)) }
+        val all = setOf(3L, 4L, 5L)
+        val s = PeopleClusterer.suggestMerges(store, all, emptySet(), emptySet(), 0.2f, 10)
+        assertEquals(listOf(3L to 4L), s.map { it.first to it.second })
+        assertTrue(PeopleClusterer.suggestMerges(store, all, emptySet(), setOf(3L to 4L), 0.2f, 10).isEmpty())
+        assertTrue(PeopleClusterer.suggestMerges(store, all, setOf(3L, 4L), emptySet(), 0.2f, 10).isEmpty())
+        store.add(99, "/q/a0.jpg", 4, 0.9f, faceOf(c, r, 0.9f))                  // 3 and 4 now share a photo
+        assertTrue(PeopleClusterer.suggestMerges(store, all, emptySet(), emptySet(), 0.2f, 10).isEmpty())
+    }
+
+    @Test
     fun bruteForceNeighboursAreExact() {
         val r = Random(13)
         val store = FaceStore()
