@@ -106,17 +106,7 @@ every photo in the folder and its subfolders with NudeNet, on the device, and le
   QNN, fp16), *GPU* (Adreno, experimental) or *CPU*. Whatever fails on a phone falls back to the CPU; one that crashes
   the app is skipped from then on (Settings can retry it). The first NPU run compiles the model for the chip (up to a
   minute) and caches it. **Speed test** measures every option on the phone the way a scan runs (photos/s and the time
-  for 20,000 photos) and offers to switch to the fastest.
-- **NPU on phones that hide the DSP's C++ runtime** (e.g. Snapdragon 7 Gen 3 / Motorola: the speed test's details
-  say "Failed to initialize qnn_model_wrapper" and "libc++.so.1 (No such file)"): Qualcomm's NPU code needs the DSP's
-  own `libc++.so.1` and `libc++abi.so.1`, which live in `/vendor/dsp/cdsp/` where apps may not read them. Copy them
-  off the phone once with adb and the app uses them:
-
-  ```
-  adb shell mkdir -p /sdcard/NestGallery/dsp
-  adb pull /vendor/dsp/cdsp/libc++.so.1 && adb pull /vendor/dsp/cdsp/libc++abi.so.1
-  adb push libc++.so.1 libc++abi.so.1 /sdcard/NestGallery/dsp/
-  ``` The app is 64-bit only (arm64) because the QNN build of ONNX
+  for 20,000 photos) and offers to switch to the fastest. The app is 64-bit only (arm64) because the QNN build of ONNX
   Runtime is.
 - **Models** are bundled in `app/src/main/assets` (no download, no network) and stored with **Git LFS** (640m is over
   GitHub's 100 MB file limit). After cloning, run `git lfs install` once and `git lfs pull` before building; an APK
