@@ -26,7 +26,12 @@ class NsfwModel(
     val inputSize: Int,
     val labels: List<String>,
     val title: String,
-    val description: String
+    val description: String,
+    /**
+     * The NPU's copy: the same cut model with its input fixed to [inputSize] square and QDQ-quantised (16-bit
+     * activations, 8-bit weights) by tools/nsfw-eval/quantize_qnn.py - the Hexagon HTP runs no float ops.
+     */
+    val npuAsset: String
 )
 
 /** The NudeNet v3 variants (YOLOv8, 18 body-part classes, AGPL-3.0), both bundled; Settings picks one. */
@@ -35,13 +40,15 @@ object NsfwModels {
         "nudenet-320n:v1", "nudenet_320n.onnx", 320, NsfwLabels.NUDENET,
         "NudeNet 320n (fast)",
         "YOLOv8n at 320 px, 12 MB. About 30 ms per photo per CPU core on a PC. Good for big libraries; small or " +
-            "distant regions are missed more often."
+            "distant regions are missed more often.",
+        npuAsset = "nudenet_320n_qdq.onnx"
     )
     val M640 = NsfwModel(
         "nudenet-640m:v1", "nudenet_640m.onnx", 640, NsfwLabels.NUDENET,
         "NudeNet 640m (accurate)",
-        "YOLOv8m at 640 px, 104 MB. Finds smaller regions and is more reliable, but about 30x slower: a 20,000-photo " +
-            "library can take many hours on a phone."
+        "YOLOv8m at 640 px, 104 MB. Finds smaller regions and is more reliable, but about 30x slower on a CPU: " +
+            "a 20,000-photo library takes hours unless the NPU runs it (Settings > hardware).",
+        npuAsset = "nudenet_640m_qdq.onnx"
     )
     val ALL = listOf(N320, M640)
     val DEFAULT = N320
@@ -73,7 +80,7 @@ class YoloDetector(context: Context, val model: NsfwModel, val accelerator: Nsfw
         // A clone without `git lfs pull` ships the ~130-byte pointer instead of the model; say so instead of an ORT error.
         check(file.length() > 4096) { "${model.asset} is a Git LFS pointer, not the model. Run `git lfs pull` and rebuild." }
         session = when (accelerator) {
-            NsfwAccelerator.NPU -> openNpu(context, file)
+            NsfwAccelerator.NPU -> openNpu(context)
             NsfwAccelerator.GPU -> {
                 // Strict: either QNN's GPU backend runs the whole model or this fails (and the scanner uses the CPU).
                 Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, null, strict = true))
@@ -93,7 +100,9 @@ class YoloDetector(context: Context, val model: NsfwModel, val accelerator: Nsfw
      * whole model is required on the NPU; if QNN rejects some nodes, a split NPU + CPU session is accepted only if the
      * compiled graph really contains an NPU part - otherwise everything would silently run on the CPU.
      */
-    private fun openNpu(context: Context, file: File): OrtSession {
+    private fun openNpu(context: Context): OrtSession {
+        val file = ModelFiles.materialize(context, model.npuAsset)
+        check(file.length() > 4096) { "${model.npuAsset} is a Git LFS pointer, not the model. Run `git lfs pull` and rebuild." }
         val ctx = NsfwSessions.contextFile(context, model)
         if (ctx.exists() && !NsfwSessions.hasQnnPartition(ctx)) ctx.delete()   // a cache without an NPU part is useless
         if (ctx.exists()) {

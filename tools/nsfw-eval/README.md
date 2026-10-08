@@ -6,6 +6,7 @@ Scripts behind the choices in `app/src/main/java/com/nestgallery/viewer/data/nsf
 |---|---|
 | `compare.py` | Runs NudeNet's own pre/post-processing (copied from `nudenet` 3.4.2) and a line-for-line port of the app's pipeline on the same photos; reports matching detections, identical per-label counts and time per image. `--size 640` for 640m; `--extra model.onnx:size` times more models. |
 | `split_head.py` | Cuts a NudeNet export before its box decoding (the app's bundled models are cut: the Snapdragon NPU rejects the decoding ops and the GPU its DFL Softmax) and checks that decoding the head maps as the app does gives the full model's output: max difference 0.0002 px / 2e-7 on 100 (320n) and 60 (640m) photos. |
+| `quantize_qnn.py` | Builds the NPU copy of a cut model: input fixed to the model's square, QDQ-quantised for Qualcomm QNN (16-bit activations, 8-bit per-channel symmetric weights, min/max calibration), then compares it with the float model on held-out photos. |
 | `make_fixture.py` | Writes `app/src/test/resources/nsfw/` (raw NudeNet 320n outputs + the port's detections) for `NsfwMathTest.matchesThePythonPipelineOnRealOutputs`, which makes the Kotlin decoder agree with the port exactly. |
 
 Environment used: `%USERPROFILE%\nsfw-export-venv` = Python 3.13, onnxruntime 1.22, opencv. Run scripts with `python -I`.
@@ -26,6 +27,19 @@ On the Snapdragon 7 Gen 3 (SM7550, motorola edge 50 pro, 2026-10-09) the full mo
 decoding ops (StridedSlice / ElementWise* / Concat / Sigmoid of `/model.22/`, error 3110) and the split HTP + CPU
 session hit ORT's NHWC layout-transformer error; the GPU rejected only `/model.22/dfl/Softmax`. CPU: 1.54 photos/s
 for 640m with 4 photos at once.
+
+**NPU copies** (`nudenet_320n_qdq.onnx` 3.3 MB, `nudenet_640m_qdq.onnx` 26.5 MB): the SM7550's HTP rejected every float
+op, even with fp16 requested (error 3110 on Conv2d, Sigmoid, Mul, Concat), so the NPU runs these quantised copies.
+Calibrated on 75 photos (45 COCO, 30 LFW), checked on 45 others (15 COCO, 10 LFW, 20 CALFW), counting threshold 0.45,
+same square input as the NPU path:
+
+| | float detections | quantised | matched (same label, IoU >= 0.7) | identical counts | score difference |
+|---|---|---|---|---|---|
+| 320n | 42 | 42 | 42 | 45 / 45 photos | mean 0.013, max 0.069 |
+| 640m | 46 | 46 | 46 | 45 / 45 photos | mean 0.005, max 0.025 |
+
+Measured with ONNX Runtime's CPU simulation of the QDQ model; the HTP's own integer kernels may round a little
+differently. Calibration used ordinary photos only, so activation ranges on explicit images are not covered by it.
 
 (EraX-NSFW-V1.0 YOLO11n was bundled for a day for its `make_love` class and removed on request on 2026-10-09. On the
 same photos it found nothing at all, i.e. no false positives on clean pictures, at 111 ms per photo @ 640.)

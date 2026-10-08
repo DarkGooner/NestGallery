@@ -13,8 +13,9 @@ import java.io.File
  */
 enum class NsfwAccelerator(val title: String, val description: String) {
     AUTO("Auto", "Tries the NPU, then the GPU, then the CPU, and uses the first that works."),
-    NPU("NPU (Hexagon)", "Snapdragon's neural processor, through Qualcomm QNN, at fp16 precision. Usually by far the fastest. " +
-        "The first scan compiles the model for the chip (up to a minute); later scans reuse it."),
+    NPU("NPU (Hexagon)", "Snapdragon's neural processor, through Qualcomm QNN, running a quantised copy of the model " +
+        "(16-bit activations, 8-bit weights; same detections as the float model in tests). Usually by far the fastest. " +
+        "The first scan compiles it for the chip (up to a minute); later scans reuse that."),
     GPU("GPU (Adreno)", "Snapdragon's graphics processor, through Qualcomm QNN. Experimental."),
     CPU("CPU", "Runs everywhere. Several photos at once, one core each.");
 
@@ -45,6 +46,7 @@ internal object NsfwSessions {
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
             setIntraOpNumThreads(2)                                         // for any nodes left on the CPU
             if (strict) addConfigEntry("session.disable_cpu_ep_fallback", "1")
+            // the float model has dynamic H/W: pinned for the GPU (the NPU's quantised copy is already fixed)
             setSymbolicDimensionValue("batch", 1)
             setSymbolicDimensionValue("height", model.inputSize.toLong())
             setSymbolicDimensionValue("width", model.inputSize.toLong())
@@ -54,7 +56,7 @@ internal object NsfwSessions {
                 // The DSP loads its half of QNN (libQnnHtpV*Skel.so) from ADSP_LIBRARY_PATH.
                 setDspLibraryPath(libDir)
                 qnn["backend_path"] = "$libDir/libQnnHtp.so"
-                qnn["enable_htp_fp16_precision"] = "1"                     // float model, fp16 on the HTP: no quantisation
+                // the QDQ model (NsfwModel.npuAsset) runs as integers; this HTP (SM7550) rejects float ops even at fp16
                 qnn["htp_performance_mode"] = "burst"
                 qnn["htp_graph_finalization_optimization_mode"] = "3"
                 if (contextFile != null && !contextFile.exists()) {
@@ -109,7 +111,7 @@ internal object NsfwSessions {
     } catch (e: Exception) { "" }
 
     /** Bump with the onnxruntime-android-qnn / qnn-runtime versions: compiled graphs don't carry across them. */
-    private const val CACHE_VERSION = "ort1.22-qnn2.33-v3"
+    private const val CACHE_VERSION = "ort1.22-qnn2.33-qdq1"
 
     /**
      * Photos analysed at once. CPU: one per core pair (each run is single-threaded); the 640 px model holds far more

@@ -71,7 +71,9 @@ on import on this PC (same native-DLL problem as ORT Java), so not even partitio
 rejects fp16, next step is a QDQ (int8 / a16w8) export for the HTP. First device run (SM7550): QNN loaded only after
 declaring `libcdsprpc.so` / `libOpenCL.so` as `uses-native-library`; HTP rejected the YOLO box-decoding ops, GPU the
 DFL Softmax, so the bundled models are now cut before decoding (`split_head.py`, Kotlin `YoloHeadDecoder`). Speed
-test "Copy details" gives the QNN log lines.
+test "Copy details" gives the QNN log lines. Second run: GPU worked (640m 2.10 photos/s vs CPU 1.27), HTP rejected every
+float op even at fp16 (error 3110), so the NPU now loads QDQ copies (`nudenet_*_qdq.onnx`, A16W8, `quantize_qnn.py`;
+identical counts to float on 45 held-out photos).
 
 ## Eval tooling (tools/face-eval)
 
