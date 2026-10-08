@@ -43,12 +43,15 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
   left/right half of the screen to seek back/forward 10 seconds** (with a
   brief on-screen confirmation), same as most video apps.
 - **Full-screen image viewer** with swipe between images, pinch-to-zoom,
-  and double-tap to zoom.
+  and double-tap to zoom. The **"i" button** shows the file's details: full path, size, dates,
+  resolution, and camera EXIF / GPS for photos or duration / bitrate for videos.
+- **Works with 3-button and gesture navigation**, portrait and landscape: controls stay clear of the
+  navigation bar, the status bar and camera cutouts.
 - **On-Device Facial Recognition (Google Photos style)** — Discover and group
   people in your photos completely offline with zero server calls.
   - **People & Pets view**: circular face avatar previews, editable names
     (e.g. "Mom", "Alice"), and instant photo count. Tap any person to view
-    all their photos. Fix mistakes like in Google Photos: long-press people to
+    all their photos, in a grid or full-width list with the fast-scroll bar. Fix mistakes like in Google Photos: long-press people to
     **merge** them, or select photos in a person and mark them **Not this person**
     (remembered, so they are never grouped back). **Regroup people** rebuilds
     everything you haven't named.
@@ -62,7 +65,7 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
     (int8) embeddings and average-linkage clustering, measured on real photos (LFW, cross-pose
     and cross-age LFW) and CGI renders (DigiFace-1M, including 72 renders per character with
     varied expression, lighting and synthetic hand/food occlusion) at 99%+ grouping precision
-    (BCubed). Borderline pairs are asked as **"Same person?"** instead of guessed - details in
+    (BCubed). Borderline pairs are asked as **"Same person?"** (with an `n / total` counter) instead of guessed - details in
     `tools/face-eval/README.md`.
   - **Engineered for 10,000-20,000+ photos**: SCRFD detector + AdaFace run through ONNX
     Runtime; a parallel decode/analyse/write pipeline; clustering on an ONNX

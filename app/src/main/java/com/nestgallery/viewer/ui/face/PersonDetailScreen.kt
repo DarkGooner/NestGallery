@@ -18,7 +18,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -27,6 +31,8 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PlayCircle
@@ -59,6 +65,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.nestgallery.viewer.ui.FastScrollbar
 import com.nestgallery.viewer.ui.HoldPreviewOverlay
 import com.nestgallery.viewer.ui.holdPreviewGestures
 import coil.request.ImageRequest
@@ -70,12 +77,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.nestgallery.viewer.ui.ScreenInsets
+import com.nestgallery.viewer.ui.TopBarInsets
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PersonDetailScreen(
     personId: Long,
     folderPath: String? = null,
+    listMode: Boolean = false,
+    onToggleViewMode: () -> Unit = {},
     onBack: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit
 ) {
@@ -94,6 +105,8 @@ fun PersonDetailScreen(
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showRemoveDialog by remember { mutableStateOf(false) }
+    val gridState = rememberLazyGridState()
+    val listState = rememberLazyListState()
 
     fun loadData() {
         scope.launch {
@@ -119,8 +132,10 @@ fun PersonDetailScreen(
     val currentPerson = person
 
     Scaffold(
+        contentWindowInsets = ScreenInsets,
         topBar = {
             if (selecting) TopAppBar(
+                windowInsets = TopBarInsets,
                 title = { Text(if (selected.isEmpty()) "Select photos" else "${selected.size} selected") },
                 navigationIcon = {
                     IconButton(onClick = { selecting = false; selected = emptySet() }) {
@@ -135,6 +150,7 @@ fun PersonDetailScreen(
                     }
                 }
             ) else TopAppBar(
+                windowInsets = TopBarInsets,
                 title = {
                     Text(
                         currentPerson?.name ?: "Person",
@@ -148,6 +164,10 @@ fun PersonDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onToggleViewMode) {
+                        if (listMode) Icon(Icons.Default.GridView, contentDescription = "Grid view")
+                        else Icon(Icons.Default.ViewAgenda, contentDescription = "List view")
+                    }
                     TextButton(onClick = { selecting = true }, enabled = mediaEntries.isNotEmpty()) { Text("Select") }
                     IconButton(
                         onClick = {
@@ -232,65 +252,56 @@ fun PersonDetailScreen(
                     )
                 }
             } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 110.dp),
-                    contentPadding = PaddingValues(2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    itemsIndexed(mediaEntries, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
-                        val path = entry.file.absolutePath
-                        val isSelected = path in selected
-                        Box(
-                            modifier = Modifier
-                                .aspectRatio(1f)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .then(
-                                    if (selecting) Modifier.clickable { selected = if (isSelected) selected - path else selected + path }
-                                    else Modifier.holdPreviewGestures(
-                                        key = entry.file,
-                                        onClick = { onOpenImage(mediaEntries, index) },
-                                        onHoldStart = { previewEntry = entry },
-                                        onHoldEnd = { previewEntry = null }
-                                    )
-                                )
-                        ) {
-                            AsyncImage(
-                                model = ImageRequest.Builder(context)
-                                    .data(entry.file)
-                                    .crossfade(true)
-                                    .build(),
-                                contentDescription = entry.name,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
-                            if (entry.isVideo) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(Color.Black.copy(alpha = 0.25f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.PlayCircle,
-                                        contentDescription = "Video",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(28.dp)
-                                    )
-                                }
-                            }
-                            if (selecting) {
-                                if (isSelected) Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)))
-                                Icon(
-                                    if (isSelected) Icons.Default.CheckCircle else Icons.Outlined.Circle,
-                                    contentDescription = if (isSelected) "Selected" else "Not selected",
-                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else Color.White,
-                                    modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp)
+                fun open(index: Int) = onOpenImage(mediaEntries, index)
+                Box(Modifier.fillMaxSize()) {
+                    if (listMode) {
+                        LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                            itemsIndexed(mediaEntries, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
+                                PersonPhoto(
+                                    entry = entry, square = false, selecting = selecting,
+                                    isSelected = entry.file.absolutePath in selected,
+                                    onToggleSelect = { selected = selected.toggle(entry.file.absolutePath) },
+                                    onClick = { open(index) },
+                                    onHoldStart = { previewEntry = entry }, onHoldEnd = { previewEntry = null },
+                                    modifier = Modifier.padding(bottom = 12.dp)
                                 )
                             }
                         }
+                        FastScrollbar(
+                            itemCount = mediaEntries.size,
+                            visibleCount = listState.layoutInfo.visibleItemsInfo.size,
+                            firstVisibleIndex = listState.firstVisibleItemIndex,
+                            isScrolling = listState.isScrollInProgress,
+                            onDragToIndex = { index -> scope.launch { listState.scrollToItem(index) } },
+                            modifier = Modifier.align(Alignment.CenterEnd)
+                        )
+                    } else {
+                        LazyVerticalGrid(
+                            state = gridState,
+                            columns = GridCells.Adaptive(minSize = 110.dp),
+                            contentPadding = PaddingValues(2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            gridItemsIndexed(mediaEntries, key = { _, entry -> entry.file.absolutePath }) { index, entry ->
+                                PersonPhoto(
+                                    entry = entry, square = true, selecting = selecting,
+                                    isSelected = entry.file.absolutePath in selected,
+                                    onToggleSelect = { selected = selected.toggle(entry.file.absolutePath) },
+                                    onClick = { open(index) },
+                                    onHoldStart = { previewEntry = entry }, onHoldEnd = { previewEntry = null }
+                                )
+                            }
+                        }
+                        FastScrollbar(
+                            itemCount = mediaEntries.size,
+                            visibleCount = gridState.layoutInfo.visibleItemsInfo.size,
+                            firstVisibleIndex = gridState.firstVisibleItemIndex,
+                            isScrolling = gridState.isScrollInProgress,
+                            onDragToIndex = { index -> scope.launch { gridState.scrollToItem(index) } },
+                            modifier = Modifier.align(Alignment.CenterEnd)
+                        )
                     }
                 }
             }
@@ -378,5 +389,59 @@ fun PersonDetailScreen(
             },
             dismissButton = { TextButton(onClick = { showRemoveDialog = false }) { Text("Cancel") } }
         )
+    }
+}
+
+private fun Set<String>.toggle(path: String) = if (path in this) this - path else this + path
+
+/**
+ * One of the person's photos: a square crop in the grid, the whole photo at full width in the list. In select mode a
+ * tap toggles it; otherwise tap opens it and holding shows the preview.
+ */
+@Composable
+private fun PersonPhoto(
+    entry: DocEntry,
+    square: Boolean,
+    selecting: Boolean,
+    isSelected: Boolean,
+    onToggleSelect: () -> Unit,
+    onClick: () -> Unit,
+    onHoldStart: () -> Unit,
+    onHoldEnd: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (square) Modifier.aspectRatio(1f).clip(RoundedCornerShape(4.dp)) else Modifier)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(
+                if (selecting) Modifier.clickable(onClick = onToggleSelect)
+                else Modifier.holdPreviewGestures(key = entry.file, onClick = onClick, onHoldStart = onHoldStart, onHoldEnd = onHoldEnd)
+            )
+    ) {
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current).data(entry.file).crossfade(true).build(),
+            contentDescription = entry.name,
+            contentScale = if (square) ContentScale.Crop else ContentScale.FillWidth,
+            modifier = if (square) Modifier.fillMaxSize() else Modifier.fillMaxWidth()
+        )
+        if (entry.isVideo) {
+            Box(
+                modifier = Modifier.matchParentSize().background(Color.Black.copy(alpha = 0.25f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PlayCircle, contentDescription = "Video", tint = Color.White, modifier = Modifier.size(if (square) 28.dp else 56.dp))
+            }
+        }
+        if (selecting) {
+            if (isSelected) Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)))
+            Icon(
+                if (isSelected) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                contentDescription = if (isSelected) "Selected" else "Not selected",
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else Color.White,
+                modifier = Modifier.align(Alignment.TopEnd).padding(6.dp).size(22.dp)
+            )
+        }
     }
 }

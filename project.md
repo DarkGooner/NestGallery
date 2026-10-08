@@ -176,7 +176,7 @@ Pipeline: `decode (EXIF-correct, >=800px)` -> `SCRFD detect` -> `5-point similar
 3. *Attach*: a face still alone joins the person it matches best on average if that is >= `attachThreshold` (0.33) **and** beats the runner-up by `attachMargin` (0.06); ambiguous faces stay ungrouped instead of being guessed.
 4. *Ids*: a regrouped person takes back the old id it overlaps most (largest overlaps first), so "Person 12" stays Person 12.
 5. *Constraints* (every merge and attach): faces of one photo are different people; two named people never merge; people answered "different" (`person_not_same`) never merge; a face the user removed from a person never returns to it (`face_rejections`).
-6. *"Same person?"* (`PeopleClusterer.suggestMerges`, card at the top of the People tab): pairs of people with average linkage in [`askThreshold` 0.36, 0.42), best first. In that band the score cannot tell one character split by lighting/expression from two look-alike characters, so the user decides: *Same person* merges (target locked), *Different* records the pair and locks both, *Skip* hides it until the screen is reopened.
+6. *"Same person?"* (`PeopleClusterer.suggestMerges`, card at the top of the People tab): pairs of people with average linkage in [`askThreshold` 0.36, 0.42), best first. In that band the score cannot tell one character split by lighting/expression from two look-alike characters, so the user decides: *Same person* merges (target locked), *Different* records the pair and locks both, *Skip* hides it until the user leaves the folder's face screen. All pairs are listed (no cap), and the card shows `n / total`; progress and skips live in `ReviewSession` so opening a person from the card and coming back keeps them.
 
 Why not the previous Immich-style DBSCAN: it is single-link, so one look-alike face chains two people together, and its "reconcile" step merged any groups that touched. On CGI renders (where different characters look much more alike than real people) its pairwise precision was 0.035 - a few groups swallowed many characters. Average linkage: 0.996.
 
@@ -225,6 +225,20 @@ Every grouping run regroups all people the user has not curated (that costs a ne
   - Horizontal swipe pager (`HorizontalPager`) across the media set.
   - `ZoomableImage`: Pinch-to-zoom, double-tap zoom, and panning using Compose pointer gestures.
   - `VideoPlayer`: Custom LibVLC-backed playback controls with scrubbing bar, play/pause, timecode, and scrubbing preview window.
+  - **"i" button** (top right, photos and videos) opens `MediaInfoSheet`.
+
+#### [`app/src/main/java/com/nestgallery/viewer/ui/MediaInfoSheet.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/MediaInfoSheet.kt)
+- **Role**: The viewer's details bottom sheet (text is selectable).
+- **Functionality**: name, full path, size, modified date for every file; photos add displayed resolution / megapixels,
+  type, rotation and EXIF (taken, camera, aperture, exposure, ISO, focal length, software, GPS) via the platform
+  `ExifInterface`; videos add resolution, duration, bitrate, type, recorded date and location via `MediaMetadataRetriever`.
+
+#### [`app/src/main/java/com/nestgallery/viewer/ui/Insets.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/Insets.kt)
+- **Role**: Window insets for the edge-to-edge app. `ScreenInsets` (= `safeDrawing`) is every `Scaffold`'s
+  `contentWindowInsets`, `TopBarInsets` every `TopAppBar`'s `windowInsets`; full-screen viewer chrome uses
+  `safeDrawingPadding()`. Material's defaults leave out display cutouts, which the activity draws into in landscape, and
+  the 3-button navigation bar moves to the side in landscape - so new screens should use these, not `statusBarsPadding()`
+  / `navigationBarsPadding()` alone.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/SearchScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/SearchScreen.kt)
 - **Role**: Filename and path search interface.
@@ -255,7 +269,7 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 - **Role**: Scoped facial recognition hub for the active recursive exploration.
 - **Functionality**:
   - **Tabs**:
-    1. **People**: Detected people with photo counts and circular cover thumbnails. Long-press to multi-select, then **Merge**.
+    1. **People**: Detected people with photo counts and circular cover thumbnails. Long-press to multi-select, then **Merge**. A **"Same person?"** card on top asks about borderline pairs (see the face section above).
     2. **Find by Face**: Reverse image search. Pick a photo, choose one of its faces; shows "Looks like" people suggestions and ranked matching photos in the folder, badges coloured by confidence band (strong / likely / possible).
   - **Control Bar**: Real-time progress bar, item counters, Pause/Resume, and Rescan buttons. Overflow menu: **Regroup people**.
   - **Dialogs**: rename, merge confirmation, regroup confirmation.
@@ -264,7 +278,8 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 - **Role**: Detailed gallery of photos containing a specific person cluster.
 - **Functionality**:
   - Displays circular hero cover and cluster statistics.
-  - Grid of all photos in which this person's face was identified.
+  - All photos in which this person's face was identified, as a square grid or a full-width list (toggle in the top
+    bar; the choice is held in `MainActivity` so it sticks across people), with the shared `FastScrollbar`.
   - **Select** -> **Not this person**: removes the selected photos from the person and remembers it (they are never grouped back into this person).
   - Rename and hide-person actions (all routed through `FaceScannerManager` so the in-memory index stays in sync).
 

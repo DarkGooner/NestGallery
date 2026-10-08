@@ -50,6 +50,10 @@ import com.nestgallery.viewer.ui.SearchScreen
 import com.nestgallery.viewer.ui.face.FolderFaceScreen
 import com.nestgallery.viewer.ui.face.PersonDetailScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 
 private sealed class Screen {
     data object NeedsPermission : Screen()
@@ -122,6 +126,7 @@ private fun NestGalleryApp() {
     }
     var hideHidden by remember { mutableStateOf(true) }
     var listMode by remember { mutableStateOf(true) }
+    var personListMode by remember { mutableStateOf(false) } // a person's photos: grid by default, own toggle
     var showNames by remember { mutableStateOf(true) }
 
     fun onAccessGranted() {
@@ -262,6 +267,8 @@ private fun NestGalleryApp() {
                 PersonDetailScreen(
                     personId = s.personId,
                     folderPath = s.folderPath,
+                    listMode = personListMode,
+                    onToggleViewMode = { personListMode = !personListMode },
                     onBack = { screen = s.returnTo },
                     onOpenImage = { images, index ->
                         screen = Screen.Viewer(images, index, returnTo = s)
@@ -277,10 +284,12 @@ private fun PermissionPrompt(onGrant: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .safeDrawingPadding()
             .padding(32.dp),
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.verticalScroll(rememberScrollState())) {
             Text(
                 "NestGallery needs storage access",
                 style = MaterialTheme.typography.titleMedium,
