@@ -71,7 +71,37 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
     Runtime; a parallel decode/analyse/write pipeline; clustering on an ONNX
     k-nearest-neighbour graph that keeps people you named or corrected exactly as you left them; an int8
     in-memory index that searches 50k faces in tens of milliseconds. Everything is local.
+- **NSFW scan and filters** (recursive view, fully on-device): see below.
 - Dark theme with Material You dynamic color on Android 12+.
+
+## NSFW scan
+
+In the recursive view (tree icon), the **E** button scans every photo in the folder and all its subfolders with two
+on-device detectors, and the **filter** button that appears next to it narrows the view by what was found.
+
+- **What is detected**: NudeNet v3 (`FACE_FEMALE`, `FACE_MALE`, `FEMALE_BREAST_EXPOSED` / `_COVERED`,
+  `FEMALE_GENITALIA_EXPOSED` / `_COVERED`, `MALE_GENITALIA_EXPOSED`, `BUTTOCKS_*`, `ANUS_*`, `BELLY_*`, `ARMPITS_*`,
+  `FEET_*`, `MALE_BREAST_EXPOSED`) and EraX-NSFW (`MAKE_LOVE` = a sex act, `PENIS`, `VAGINA`, `NIPPLE`, `ANUS`). Each
+  photo's result has the shape `{"width", "height", "labels", "detections": [{"label", "score", "box": [x, y, w, h]}],
+  "ms"}` (`NsfwResult.toJson()`), and the viewer's **i** sheet shows its tag string, e.g.
+  `2FACE_FEMALE, 1MALE_GENITALIA_EXPOSED, 1FEMALE_BREAST_COVERED`.
+- **Scanning** runs in the background like the face scan: a notification with progress, photos/s and time left,
+  Pause / Resume / Stop, and a progress card at the bottom of the folder view (count, rate, time left, current file).
+  Results are saved as they come in, so the filters work while the scan is still running, a stopped scan resumes where
+  it stopped, and later scans only look at new or changed photos (path + size + modified time). Videos are skipped.
+- **Filters**: one range slider per label found in the folder, from 0 to the highest count in any photo. A photo is
+  shown only if its count is inside **every** narrowed slider (e.g. Face female 2-2 = exactly two women's faces;
+  add Make love 1+ for "...and a sex act"). Sliders at full range don't filter. **Minimum confidence** (default 45%)
+  decides which detections count - changing it never needs a rescan, because every detection down to 25% is stored.
+  **Clear filters** resets them; tapping a photo opens the viewer on the filtered set.
+- **Models** are bundled in `app/src/main/assets`: `nudenet_320n.onnx` (12 MB) and `erax_nsfw_yolo11n.onnx` (11 MB). No
+  download, no network. To use different ones (e.g. a bigger EraX export), replace the file, update `NsfwModels` in
+  `data/nsfw/NsfwDetector.kt` (asset name, input size, labels) and change `MODEL_ID` - stored results of other models
+  are discarded and rescanned. Where the models come from and how they were checked: `tools/nsfw-eval/README.md`.
+  Licences: NudeNet is AGPL-3.0, EraX-NSFW Apache-2.0.
+- **Accuracy**: no detector is perfect, especially on drawings and 3D renders; expect misses and false hits around the
+  threshold. The pipeline was checked against NudeNet's reference code, but recall on explicit images has not been
+  measured.
 
 ## Setup: just push
 

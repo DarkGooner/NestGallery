@@ -37,6 +37,11 @@
             android:name=".data.face.FaceScanService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".data.nsfw.NsfwScanService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

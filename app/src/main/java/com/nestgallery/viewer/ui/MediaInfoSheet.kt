@@ -26,7 +26,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.content.Context
 import com.nestgallery.viewer.data.DocEntry
+import com.nestgallery.viewer.data.nsfw.NsfwScannerManager
+import com.nestgallery.viewer.ui.nsfw.NsfwFilterState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
@@ -44,7 +47,7 @@ fun MediaInfoSheet(entry: DocEntry, onDismiss: () -> Unit) {
     val context = LocalContext.current
     var details by remember(entry.file) { mutableStateOf<List<Pair<String, String>>?>(null) }
     LaunchedEffect(entry.file) {
-        details = withContext(Dispatchers.IO) { mediaDetails(entry, Formatter.formatFileSize(context, entry.file.length())) }
+        details = withContext(Dispatchers.IO) { mediaDetails(entry, Formatter.formatFileSize(context, entry.file.length())) + nsfwDetails(context, entry) }
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -77,6 +80,16 @@ private fun mediaDetails(entry: DocEntry, sizeText: String): List<Pair<String, S
     out += "Modified" to dateFormat.format(Date(f.lastModified()))
     runCatching { if (entry.isVideo) videoDetails(f.absolutePath, out) else imageDetails(f.absolutePath, out) }
     return out
+}
+
+/** The photo's NSFW scan result as a tag string ("2FACE_FEMALE, 1BELLY_EXPOSED"), if it has been scanned. */
+private suspend fun nsfwDetails(context: Context, entry: DocEntry): List<Pair<String, String>> {
+    if (entry.isVideo) return emptyList()
+    val nsfw = NsfwScannerManager.getInstance(context)
+    nsfw.ensureLoaded()
+    val r = nsfw.result(entry.file.absolutePath)?.takeIf { it.decoded } ?: return emptyList()
+    val threshold = NsfwFilterState.DEFAULT_THRESHOLD
+    return listOf("NSFW tags (≥ ${(threshold * 100).toInt()}%)" to r.tagString(threshold).ifEmpty { "Nothing detected" })
 }
 
 private fun imageDetails(path: String, out: MutableList<Pair<String, String>>) {

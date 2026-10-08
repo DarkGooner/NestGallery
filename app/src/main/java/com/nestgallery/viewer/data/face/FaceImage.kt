@@ -19,14 +19,15 @@ object FaceImageLoader {
     /** The decoded bitmap's long side lands in [MIN_LONG_SIDE, 2*MIN_LONG_SIDE). */
     const val MIN_LONG_SIDE = 800
 
-    fun decodeFile(file: File): Bitmap? {
+    /** @param minLongSide the decode's long side lands in [minLongSide, 2*minLongSide) (or the photo's own size if smaller) */
+    fun decodeFile(file: File, minLongSide: Int = MIN_LONG_SIDE): Bitmap? {
         if (!file.exists() || file.length() == 0L) return null
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.absolutePath, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
             val opts = BitmapFactory.Options().apply {
-                inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight)
+                inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, minLongSide)
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
             val bmp = BitmapFactory.decodeFile(file.absolutePath, opts) ?: return null
@@ -50,10 +51,10 @@ object FaceImageLoader {
         bmp?.let { upright(it, orientation) }
     } catch (e: OutOfMemoryError) { null } catch (e: Exception) { null }
 
-    private fun sampleSize(w: Int, h: Int): Int {
+    private fun sampleSize(w: Int, h: Int, minLongSide: Int = MIN_LONG_SIDE): Int {
         var s = 1
         val longSide = max(w, h)
-        while (longSide / (s * 2) >= MIN_LONG_SIDE) s *= 2
+        while (longSide / (s * 2) >= minLongSide) s *= 2
         return s
     }
 

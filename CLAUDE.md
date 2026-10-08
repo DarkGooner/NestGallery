@@ -53,6 +53,15 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
   new x all) is the planned follow-up; the user said accuracy first, speed later.
 - Not done: real Daz3D / Blender / Honey Select test images (DigiFace is the stand-in), learned clustering, anime.
 
+## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`, 2026-10-08)
+
+Recursive view only (`ExploreScreen`): NudeNet 320n @ 320 + EraX YOLO11n @ 640 -> `YoloDecoder` -> `nest_nsfw.db` +
+in-memory map -> per-label RangeSliders (AND). Mirrors the face scan (manager + foreground service), not Room/WorkManager.
+NMS is within `NsfwLabels.nmsGroup` (not across all classes like nudenet.py, not per class); the counting threshold
+(default 0.45) is applied at load time, every box >= 0.25 is stored. Change models -> bump `NsfwModels.MODEL_ID`.
+`tools/nsfw-eval/README.md` has the checks (pipeline vs nudenet.py on COCO/LFW, timings). Not verified on a phone; no
+explicit-image accuracy measured. Export venv: `%USERPROFILE%\nsfw-export-venv` (torch CPU + ultralytics).
+
 ## Eval tooling (tools/face-eval)
 
 See its README. Data in `$FACE_EVAL_DATA` = `%USERPROFILE%\face-eval-data`; venvs `%USERPROFILE%\face-eval-venv`

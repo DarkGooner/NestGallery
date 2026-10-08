@@ -15,3 +15,4 @@ captures/
 
 # face-eval embedding cache (tools/face-eval/embed.py)
 /tools/face-eval/emb/
+__pycache__/
