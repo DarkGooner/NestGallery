@@ -68,7 +68,10 @@ NSFW models can run on the Snapdragon NPU (QNN HTP, fp32 model at fp16, static 6
 or GPU (QNN, experimental), with CPU fallback and a native-crash marker; Settings has a speed test. User's phone:
 Snapdragon 7 Gen 3, 12 GB. **Untested on any device**: the x64 `onnxruntime-qnn` 1.22 wheel (HTP simulator) segfaults
 on import on this PC (same native-DLL problem as ORT Java), so not even partitioning was checked offline. If the NPU
-rejects fp16, next step is a QDQ (int8 / a16w8) export for the HTP.
+rejects fp16, next step is a QDQ (int8 / a16w8) export for the HTP. First device run (SM7550): QNN loaded only after
+declaring `libcdsprpc.so` / `libOpenCL.so` as `uses-native-library`; HTP rejected the YOLO box-decoding ops, GPU the
+DFL Softmax, so the bundled models are now cut before decoding (`split_head.py`, Kotlin `YoloHeadDecoder`). Speed
+test "Copy details" gives the QNN log lines.
 
 ## Eval tooling (tools/face-eval)
 

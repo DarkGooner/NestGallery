@@ -1,6 +1,7 @@
 package com.nestgallery.viewer.data.nsfw
 
 import java.util.Locale
+import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -158,6 +159,65 @@ object YoloDecoder {
         val inter = ix * iy
         val union = (a.x2 - a.x1) * (a.y2 - a.y1) + (b.x2 - b.x1) * (b.y2 - b.y1) - inter
         return if (union <= 0f) 0f else inter / union
+    }
+}
+
+/**
+ * The box decoding the bundled models no longer contain (tools/nsfw-eval/split_head.py cuts it off, because the
+ * Snapdragon NPU / GPU reject it): turns the Detect head's per-stride maps into the full model's [4 + classes, anchors]
+ * output for [YoloDecoder]. That is Ultralytics' DFL (softmax over 16 distance bins, expected value) + dist2bbox
+ * (anchor at the cell centre, minus left/top, plus right/bottom, times the stride) + sigmoid on the classes.
+ * Matches the full model to ~0.0002 px / 2e-7 (split_head.py).
+ */
+object YoloHeadDecoder {
+    const val REG_MAX = 16
+
+    /**
+     * @param maps    per stride (8, 16, 32), [4 * REG_MAX + classes, h, w] row-major: box logits side-major (l, t, r, b
+     *                x 16 bins), then class logits
+     * @param inputHeight model input height; stride = inputHeight / h
+     * @param minScore anchors whose best class is below this get a zero box ([YoloDecoder] drops them anyway)
+     * @return (output in [YoloDecoder.decode]'s layout, anchor count)
+     */
+    fun decode(
+        maps: List<FloatArray>, heights: IntArray, widths: IntArray, classes: Int, inputHeight: Int,
+        minScore: Float = YoloDecoder.MIN_SCORE
+    ): Pair<FloatArray, Int> {
+        val total = maps.indices.sumOf { heights[it] * widths[it] }
+        val out = FloatArray((4 + classes) * total)
+        val dist = FloatArray(4)
+        var base = 0
+        for (k in maps.indices) {
+            val m = maps[k]; val h = heights[k]; val w = widths[k]; val hw = h * w
+            require(m.size >= (4 * REG_MAX + classes) * hw) { "head map $k has ${m.size} values" }
+            val stride = inputHeight.toFloat() / h
+            for (p in 0 until hw) {
+                val a = base + p
+                var best = 0f
+                for (c in 0 until classes) {
+                    val s = 1f / (1f + exp(-m[(4 * REG_MAX + c) * hw + p]))
+                    out[(4 + c) * total + a] = s
+                    if (s > best) best = s
+                }
+                if (best < minScore) continue
+                for (side in 0 until 4) {
+                    val off = side * REG_MAX * hw + p
+                    var mx = Float.NEGATIVE_INFINITY
+                    for (b in 0 until REG_MAX) mx = max(mx, m[off + b * hw])
+                    var sum = 0f; var acc = 0f
+                    for (b in 0 until REG_MAX) { val e = exp(m[off + b * hw] - mx); sum += e; acc += e * b }
+                    dist[side] = acc / sum
+                }
+                val ax = p % w + 0.5f; val ay = p / w + 0.5f
+                val x1 = ax - dist[0]; val y1 = ay - dist[1]; val x2 = ax + dist[2]; val y2 = ay + dist[3]
+                out[a] = (x1 + x2) / 2 * stride
+                out[total + a] = (y1 + y2) / 2 * stride
+                out[2 * total + a] = (x2 - x1) * stride
+                out[3 * total + a] = (y2 - y1) * stride
+            }
+            base += hw
+        }
+        return out to total
     }
 }
 

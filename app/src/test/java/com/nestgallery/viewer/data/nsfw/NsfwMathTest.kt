@@ -110,6 +110,37 @@ class NsfwMathTest {
         assertTrue(checked >= 10)
     }
 
+    /**
+     * The bundled models end at the Detect head (split_head.py); Kotlin does the box decoding. Real head maps of the
+     * cut 320n for two photos must give exactly the detections the full model gives.
+     */
+    @Test
+    fun headDecoderMatchesTheFullModel() {
+        val bb = ByteBuffer.wrap(javaClass.getResourceAsStream("/nsfw/nudenet_heads.bin")!!.readBytes()).order(ByteOrder.LITTLE_ENDIAN)
+        val expected = javaClass.getResourceAsStream("/nsfw/expected_heads.txt")!!.bufferedReader().readLines()
+            .filter { it.isNotBlank() }.map { it.split(' ') }
+        var checked = 0
+        repeat(bb.int) { k ->
+            val cw = bb.int; val ch = bb.int; val w = bb.int; val h = bb.int; val canvasH = bb.int
+            val maps = ArrayList<FloatArray>(); val hs = IntArray(3); val ws = IntArray(3)
+            for (j in 0 until 3) {
+                val c = bb.int; hs[j] = bb.int; ws[j] = bb.int
+                maps += FloatArray(c * hs[j] * ws[j]) { bb.float }
+            }
+            val (out, anchors) = YoloHeadDecoder.decode(maps, hs, ws, labels.size, canvasH)
+            val got = YoloDecoder.decode(out, anchors, labels, cw, ch, w, h).sortedByDescending { it.score }
+            val want = expected.filter { it[0].toInt() == k }
+            assertEquals("image $k detection count", want.size, got.size)
+            for ((e, d) in want.zip(got)) {
+                assertEquals(e[1], d.label)
+                assertEquals(e[2].toFloat(), d.score, 1e-5f)
+                assertEquals("image $k ${d.label} box", e.subList(3, 7).map { it.toInt() }, listOf(d.x, d.y, d.w, d.h))
+                checked++
+            }
+        }
+        assertTrue(checked >= 8)
+    }
+
     // ---- counting and filtering ---------------------------------------------------------------------------------
 
     private fun det(label: String, score: Float = 0.8f) = NsfwDetection(label, score, 0, 0, 10, 10)

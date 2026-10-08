@@ -82,7 +82,9 @@ class YoloDetector(context: Context, val model: NsfwModel, val accelerator: Nsfw
             else -> Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, null))
         }
         inputName = session.inputNames.first()
-        val classes = (session.outputInfo.values.first().info as TensorInfo).shape[1] - 4
+        // The bundled models end at the Detect head's three per-stride maps (box decoding is YoloHeadDecoder's job)
+        require(session.numOutputs == 3L) { "${model.asset}: ${session.numOutputs} outputs, expected the 3 head maps (tools/nsfw-eval/split_head.py)" }
+        val classes = (session.outputInfo.values.first().info as TensorInfo).shape[1] - 4 * YoloHeadDecoder.REG_MAX
         require(classes == model.labels.size.toLong()) { "${model.asset}: $classes classes, expected ${model.labels.size}" }
     }
 
@@ -147,17 +149,23 @@ class YoloDetector(context: Context, val model: NsfwModel, val accelerator: Nsfw
             }
         }
         val input = FloatBuffer.wrap(data, 0, 3 * plane).slice()
-        val (out, anchors) = OnnxTensor.createTensor(Ort.env, input, longArrayOf(1, 3, ch.toLong(), cw.toLong())).use { tensor ->
+        val maps = OnnxTensor.createTensor(Ort.env, input, longArrayOf(1, 3, ch.toLong(), cw.toLong())).use { tensor ->
             if (square) synchronized(runLock) { run(tensor) } else run(tensor)
         }
+        val (out, anchors) = YoloHeadDecoder.decode(
+            maps.map { it.first }, IntArray(3) { maps[it].second }, IntArray(3) { maps[it].third }, model.labels.size, ch
+        )
         return YoloDecoder.decode(out, anchors, model.labels, w, h, width, height)
     }
 
-    /** @return (raw output, anchor count) */
-    private fun run(tensor: OnnxTensor): Pair<FloatArray, Int> = session.run(mapOf(inputName to tensor)).use { result ->
-        val t = result.get(0) as OnnxTensor
-        val fb = t.floatBuffer
-        FloatArray(fb.remaining()).also { fb.get(it) } to t.info.shape[2].toInt()
+    /** @return the three head maps as (values, height, width), stride 8 first */
+    private fun run(tensor: OnnxTensor): List<Triple<FloatArray, Int, Int>> = session.run(mapOf(inputName to tensor)).use { result ->
+        List(3) { i ->
+            val t = result.get(i) as OnnxTensor
+            val shape = t.info.shape                                    // [1, 4*16 + classes, h, w]
+            val fb = t.floatBuffer
+            Triple(FloatArray(fb.remaining()).also { fb.get(it) }, shape[2].toInt(), shape[3].toInt())
+        }.sortedByDescending { it.second }                              // largest map = stride 8
     }
 
     fun close() = session.close()

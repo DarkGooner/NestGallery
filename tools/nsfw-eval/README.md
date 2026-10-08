@@ -5,6 +5,7 @@ Scripts behind the choices in `app/src/main/java/com/nestgallery/viewer/data/nsf
 | File | What it does |
 |---|---|
 | `compare.py` | Runs NudeNet's own pre/post-processing (copied from `nudenet` 3.4.2) and a line-for-line port of the app's pipeline on the same photos; reports matching detections, identical per-label counts and time per image. `--size 640` for 640m; `--extra model.onnx:size` times more models. |
+| `split_head.py` | Cuts a NudeNet export before its box decoding (the app's bundled models are cut: the Snapdragon NPU rejects the decoding ops and the GPU its DFL Softmax) and checks that decoding the head maps as the app does gives the full model's output: max difference 0.0002 px / 2e-7 on 100 (320n) and 60 (640m) photos. |
 | `make_fixture.py` | Writes `app/src/test/resources/nsfw/` (raw NudeNet 320n outputs + the port's detections) for `NsfwMathTest.matchesThePythonPipelineOnRealOutputs`, which makes the Kotlin decoder agree with the port exactly. |
 
 Environment used: `%USERPROFILE%\nsfw-export-venv` = Python 3.13, onnxruntime 1.22, opencv. Run scripts with `python -I`.
@@ -17,7 +18,14 @@ Environment used: `%USERPROFILE%\nsfw-export-venv` = Python 3.13, onnxruntime 1.
   from the Hugging Face mirror `SimonJoz/nudenet`, whose 320n is byte-identical to the PyPI one and whose 640m carries
   the same Ultralytics export metadata (8.2.46, exported 1.5 min after 320n). sha256 `04fe3d77...e634eb`.
 
-Both are Ultralytics exports with output `[1, 22, anchors]` and dynamic input size.
+Both are Ultralytics exports with dynamic input size. **The bundled files are cut by `split_head.py`**: outputs are
+the three per-stride head maps `[1, 64 + 18, H/s, W/s]` (strides 8, 16, 32), decoded by `YoloHeadDecoder` in Kotlin.
+sha256 of the cut files: 320n `8238c944...d81e6ff`, 640m `70b777d1...6a01d`.
+
+On the Snapdragon 7 Gen 3 (SM7550, motorola edge 50 pro, 2026-10-09) the full models failed on QNN: HTP rejected the
+decoding ops (StridedSlice / ElementWise* / Concat / Sigmoid of `/model.22/`, error 3110) and the split HTP + CPU
+session hit ORT's NHWC layout-transformer error; the GPU rejected only `/model.22/dfl/Softmax`. CPU: 1.54 photos/s
+for 640m with 4 photos at once.
 
 (EraX-NSFW-V1.0 YOLO11n was bundled for a day for its `make_love` class and removed on request on 2026-10-09. On the
 same photos it found nothing at all, i.e. no false positives on clean pictures, at 111 ms per photo @ 640.)

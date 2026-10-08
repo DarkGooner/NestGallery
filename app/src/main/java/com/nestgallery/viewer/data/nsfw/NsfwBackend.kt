@@ -109,7 +109,7 @@ internal object NsfwSessions {
     } catch (e: Exception) { "" }
 
     /** Bump with the onnxruntime-android-qnn / qnn-runtime versions: compiled graphs don't carry across them. */
-    private const val CACHE_VERSION = "ort1.22-qnn2.33-v2"
+    private const val CACHE_VERSION = "ort1.22-qnn2.33-v3"
 
     /**
      * Photos analysed at once. CPU: one per core pair (each run is single-threaded); the 640 px model holds far more

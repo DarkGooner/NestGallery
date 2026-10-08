@@ -63,6 +63,38 @@ def reference(sess, mat, size):
 
 # ---- the app's pipeline (keep in step with NsfwDetector.kt / YoloDecoder in NsfwMath.kt) ------------------------------
 
+REG_MAX = 16
+
+
+def decode_heads(maps, nc, in_h):
+    """Kotlin YoloHeadDecoder port: list of [1, 64+nc, h, w] -> [4+nc, A] like the full model's output."""
+    cols = []
+    for m in maps:
+        _, c, h, w = m.shape
+        stride = in_h / h
+        box = m[0, :4 * REG_MAX].reshape(4, REG_MAX, h * w)
+        e = np.exp(box - box.max(axis=1, keepdims=True))
+        dist = (e * np.arange(REG_MAX)[None, :, None]).sum(1) / e.sum(1)            # [4, A] l, t, r, b
+        ys, xs = np.mgrid[0:h, 0:w]
+        ax = xs.reshape(-1) + 0.5
+        ay = ys.reshape(-1) + 0.5
+        x1, y1 = ax - dist[0], ay - dist[1]
+        x2, y2 = ax + dist[2], ay + dist[3]
+        xywh = np.stack([(x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1]) * stride
+        cls = 1 / (1 + np.exp(-m[0, 4 * REG_MAX:].reshape(nc, h * w)))
+        cols.append(np.concatenate([xywh, cls]))
+    return np.concatenate(cols, axis=1)
+
+
+def model_output(sess, blob):
+    """[4+nc, A] like the full model, from either a full export or one cut before box decoding (split_head.py)."""
+    outs = sess.run(None, {sess.get_inputs()[0].name: blob})
+    if len(outs) == 1:
+        return outs[0]
+    nc = outs[0].shape[1] - 4 * REG_MAX
+    return decode_heads(outs, nc, blob.shape[2])[None]
+
+
 def app_preprocess(mat_bgr, size):
     h0, w0 = mat_bgr.shape[:2]
     scale = size / max(h0, w0)
@@ -120,8 +152,7 @@ def app_decode(out, nc, w1, h1, w0, h0, labels=NUDENET_LABELS):
 
 def app_detect(sess, mat, size, nc, labels=NUDENET_LABELS):
     blob, w1, h1 = app_preprocess(mat, size)
-    out = sess.run(None, {sess.get_inputs()[0].name: blob})[0]
-    return app_decode(out, nc, w1, h1, mat.shape[1], mat.shape[0], labels)
+    return app_decode(model_output(sess, blob), nc, w1, h1, mat.shape[1], mat.shape[0], labels)
 
 
 # ---- comparison ----------------------------------------------------------------------------------------------------
@@ -196,7 +227,7 @@ def main():
         m, s = e.rsplit(":", 1); timed.append((m, int(s)))
     for path, size in timed:
         s2 = session(path)
-        nc = s2.get_outputs()[0].shape[1] - 4
+        nc = 18
         t = time.perf_counter(); hits = 0
         for p in imgs:
             mat = cv2.imread(p)
