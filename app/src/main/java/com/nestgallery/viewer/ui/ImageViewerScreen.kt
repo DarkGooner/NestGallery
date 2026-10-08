@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
@@ -92,6 +93,7 @@ fun ImageViewerScreen(
 ) {
     val pagerState = rememberPagerState(initialPage = startIndex) { images.size }
     var chromeVisible by remember { mutableStateOf(true) }
+    var infoEntry by remember { mutableStateOf<DocEntry?>(null) }
     val currentEntry = images[pagerState.currentPage]
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -102,7 +104,8 @@ fun ImageViewerScreen(
                     entry = entry,
                     chromeVisible = chromeVisible,
                     onChromeVisibleChange = { chromeVisible = it },
-                    onDismiss = onDismiss
+                    onDismiss = onDismiss,
+                    onInfo = { infoEntry = entry }
                 )
             } else {
                 ZoomableImage(entry = entry, onTap = { chromeVisible = !chromeVisible })
@@ -122,6 +125,9 @@ fun ImageViewerScreen(
                 IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart)) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
                 }
+                IconButton(onClick = { infoEntry = currentEntry }, modifier = Modifier.align(Alignment.TopEnd)) {
+                    Icon(Icons.Outlined.Info, contentDescription = "Details", tint = Color.White)
+                }
                 Text(
                     text = "${pagerState.currentPage + 1} / ${images.size}  ·  ${currentEntry.name}",
                     color = Color.White,
@@ -130,6 +136,8 @@ fun ImageViewerScreen(
                 )
             }
         }
+
+        infoEntry?.let { MediaInfoSheet(entry = it, onDismiss = { infoEntry = null }) }
     }
 }
 
@@ -193,7 +201,8 @@ private fun VideoPlayer(
     entry: DocEntry,
     chromeVisible: Boolean,
     onChromeVisibleChange: (Boolean) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onInfo: () -> Unit
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(true) }
@@ -374,10 +383,13 @@ private fun VideoPlayer(
                         .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)))
                 )
                 Box(
-                    Modifier.statusBarsPadding().padding(8.dp)
+                    Modifier.fillMaxWidth().statusBarsPadding().padding(8.dp)
                 ) {
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Close", tint = Color.White)
+                    }
+                    IconButton(onClick = onInfo, modifier = Modifier.align(Alignment.TopEnd)) {
+                        Icon(Icons.Outlined.Info, contentDescription = "Details", tint = Color.White)
                     }
                 }
                 

@@ -2,6 +2,7 @@ package com.nestgallery.viewer.ui.face
 
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -31,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items as rowItems
 import androidx.compose.foundation.rememberScrollState
@@ -117,6 +119,17 @@ import java.io.File
 import kotlin.math.roundToInt
 
 /**
+ * "Same person?" progress in one folder. Opening a person from the card replaces this screen and coming back builds it
+ * anew, so the count and the skipped questions live here until the user leaves the folder's face screen.
+ */
+private class ReviewSession(val folder: String) {
+    var answered by mutableIntStateOf(0)
+    var skipped: Set<Pair<Long, Long>> = emptySet()
+}
+
+private var reviewSession: ReviewSession? = null
+
+/**
  * Scoped Face Recognition screen for Recursive Explorer.
  * Runs face scanning, ArcFace-based grouping, and reverse face search
  * strictly within the explored folder tree.
@@ -159,17 +172,30 @@ fun FolderFaceScreen(
     var matchResults by remember { mutableStateOf<List<FaceMatch>>(emptyList()) }
     var matchedDocEntries by remember { mutableStateOf<List<DocEntry>>(emptyList()) }
 
-    // "Same person?" questions (best first); skipped ones stay hidden until the screen is reopened
+    // "Same person?" questions (best first); skipped ones stay hidden until the user leaves this folder's face screen
     var suggestions by remember { mutableStateOf<List<MergeSuggestion>>(emptyList()) }
-    var skipped by remember { mutableStateOf<Set<Pair<Long, Long>>>(emptySet()) }
+    val review = remember(root.file.absolutePath) {
+        reviewSession?.takeIf { it.folder == root.file.absolutePath } ?: ReviewSession(root.file.absolutePath).also { reviewSession = it }
+    }
+    val peopleGrid = rememberLazyGridState()
 
     fun refreshPeople() {
         scope.launch {
-            people = withContext(Dispatchers.IO) { db.getPeopleInFolder(root.file.absolutePath) }
+            val loaded = withContext(Dispatchers.IO) { db.getPeopleInFolder(root.file.absolutePath) }
+            val questions = scanner.mergeSuggestions(root.file.absolutePath).filter { (it.a.id to it.b.id) !in review.skipped }
+            // set together: people first and the card a moment later kept the grid on the first person, card above it
+            people = loaded
+            suggestions = questions
+            if (questions.isEmpty()) review.answered = 0
             selectedPeople = selectedPeople.filter { id -> people.any { it.id == id } }.toSet()
-            suggestions = scanner.mergeSuggestions(root.file.absolutePath).filter { (it.a.id to it.b.id) !in skipped }
         }
     }
+
+    fun leave() {
+        reviewSession = null
+        onBack()
+    }
+    BackHandler { leave() }
 
     LaunchedEffect(root.file.absolutePath) {
         refreshPeople()
@@ -270,7 +296,7 @@ fun FolderFaceScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = { leave() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -380,27 +406,36 @@ fun FolderFaceScreen(
                         }
                     }
                 } else {
+                    val idle = scanStatus is ScanStatus.Idle || scanStatus is ScanStatus.Completed
+                    val question = suggestions.firstOrNull()
+                    val showQuestion = question != null && idle && selectedPeople.isEmpty()
+                    // the card is inserted above the people; if the grid was at the top, keep it at the top so the card shows
+                    LaunchedEffect(showQuestion) {
+                        if (showQuestion && peopleGrid.firstVisibleItemIndex == 0) peopleGrid.scrollToItem(0)
+                    }
                     LazyVerticalGrid(
+                        state = peopleGrid,
                         columns = GridCells.Adaptive(minSize = 105.dp),
                         contentPadding = PaddingValues(16.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        val idle = scanStatus is ScanStatus.Idle || scanStatus is ScanStatus.Completed
-                        val question = suggestions.firstOrNull()
-                        if (question != null && idle && selectedPeople.isEmpty()) {
+                        if (showQuestion && question != null) {
                             item(key = "same-person", span = { GridItemSpan(maxLineSpan) }) {
                                 SamePersonCard(
                                     suggestion = question,
-                                    remaining = suggestions.size,
+                                    number = review.answered + 1,
+                                    total = review.answered + suggestions.size,
                                     onOpenPerson = onOpenPerson,
                                     onAnswer = { same ->
+                                        review.answered++
                                         suggestions = suggestions.drop(1)
                                         scope.launch { scanner.answerSuggestion(question, same); refreshPeople() }
                                     },
                                     onSkip = {
-                                        skipped = skipped + (question.a.id to question.b.id)
+                                        review.answered++
+                                        review.skipped = review.skipped + (question.a.id to question.b.id)
                                         suggestions = suggestions.drop(1)
                                     }
                                 )
@@ -800,7 +835,8 @@ private fun SuggestedPersonChip(match: PersonMatch, onClick: () -> Unit) {
 @Composable
 private fun SamePersonCard(
     suggestion: MergeSuggestion,
-    remaining: Int,
+    number: Int,
+    total: Int,
     onOpenPerson: (Long) -> Unit,
     onAnswer: (same: Boolean) -> Unit,
     onSkip: () -> Unit
@@ -813,7 +849,7 @@ private fun SamePersonCard(
         Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text("Same person?", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                if (remaining > 1) Text("$remaining to review", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
+                if (total > 1) Text("$number / $total", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {

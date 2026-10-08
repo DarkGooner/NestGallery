@@ -316,8 +316,8 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         refreshCover(target)
     }
 
-    /** "Same person?" questions for the people shown in [folderPath], most likely first. */
-    suspend fun mergeSuggestions(folderPath: String, max: Int = 30): List<MergeSuggestion> = withContext(Dispatchers.Default) {
+    /** "Same person?" questions for the people shown in [folderPath], most likely first (all of them by default). */
+    suspend fun mergeSuggestions(folderPath: String, max: Int = Int.MAX_VALUE): List<MergeSuggestion> = withContext(Dispatchers.Default) {
         ensureStoreLoaded()
         val visible = withContext(Dispatchers.IO) { database.getPeopleInFolder(folderPath) }.associateBy { it.id }
         val named = withContext(Dispatchers.IO) { database.namedPersonIds() }
