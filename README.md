@@ -38,10 +38,22 @@ regular file explorer (Z-Archiver / MiXplorer style) — no folder picker.
 - **Filename toggle** in the top bar — hide filenames (and, in the
   recursive explorer, relative paths) entirely for a cleaner, image-only
   look, in both list and grid view.
-- **Videos and animated GIFs**: thumbnails show a play badge on videos;
-  tap one to play with standard Media3 controls, plus **double-tap the
-  left/right half of the screen to seek back/forward 10 seconds** (with a
-  brief on-screen confirmation), same as most video apps.
+- **Video player (LibVLC)**: plays what VLC plays - MP4/MOV, MKV/WebM, AVI/DivX/Xvid, WMV/ASF, FLV, MPEG-TS/M2TS
+  (camcorder and TV recordings), MPG/VOB, OGV, RM/RMVB, DV/MXF and more, with their audio and subtitle tracks.
+  - **Scrub bar**: tap to jump, drag to scrub with a frame preview above the thumb; elapsed and remaining time (tap
+    for the total).
+  - **Gestures**: tap shows the controls; double-tap left / right seeks -/+10 s (keep tapping for 20, 30 s ...); hold
+    for 2x speed; swipe up / down on the left for brightness, on the right for volume. Swiping sideways still moves
+    to the next photo or video.
+  - **Controls**: -10 s / play / +10 s, lock (ignores touches until unlocked), picture fit (Fit, Fill, Stretch,
+    16:9, 4:3, 21:9, 100%), speed (0.25x-4x), loop, rotate. The top bar names the file with its resolution, codec and
+    frame rate, and has audio-track and subtitle pickers when the file has a choice (subtitle files with the same
+    name next to the video are picked up).
+  - **Remembers where you stopped** in each video ("Resumed at 12:34 · Start over"); keeps the screen on while
+    playing; pauses when you leave the app or swipe to another item.
+  - **Decoding**: software by default (most compatible with old AVI / DivX / WMV); hardware decoding is a switch in
+    the player's settings for heavy 4K / HEVC files, and falls back to software by itself if a file fails.
+  - Animated GIFs play in the grid and viewer; tiles of videos Android can't thumbnail show their file type.
 - **Full-screen image viewer** with swipe between images, pinch-to-zoom,
   and double-tap to zoom. The **"i" button** shows the file's details: full path, size, dates,
   resolution, and camera EXIF / GPS for photos or duration / bitrate for videos.
@@ -167,8 +179,9 @@ storage every time; nothing to pick or remember.
 
 ## Notes / things you may want to tweak
 
-- Supported image types: jpg, jpeg, png, webp, gif, bmp, heic. Supported
-  video types: mp4, mkv, webm, mov, 3gp, m4v, avi.
+- Supported image types: jpg, jpeg, png, webp, gif, bmp, heic. Video types: mp4, m4v, mov, qt, 3gp, 3g2, f4v, mkv,
+  mk3d, webm, avi, divx, xvid, wmv, asf, flv, ts, m2ts, mts, m2t, tp, trp, mpg, mpeg, mpe, m1v, m2v, mpv, vob, dat,
+  ogv, ogm, rm, rmvb, dv, mxf, nut, y4m, ivf, amv and raw h264 / h265 / hevc (`videoExtensions` in `FsDirectory.kt`).
 - Folder item counts are computed with one batched directory read per
   visible folder row and cached afterward, so revisiting a folder is free.
 - If Android Studio warns about a missing Gradle wrapper when you open the

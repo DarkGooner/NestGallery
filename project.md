@@ -228,8 +228,25 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 - **Functionality**:
   - Horizontal swipe pager (`HorizontalPager`) across the media set.
   - `ZoomableImage`: Pinch-to-zoom, double-tap zoom, and panning using Compose pointer gestures.
-  - `VideoPlayer`: Custom LibVLC-backed playback controls with scrubbing bar, play/pause, timecode, and scrubbing preview window.
+  - Video pages are `ui/video/VideoPlayer.kt` (below); a locked player disables pager swipes, and only the settled page plays.
   - **"i" button** (top right, photos and videos) opens `MediaInfoSheet`.
+
+#### [`app/src/main/java/com/nestgallery/viewer/ui/video/VideoPlayer.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/video/VideoPlayer.kt)
+- **Role**: the viewer's video page, on `VlcPlayerController` (LibVLC). Layers: TextureView; gesture layer (tap =
+  controls, double-tap halves = -/+10 s accumulating, hold = 2x, vertical swipe left = window brightness / right =
+  `STREAM_MUSIC` volume; horizontal swipes are left to the pager); status (buffering, error card with "try the other
+  decoder", HUD pill, resume chip); controls (top bar with resolution / codec / fps and audio / subtitle / info /
+  settings buttons, -10 / play / +10, `ScrubBar`, quick actions: lock, fit, speed, loop, rotate). Sheets: speed,
+  picture fit, audio + subtitle tracks, loop, hardware decoding.
+- **ScrubBar** consumes every pointer change from the first contact, so the pager can't steal a drag that starts on
+  it (it used to, which made scrubbing unreliable); tap = seek, drag = fast keyframe seeks + frame preview, release =
+  exact seek.
+- Keeps the screen on while playing (TextureView `keepScreenOn`), pauses on `ON_STOP` and when not the settled page,
+  saves / restores the resume position (`data/PlayerPrefs.kt`: per path + size, 10 s from the start to 15 s before
+  the end, at most 500 files), restores brightness and orientation on leave.
+- `data/VlcPlayerController.kt`: tracks, rate, `VideoScale` presets (VLC `ScaleType`), fast seek, video description,
+  software decoding by default (`:avcodec-hw=none`) or MediaCodec with automatic software re-open at the same position
+  on `EncounteredError`; `--sub-autodetect-file` for sidecar subtitles, `--audio-time-stretch` for speed changes.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/MediaInfoSheet.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/MediaInfoSheet.kt)
 - **Role**: The viewer's details bottom sheet (text is selectable).

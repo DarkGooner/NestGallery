@@ -79,6 +79,17 @@ fun MediaImageTile(
                 )
             }
     ) {
+        if (entry.isVideo) {
+            // Behind the thumbnail: what shows when Android can't make one (WMV, FLV, RMVB, VOB ... still play in VLC)
+            Box(Modifier.fillMaxSize().background(Color(0xFF1C2127)), contentAlignment = Alignment.BottomStart) {
+                Text(
+                    entry.file.extension.uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.6f),
+                    modifier = Modifier.padding(6.dp)
+                )
+            }
+        }
         AsyncImage(
             model = entry.file,
             contentDescription = entry.name,

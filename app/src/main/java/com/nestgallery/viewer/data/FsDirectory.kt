@@ -23,7 +23,24 @@ data class DocEntry(
 )
 
 private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic")
-private val videoExtensions = setOf("mp4", "mkv", "webm", "mov", "3gp", "m4v", "avi")
+/**
+ * Every common container LibVLC plays (the viewer uses VLC, so these all open): MP4 family, Matroska / WebM, AVI /
+ * DivX, Windows Media, Flash, MPEG program / transport streams (TV and camcorder recordings), DVD VOB, Ogg, RealMedia,
+ * DV / MXF and raw streams.
+ */
+private val videoExtensions = setOf(
+    "mp4", "m4v", "mov", "qt", "3gp", "3g2", "3gpp", "f4v",
+    "mkv", "mk3d", "webm",
+    "avi", "divx", "xvid",
+    "wmv", "asf",
+    "flv",
+    "ts", "m2ts", "mts", "m2t", "tp", "trp",
+    "mpg", "mpeg", "mpe", "m1v", "m2v", "mpv", "vob", "dat",
+    "ogv", "ogm",
+    "rm", "rmvb",
+    "dv", "mxf", "nut", "y4m", "ivf", "amv",
+    "h264", "264", "h265", "265", "hevc"
+)
 
 private fun String.extension(): String = substringAfterLast('.', "").lowercase()
 private fun isMediaName(name: String) = name.extension() in imageExtensions || name.extension() in videoExtensions
