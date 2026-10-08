@@ -72,9 +72,30 @@ internal object NsfwSessions {
         }
     }
 
+    /**
+     * Folders the DSP loads its libraries from, app first (so the skel matches our libQnnHtp.so). The HTP skels up to
+     * V79 need the DSP's own C++ runtime (libc++.so.1, libc++abi.so.1), which no qnn-runtime release ships: phones
+     * keep it in /vendor/dsp/cdsp. Without that folder the SM7550 failed with "fopen ... libc++.so.1 (No such file)".
+     */
+    private val DSP_SYSTEM_DIRS = listOf(
+        "/vendor/dsp/cdsp", "/vendor/lib/rfsa/adsp", "/odm/lib/rfsa/adsp", "/system/lib/rfsa/adsp",
+        "/system/vendor/lib/rfsa/adsp", "/vendor/dsp", "/dsp"
+    )
+
     private fun setDspLibraryPath(libDir: String) {
-        val path = "$libDir;/system/lib/rfsa/adsp;/system/vendor/lib/rfsa/adsp;/vendor/lib/rfsa/adsp;/dsp"
+        val path = (listOf(libDir) + DSP_SYSTEM_DIRS).joinToString(";")
         try { android.system.Os.setenv("ADSP_LIBRARY_PATH", path, true) } catch (_: Exception) {}
+    }
+
+    /** Which DSP folders hold the C++ runtime the HTP skel needs (for the speed test's details). */
+    fun dspLibraryReport(): String = DSP_SYSTEM_DIRS.joinToString("; ", prefix = "DSP libc++.so.1: ") { dir ->
+        val f = File(dir, "libc++.so.1")
+        "$dir " + when {
+            f.canRead() -> "readable"
+            f.exists() -> "present, not readable"
+            File(dir).exists() -> "missing"
+            else -> "no folder"
+        }
     }
 
     /** The NPU's cached compiled graph for [model] (tied to the ONNX Runtime / QNN version via [CACHE_VERSION]). */

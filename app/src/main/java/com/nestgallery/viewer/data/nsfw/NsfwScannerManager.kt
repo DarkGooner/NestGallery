@@ -238,7 +238,8 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
             val t0 = System.nanoTime()
             val analyzer = try { probe(m, accel) } catch (e: Throwable) {
                 val reason = e.message?.lineSequence()?.firstOrNull()?.take(160) ?: e.javaClass.simpleName
-                onResult(SpeedResult(accel, null, 0, "Not available: $reason", "${e}\n${NsfwSessions.recentQnnLog()}"))
+                val dsp = if (accel == NsfwAccelerator.NPU) NsfwSessions.dspLibraryReport() + "\n" else ""
+                onResult(SpeedResult(accel, null, 0, "Not available: $reason", "${e}\n$dsp${NsfwSessions.recentQnnLog()}"))
                 continue
             }
             val setupMs = (System.nanoTime() - t0) / 1_000_000
