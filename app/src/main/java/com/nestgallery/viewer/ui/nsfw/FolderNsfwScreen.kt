@@ -118,6 +118,7 @@ fun FolderNsfwScreen(
     val status by nsfw.status.collectAsState()
     val revision by nsfw.revision.collectAsState()
     val model by nsfw.model.collectAsState()
+    val backend by nsfw.backend.collectAsState()
     val rootPath = root.file.absolutePath
     val filter = remember(rootPath) { NsfwFilterState.forFolder(rootPath) }
     val n = remember { NumberFormat.getInstance() }
@@ -204,6 +205,7 @@ fun FolderNsfwScreen(
             Column(Modifier.fillMaxSize()) {
                 NsfwScanProgressCard(
                     status = status.takeIf { it.folderOf() == rootPath },
+                    hardware = backend?.label,
                     onPause = { nsfw.pauseScan() },
                     onResume = { nsfw.resumeScan() },
                     onCancel = { nsfw.stopScan() }
@@ -439,7 +441,7 @@ private fun EmptyState(folder: String, photoCount: Int, modelTitle: String, onSc
 
 /** Progress card for a scan of this folder (same look as the face scan's), plus a brief done / failed state. */
 @Composable
-private fun NsfwScanProgressCard(status: NsfwScanStatus?, onPause: () -> Unit, onResume: () -> Unit, onCancel: () -> Unit) {
+private fun NsfwScanProgressCard(status: NsfwScanStatus?, hardware: String?, onPause: () -> Unit, onResume: () -> Unit, onCancel: () -> Unit) {
     AnimatedVisibility(visible = status != null && status != NsfwScanStatus.Idle) {
         val s = status ?: return@AnimatedVisibility
         val failed = s is NsfwScanStatus.Failed
@@ -452,6 +454,7 @@ private fun NsfwScanProgressCard(status: NsfwScanStatus?, onPause: () -> Unit, o
         }
         val detail = when (s) {
             is NsfwScanStatus.Scanning -> listOfNotNull(
+                hardware?.takeIf { s.totalCount > 0 },
                 s.photosPerSecond.takeIf { it > 0.05f }?.let { "%.1f photos/s".format(it) },
                 s.etaSeconds.takeIf { it >= 0 }?.let { "${NsfwScanService.formatEta(it)} left" },
                 s.currentFileName

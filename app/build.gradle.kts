@@ -15,7 +15,8 @@ android {
         versionCode = 1
         versionName = "1.0"
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // 64-bit only: the ONNX Runtime build with Qualcomm's QNN (NPU / GPU) ships arm64-v8a libraries only.
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -54,6 +55,12 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        jniLibs {
+            // Extract native libraries at install: the Hexagon DSP loads QNN's libQnnHtpV*Skel.so from a real file path.
+            useLegacyPackaging = true
+            // QNN's old-DSP backend (Hexagon V66) is not used: the NPU path is the HTP backend.
+            excludes += listOf("**/libQnnDsp.so", "**/libQnnDspV66Skel.so", "**/libQnnDspV66Stub.so")
+        }
     }
 
     aaptOptions {
@@ -82,8 +89,10 @@ dependencies {
     implementation("io.coil-kt:coil-video:2.6.0")
     implementation("org.videolan.android:libvlc-all:3.7.6")
 
-    // On-device face pipeline (100% offline): SCRFD detector + ArcFace MobileFaceNet, run by ONNX Runtime.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+    // On-device face + NSFW models (100% offline), run by ONNX Runtime. This is the same ONNX Runtime 1.22 with the
+    // Qualcomm QNN execution provider added (NSFW scan on the Snapdragon NPU / GPU); it pulls in
+    // com.qualcomm.qti:qnn-runtime (Qualcomm's QNN libraries, Qualcomm AI Hub licence).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.22.0")
 
     testImplementation("junit:junit:4.13.2")
     // Desktop ONNX Runtime so OnnxKnn can be unit-tested on the JVM (the Android AAR's natives don't load there).

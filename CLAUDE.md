@@ -63,6 +63,12 @@ the user's request. Mirrors the face scan (manager + foreground service), not Ro
 **Models are Git LFS** (`nudenet_*.onnx`, 640m = 104 MB > GitHub's 100 MB limit; `git lfs install --local` done here
 2026-10-09); CI pulls them with an actions/cache. `tools/nsfw-eval/README.md` has the checks. Not verified on a phone;
 no explicit-image accuracy measured. Eval venv: `%USERPROFILE%\nsfw-export-venv` (torch CPU + ultralytics).
+**Hardware (2026-10-09):** ORT is now `onnxruntime-android-qnn:1.22.0` (+ Qualcomm `qnn-runtime` 2.33), app arm64-only.
+NSFW models can run on the Snapdragon NPU (QNN HTP, fp32 model at fp16, static 640/320 square, compiled graph cached)
+or GPU (QNN, experimental), with CPU fallback and a native-crash marker; Settings has a speed test. User's phone:
+Snapdragon 7 Gen 3, 12 GB. **Untested on any device**: the x64 `onnxruntime-qnn` 1.22 wheel (HTP simulator) segfaults
+on import on this PC (same native-DLL problem as ORT Java), so not even partitioning was checked offline. If the NPU
+rejects fp16, next step is a QDQ (int8 / a16w8) export for the HTP.
 
 ## Eval tooling (tools/face-eval)
 

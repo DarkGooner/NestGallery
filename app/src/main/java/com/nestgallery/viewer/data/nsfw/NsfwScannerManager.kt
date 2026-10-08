@@ -63,8 +63,25 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
     /** The NudeNet variant scans use and results are shown for (Settings). */
     val model: StateFlow<NsfwModel> = _model.asStateFlow()
 
+    private val _accelerator = MutableStateFlow(NsfwAccelerator.byName(prefs.getString(KEY_ACCEL, null)))
+    /** The hardware the user picked (Settings); [backend] is what is actually in use. */
+    val accelerator: StateFlow<NsfwAccelerator> = _accelerator.asStateFlow()
+
+    private val _backend = MutableStateFlow<NsfwBackend?>(null)
+    /** How the current analyzer runs (after any fallback); null until a scan or speed test loaded one. */
+    val backend: StateFlow<NsfwBackend?> = _backend.asStateFlow()
+
     private var analyzer: NsfwAnalyzer? = null
+    private var analyzerBackend: NsfwBackend? = null
     private val analyzerLock = Any()
+
+    init {
+        // A native crash while an accelerator was being set up leaves the probe marker behind: never try that one again
+        // automatically (Settings can clear the list).
+        prefs.getString(KEY_PROBE, null)?.let { crashed ->
+            prefs.edit().remove(KEY_PROBE).putStringSet(KEY_CRASHED, crashedAccelerators() + crashed).commit()
+        }
+    }
 
     /** Results of [model] only; reloaded when the model changes. */
     private val results = ConcurrentHashMap<String, NsfwResult>()
@@ -105,7 +122,7 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
         if (isScanning()) return false
         if (m.id == _model.value.id) return true
         prefs.edit().putString(KEY_MODEL, m.id).apply()
-        synchronized(analyzerLock) { analyzer?.close(); analyzer = null }   // the 640m session alone is >100 MB
+        dropAnalyzer()                                                     // the 640m session alone is >100 MB
         _model.value = m
         loadedModel = null
         results.clear()
@@ -116,8 +133,130 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
     /** Photos each model has results for. */
     suspend fun resultCounts(): Map<String, Int> = withContext(Dispatchers.IO) { database.countByModel() }
 
-    private fun analyzerFor(m: NsfwModel): NsfwAnalyzer = synchronized(analyzerLock) {
-        analyzer?.takeIf { it.model.id == m.id } ?: NsfwAnalyzer(appContext, m).also { analyzer?.close(); analyzer = it }
+    /** Switches the hardware. Refused (false) while a scan runs. */
+    fun setAccelerator(a: NsfwAccelerator): Boolean {
+        if (isScanning()) return false
+        prefs.edit().putString(KEY_ACCEL, a.name).apply()
+        _accelerator.value = a
+        dropAnalyzer()
+        return true
+    }
+
+    /** Accelerators that crashed the app while being set up; skipped until [forgetCrashes]. */
+    fun crashedAccelerators(): Set<String> = prefs.getStringSet(KEY_CRASHED, emptySet()) ?: emptySet()
+
+    fun forgetCrashes() {
+        prefs.edit().remove(KEY_CRASHED).apply()
+    }
+
+    private fun dropAnalyzer() = synchronized(analyzerLock) {
+        analyzer?.close(); analyzer = null; analyzerBackend = null
+        _backend.value = null
+    }
+
+    private fun analyzerFor(m: NsfwModel): Pair<NsfwAnalyzer, NsfwBackend> = synchronized(analyzerLock) {
+        val current = analyzer
+        if (current != null && current.model.id == m.id) return current to analyzerBackend!!
+        dropAnalyzer()
+        val (a, b) = openAnalyzer(m, _accelerator.value)
+        analyzer = a; analyzerBackend = b
+        _backend.value = b
+        a to b
+    }
+
+    /**
+     * Opens [m] on the first hardware of [requested]'s chain that works (AUTO: NPU, GPU, CPU; NPU / GPU: that, then
+     * CPU). Each attempt also runs the model once, since some drivers only fail on the first run. A marker is
+     * committed around each attempt so a native crash (which no catch can see) is remembered on the next start.
+     */
+    private fun openAnalyzer(m: NsfwModel, requested: NsfwAccelerator): Pair<NsfwAnalyzer, NsfwBackend> {
+        val chain = when (requested) {
+            NsfwAccelerator.AUTO -> listOf(NsfwAccelerator.NPU, NsfwAccelerator.GPU, NsfwAccelerator.CPU)
+            NsfwAccelerator.CPU -> listOf(NsfwAccelerator.CPU)
+            else -> listOf(requested, NsfwAccelerator.CPU)
+        }
+        val failures = ArrayList<String>()
+        for (accel in chain) {
+            if (accel != NsfwAccelerator.CPU && accel.name in crashedAccelerators()) {
+                failures += "${accel.title} crashed before"; continue
+            }
+            try {
+                val analyzer = probe(m, accel)
+                val workers = NsfwSessions.workers(appContext, m, accel)
+                val label = accel.title + (if (accel == NsfwAccelerator.CPU) " · $workers photos at once" else "") +
+                    (if (failures.isNotEmpty()) " (${failures.joinToString("; ")})" else "")
+                return analyzer to NsfwBackend(accel, workers, label)
+            } catch (e: Throwable) {
+                e.printStackTrace()
+                if (accel == NsfwAccelerator.CPU) throw e
+                failures += "${accel.title} unavailable: ${e.message?.lineSequence()?.firstOrNull()?.take(80) ?: e.javaClass.simpleName}"
+            }
+        }
+        error("no backend")                                   // unreachable: CPU either returns or throws
+    }
+
+    private fun probe(m: NsfwModel, accel: NsfwAccelerator): NsfwAnalyzer {
+        val guarded = accel != NsfwAccelerator.CPU
+        if (guarded) prefs.edit().putString(KEY_PROBE, accel.name).commit()
+        try {
+            val a = NsfwAnalyzer(appContext, m, accel)
+            try {
+                val bmp = syntheticPhoto()
+                try { a.analyze(NsfwAnalyzer.Decoded(bmp, bmp.width, bmp.height)) } finally { bmp.recycle() }
+            } catch (e: Throwable) { a.close(); throw e }
+            return a
+        } finally {
+            if (guarded) prefs.edit().remove(KEY_PROBE).commit()
+        }
+    }
+
+    /** A 640x480 noise picture: the models' cost does not depend on the content, so it times like a real photo. */
+    private fun syntheticPhoto(): android.graphics.Bitmap {
+        val w = 640; val h = 480
+        val r = java.util.Random(7)
+        val px = IntArray(w * h) { 0xFF000000.toInt() or r.nextInt(0x1000000) }
+        return android.graphics.Bitmap.createBitmap(px, w, h, android.graphics.Bitmap.Config.ARGB_8888)
+    }
+
+    /** One speed-test row: photos per second with the scanner's own parallelism, or why it could not run. */
+    class SpeedResult(val accelerator: NsfwAccelerator, val photosPerSecond: Double?, val setupMs: Long, val note: String)
+
+    /**
+     * Times [m] on every hardware option the way a scan would use it (same number of photos at once). Each option
+     * is set up and released in turn, so it doesn't hold memory afterwards. Not while scanning.
+     */
+    suspend fun speedTest(m: NsfwModel, onResult: (SpeedResult) -> Unit) = withContext(Dispatchers.Default) {
+        if (isScanning()) return@withContext
+        dropAnalyzer()
+        for (accel in listOf(NsfwAccelerator.NPU, NsfwAccelerator.GPU, NsfwAccelerator.CPU)) {
+            if (accel != NsfwAccelerator.CPU && accel.name in crashedAccelerators()) {
+                onResult(SpeedResult(accel, null, 0, "Skipped: it crashed the app before")); continue
+            }
+            val t0 = System.nanoTime()
+            val analyzer = try { probe(m, accel) } catch (e: Throwable) {
+                onResult(SpeedResult(accel, null, 0, "Not available: " + (e.message?.lineSequence()?.firstOrNull()?.take(120) ?: e.javaClass.simpleName)))
+                continue
+            }
+            val setupMs = (System.nanoTime() - t0) / 1_000_000
+            try {
+                val workers = NsfwSessions.workers(appContext, m, accel)
+                val perWorker = if (m.inputSize > 320 && accel == NsfwAccelerator.CPU) 2 else 6
+                val bmp = syntheticPhoto()
+                val photo = NsfwAnalyzer.Decoded(bmp, bmp.width, bmp.height)
+                val start = System.nanoTime()
+                kotlinx.coroutines.coroutineScope {
+                    repeat(workers) { launch(Dispatchers.Default) { repeat(perWorker) { analyzer.analyze(photo) } } }
+                }
+                val seconds = (System.nanoTime() - start) / 1e9
+                bmp.recycle()
+                val rate = workers * perWorker / seconds
+                onResult(SpeedResult(accel, rate, setupMs, if (accel == NsfwAccelerator.CPU) "$workers photos at once" else ""))
+            } catch (e: Throwable) {
+                onResult(SpeedResult(accel, null, setupMs, "Failed while running: " + (e.message?.take(120) ?: e.javaClass.simpleName)))
+            } finally {
+                analyzer.close()
+            }
+        }
     }
 
     fun result(path: String): NsfwResult? = results[path]
@@ -183,11 +322,13 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
     private suspend fun runPipeline(todo: List<File>, folderPath: String, model: NsfwModel): Int = coroutineScope {
         val total = todo.size
         if (total == 0) return@coroutineScope 0
-        val analyzer = analyzerFor(model)                // load the model before the clock starts (and fail early)
+        // load the model (NPU / GPU / CPU, with fallback) before the clock starts, and fail early
+        _status.value = NsfwScanStatus.Scanning(folderPath, 0, total, "Loading ${model.title} (the first NPU run compiles it, up to a minute)…")
+        val (analyzer, backend) = analyzerFor(model)
         val cores = Runtime.getRuntime().availableProcessors()
-        val decoderCount = (cores / 4).coerceIn(1, 2)
-        // 640m: fewer photos in flight (each run holds far more memory), two threads each (see YoloDetector)
-        val analysisCount = if (model.inputSize > 320) (cores / 4).coerceIn(1, 2) else (cores / 2).coerceIn(1, 4)
+        // the NPU can outrun one JPEG decoder; the CPU path is limited by the model, not decoding
+        val decoderCount = if (backend.accelerator == NsfwAccelerator.CPU) (cores / 4).coerceIn(1, 2) else (cores / 3).coerceIn(1, 3)
+        val analysisCount = backend.workers
         val decoded = Channel<Decoded>(2)
         val out = Channel<NsfwScannedFile>(64)
         val next = AtomicInteger(0)
@@ -287,6 +428,9 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
 
     companion object {
         private const val KEY_MODEL = "model"
+        private const val KEY_ACCEL = "accelerator"
+        private const val KEY_PROBE = "accelerator_probe"
+        private const val KEY_CRASHED = "accelerators_crashed"
         private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
 
         /** Photos the scan looks at (videos and other files are skipped). */

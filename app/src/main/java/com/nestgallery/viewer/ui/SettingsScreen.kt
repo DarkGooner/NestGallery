@@ -37,6 +37,19 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nestgallery.viewer.data.nsfw.NsfwScannerManager
+import com.nestgallery.viewer.data.nsfw.NsfwAccelerator
+import com.nestgallery.viewer.data.nsfw.NsfwModel
+import com.nestgallery.viewer.data.nsfw.NsfwScanService
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
+import kotlinx.coroutines.launch
 import com.nestgallery.viewer.data.nsfw.NsfwModels
 import java.text.NumberFormat
 
@@ -107,11 +120,130 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
             if (scanning) {
                 Text(
-                    "An NSFW scan is running. Stop it to change the model.",
+                    "An NSFW scan is running. Stop it to change the model or the hardware.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(start = 4.dp)
                 )
+            }
+            Spacer(Modifier.height(20.dp))
+            HardwareSection(nsfw, model, scanning)
+        }
+    }
+}
+
+/** Where the NSFW model runs, plus a speed test that measures every option on this phone. */
+@Composable
+private fun HardwareSection(nsfw: NsfwScannerManager, model: NsfwModel, scanning: Boolean) {
+    val accel by nsfw.accelerator.collectAsState()
+    val backend by nsfw.backend.collectAsState()
+    val scope = rememberCoroutineScope()
+    var crashed by remember { mutableStateOf(nsfw.crashedAccelerators()) }
+    var testing by remember { mutableStateOf(false) }
+    val results = remember { mutableStateListOf<NsfwScannerManager.SpeedResult>() }
+    var testedModel by remember { mutableStateOf<String?>(null) }
+
+    Text("NSFW scan hardware", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
+    Text(
+        "If the chosen hardware doesn't work on this phone, the scan falls back to the CPU." +
+            (backend?.let { "\nIn use now: ${it.label}" } ?: ""),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
+    )
+    Column(Modifier.selectableGroup()) {
+        for (a in NsfwAccelerator.entries) {
+            val selected = a == accel
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(enabled = !scanning && !testing, role = Role.RadioButton) { nsfw.setAccelerator(a) }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                RadioButton(selected = selected, onClick = null, enabled = !scanning && !testing, modifier = Modifier.padding(12.dp))
+                Column(Modifier.weight(1f).padding(top = 8.dp, end = 8.dp)) {
+                    Text(a.title + if (a.name in crashed) "  (crashed before, skipped)" else "", style = MaterialTheme.typography.titleSmall)
+                    Text(a.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+    if (crashed.isNotEmpty()) {
+        TextButton(onClick = { nsfw.forgetCrashes(); crashed = nsfw.crashedAccelerators() }) { Text("Try crashed hardware again") }
+    }
+
+    Spacer(Modifier.height(8.dp))
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Speed test", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Runs ${model.title} on each option the way a scan would. The first NPU test compiles the model (up to a minute).",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    enabled = !scanning && !testing,
+                    onClick = {
+                        testing = true
+                        results.clear()
+                        testedModel = model.title
+                        scope.launch {
+                            try {
+                                nsfw.speedTest(model) { r -> scope.launch { results.add(r) } }
+                            } finally {
+                                testing = false
+                                crashed = nsfw.crashedAccelerators()
+                            }
+                        }
+                    }
+                ) { Text(if (testing) "Testing…" else "Run") }
+            }
+            if (testing) {
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+            if (results.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                val best = results.filter { it.photosPerSecond != null }.maxByOrNull { it.photosPerSecond!! }
+                for (r in results) {
+                    val rate = r.photosPerSecond
+                    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.Top) {
+                        Text(r.accelerator.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(120.dp))
+                        Column(Modifier.weight(1f)) {
+                            if (rate != null) {
+                                Text(
+                                    "%.1f photos/s · 20,000 photos ≈ %s".format(rate, NsfwScanService.formatEta((20_000 / rate).toLong())) +
+                                        if (r == best) "  ★ fastest" else "",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (r == best) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            val extra = listOfNotNull(
+                                r.note.takeIf { it.isNotEmpty() },
+                                r.setupMs.takeIf { rate != null && it > 1500 }?.let { "setup %.1f s".format(it / 1000.0) }
+                            ).joinToString(" · ")
+                            if (extra.isNotEmpty()) Text(extra, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+                if (!testing && best != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Tested ${testedModel ?: ""} on a 640×480 picture; real photos add decoding time.",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (best.accelerator != accel) {
+                        TextButton(enabled = !scanning, onClick = { nsfw.setAccelerator(best.accelerator) }) { Text("Use ${best.accelerator.title}") }
+                    }
+                }
             }
         }
     }

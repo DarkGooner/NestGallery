@@ -102,6 +102,12 @@ every photo in the folder and its subfolders with NudeNet, on the device, and le
 
   Each model keeps its own results, so switching back and forth never loses a scan. The model can't be changed while
   a scan runs.
+- **Hardware** (Settings): *Auto* (default: NPU, then GPU, then CPU), *NPU* (Snapdragon Hexagon, through Qualcomm
+  QNN, fp16), *GPU* (Adreno, experimental) or *CPU*. Whatever fails on a phone falls back to the CPU; one that crashes
+  the app is skipped from then on (Settings can retry it). The first NPU run compiles the model for the chip (up to a
+  minute) and caches it. **Speed test** measures every option on the phone the way a scan runs (photos/s and the time
+  for 20,000 photos) and offers to switch to the fastest. The app is 64-bit only (arm64) because the QNN build of ONNX
+  Runtime is.
 - **Models** are bundled in `app/src/main/assets` (no download, no network) and stored with **Git LFS** (640m is over
   GitHub's 100 MB file limit). After cloning, run `git lfs install` once and `git lfs pull` before building; an APK
   built from a clone without them shows "...is a Git LFS pointer" when a scan starts. CI fetches them itself. Where

@@ -286,9 +286,10 @@ in-memory map (current model) -> per-folder counts -> range filter. Checked agai
 | File | Android-free? | Role |
 |---|---|---|
 | `NsfwMath.kt` | yes | `NsfwDetection` / `NsfwResult` (tag string, JSON), `NsfwLabels` (model class order, screen order + groups, NMS groups), `YoloDecoder` (Ultralytics `[4+C, anchors]` head), `NsfwFilter` (counts at a threshold, AND-of-ranges match), `NsfwFolderIndex` (per-photo counts, slider maxima, per-label histograms) |
-| `NsfwDetector.kt` | no | `NsfwModels` (320n / 640m: id, asset, input size, title), `YoloDetector` (aspect-ratio input padded to /32; reuses the face package's `ModelFiles` / `Ort`; refuses an LFS pointer with a clear message), `NsfwAnalyzer` (decode + detect for one model) |
+| `NsfwDetector.kt` | no | `NsfwModels` (320n / 640m: id, asset, input size, title), `YoloDetector` (aspect-ratio input padded to /32 on the CPU, the full square on NPU / GPU; runs take turns on an accelerator; reuses the face package's `ModelFiles` / `Ort`; refuses an LFS pointer with a clear message), `NsfwAnalyzer` (decode + detect for one model on one accelerator) |
+| `NsfwBackend.kt` | no | `NsfwAccelerator` (Auto / NPU / GPU / CPU), `NsfwSessions`: QNN session options (HTP `libQnnHtp.so` at fp16 with `ADSP_LIBRARY_PATH` set, or `libQnnGpu.so`; height/width pinned with `setSymbolicDimensionValue`; compiled HTP graph cached in `filesDir/qnn_ctx` via `ep.context_*`), photos-at-once per backend (CPU: by cores and RAM) |
 | `NsfwDatabase.kt` | no | `nest_nsfw.db` v2: `nsfw_files` (model, path, mtime, size, width, height, ms; width 0 = undecodable) and `nsfw_detections` (model, path, every box with score >= 0.25). Every row carries the model id, so each model keeps its own results |
-| `NsfwScannerManager.kt` | no | selected model (SharedPreferences `nsfw`; `setModel` refused while scanning, closes the old session), same decode -> analyse -> batched-writer pipeline as the face scan (640m: fewer workers, 2 threads each), status with rate + ETA, `revision` flow (~1/s while scanning), pause / resume / stop, `clearFolder` |
+| `NsfwScannerManager.kt` | no | selected model and hardware (SharedPreferences `nsfw`; refused while scanning, close the old session); opens the model along the hardware's fallback chain, running it once per attempt, with a committed marker so a native crash is remembered and that accelerator skipped; `speedTest` (every option at scan parallelism on a synthetic 640x480 picture); same decode -> analyse -> batched-writer pipeline as the face scan (640m: fewer workers, 2 threads each), status with rate + ETA, `revision` flow (~1/s while scanning), pause / resume / stop, `clearFolder` |
 | `NsfwScanService.kt` | no | foreground (data-sync) service + wake lock + progress notification (own channel), like `FaceScanService` |
 | `ui/nsfw/FolderNsfwScreen.kt` | no | the NSFW screen (structure of `FolderFaceScreen`): top bar (scan, overflow: Settings / forget results), progress card, tabs **Filters** and **Photos**, empty state |
 | `ui/nsfw/NsfwFilters.kt` | no | `NsfwFilterState` (threshold + label ranges, per folder for the process lifetime), confidence card, label card (histogram with tap-to-pick, slider, quick chips), active-filter chips, `rangeText`. `StepTrack` is a custom slider instead of Material's (which jumps on touch-down, so scrolling the list changed filters): it moves only when a thumb is dragged sideways past the touch slop; `TouchGuard` drops taps/drags while the list scrolls and 350 ms after; bars, labels and stops share one `StopGeometry`, so each bar sits over its stop |
@@ -299,6 +300,10 @@ in-memory map (current model) -> per-folder counts -> range filter. Checked agai
   so it keeps up with a scan still raising the maximum. The Photos tab lists scanned photos that pass every active range.
 - **Threshold** is applied at count time, so the confidence slider never rescans.
 - **Models are Git LFS objects** (`.gitattributes`: `app/src/main/assets/nudenet_*.onnx`); CI pulls them with a cache.
+- **ONNX Runtime is `onnxruntime-android-qnn:1.22.0`** (the face models run on its CPU provider exactly as before) plus
+  `com.qualcomm.qti:qnn-runtime` (QNN 2.33, Qualcomm AI Hub licence): arm64-only, so the app is arm64-v8a only;
+  `jniLibs.useLegacyPackaging = true` so the DSP can load `libQnnHtpV*Skel.so` from the extracted library directory;
+  the old DSP (V66) libraries are excluded. Bump `NsfwSessions.CACHE_VERSION` with either version.
 - **Changing models**: add the asset (LFS-tracked if named `nudenet_*.onnx`), add an `NsfwModel` with a new id to
   `NsfwModels`; labels go in `NsfwLabels` (`ALL` order = screen order, `nmsGroup` for mutually exclusive variants);
   re-run `tools/nsfw-eval/compare.py` / `make_fixture.py`.

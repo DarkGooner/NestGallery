@@ -52,12 +52,16 @@ object NsfwModels {
 /**
  * Runs one YOLO model with ONNX Runtime. The photo's long side is scaled to [NsfwModel.inputSize] and the short side
  * padded (black, like nudenet.py) only up to a multiple of 32, not to a square: the exported models have dynamic H/W,
- * and for a 16:9 photo this is ~45% fewer pixels. Thread-safe: one session, run from several workers.
+ * and for a 16:9 photo this is ~45% fewer pixels. On the NPU / GPU ([accelerator]) the shape must be fixed, so the
+ * photo is padded to the full square there. Thread-safe: one session, run from several workers (on an accelerator the
+ * runs themselves take turns; preparing the input still overlaps).
  */
-class YoloDetector(context: Context, val model: NsfwModel) {
+class YoloDetector(context: Context, val model: NsfwModel, val accelerator: NsfwAccelerator = NsfwAccelerator.CPU) {
     private val session: OrtSession
     private val inputName: String
     private val size = model.inputSize
+    private val square = accelerator == NsfwAccelerator.NPU || accelerator == NsfwAccelerator.GPU
+    private val runLock = Any()
     private val scratch = object : ThreadLocal<FloatArray>() { override fun initialValue() = FloatArray(3 * size * size) }
     private val pixelScratch = object : ThreadLocal<IntArray>() { override fun initialValue() = IntArray(size * size) }
 
@@ -65,10 +69,17 @@ class YoloDetector(context: Context, val model: NsfwModel) {
         val file = ModelFiles.materialize(context, model.asset)
         // A clone without `git lfs pull` ships the ~130-byte pointer instead of the model; say so instead of an ORT error.
         check(file.length() > 4096) { "${model.asset} is a Git LFS pointer, not the model. Run `git lfs pull` and rebuild." }
-        // The small model: one thread per run (Ort.options) like the face models, the scanner runs several photos at
-        // once. The big one runs fewer photos at a time (memory), so it gets two threads each.
-        val options = if (model.inputSize > 320) Ort.options().apply { setIntraOpNumThreads(2) } else Ort.options()
-        session = Ort.env.createSession(file.absolutePath, options)
+        session = when (accelerator) {
+            NsfwAccelerator.NPU -> {
+                // Compiling for the HTP takes a while, so the compiled graph is cached; a stale or broken cache is rebuilt.
+                val ctx = NsfwSessions.contextFile(context, model)
+                val cached = if (ctx.exists()) try {
+                    Ort.env.createSession(ctx.absolutePath, NsfwSessions.options(context, model, accelerator, null))
+                } catch (e: Exception) { ctx.delete(); null } else null
+                cached ?: Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, ctx))
+            }
+            else -> Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, null))
+        }
         inputName = session.inputNames.first()
         val classes = (session.outputInfo.values.first().info as TensorInfo).shape[1] - 4
         require(classes == model.labels.size.toLong()) { "${model.asset}: $classes classes, expected ${model.labels.size}" }
@@ -84,8 +95,8 @@ class YoloDetector(context: Context, val model: NsfwModel) {
         val w = (src.width * scale).roundToInt().coerceIn(1, size)
         val h = (src.height * scale).roundToInt().coerceIn(1, size)
         val bmp = if (w == src.width && h == src.height) src else Bitmap.createScaledBitmap(src, w, h, true)
-        val cw = (w + 31) / 32 * 32
-        val ch = (h + 31) / 32 * 32
+        val cw = if (square) size else (w + 31) / 32 * 32
+        val ch = if (square) size else (h + 31) / 32 * 32
         val plane = cw * ch
         val data = scratch.get()!!
         java.util.Arrays.fill(data, 0, 3 * plane, 0f)
@@ -106,23 +117,25 @@ class YoloDetector(context: Context, val model: NsfwModel) {
             }
         }
         val input = FloatBuffer.wrap(data, 0, 3 * plane).slice()
-        return OnnxTensor.createTensor(Ort.env, input, longArrayOf(1, 3, ch.toLong(), cw.toLong())).use { tensor ->
-            session.run(mapOf(inputName to tensor)).use { result ->
-                val t = result.get(0) as OnnxTensor
-                val anchors = t.info.shape[2].toInt()
-                val fb = t.floatBuffer
-                val out = FloatArray(fb.remaining()).also { fb.get(it) }
-                YoloDecoder.decode(out, anchors, model.labels, w, h, width, height)
-            }
+        val (out, anchors) = OnnxTensor.createTensor(Ort.env, input, longArrayOf(1, 3, ch.toLong(), cw.toLong())).use { tensor ->
+            if (square) synchronized(runLock) { run(tensor) } else run(tensor)
         }
+        return YoloDecoder.decode(out, anchors, model.labels, w, h, width, height)
+    }
+
+    /** @return (raw output, anchor count) */
+    private fun run(tensor: OnnxTensor): Pair<FloatArray, Int> = session.run(mapOf(inputName to tensor)).use { result ->
+        val t = result.get(0) as OnnxTensor
+        val fb = t.floatBuffer
+        FloatArray(fb.remaining()).also { fb.get(it) } to t.info.shape[2].toInt()
     }
 
     fun close() = session.close()
 }
 
-/** Decode + detect for one [model]. Thread-safe. */
-class NsfwAnalyzer(context: Context, val model: NsfwModel) {
-    private val detector = YoloDetector(context, model)
+/** Decode + detect for one [model] on one [accelerator] (never AUTO). Thread-safe. */
+class NsfwAnalyzer(context: Context, val model: NsfwModel, val accelerator: NsfwAccelerator) {
+    private val detector = YoloDetector(context, model, accelerator)
     private val decodeSide = model.inputSize
 
     /** Upright photo decoded small (long side in [inputSize, 2*inputSize) for big photos) plus its original upright size. */
