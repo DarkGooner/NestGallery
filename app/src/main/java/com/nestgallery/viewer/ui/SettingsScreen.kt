@@ -50,6 +50,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.draw.clip
 import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import com.nestgallery.viewer.data.nsfw.NsfwModels
 import java.text.NumberFormat
 
@@ -235,6 +237,24 @@ private fun HardwareSection(nsfw: NsfwScannerManager, model: NsfwModel, scanning
                             if (extra.isNotEmpty()) Text(extra, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                }
+                if (!testing) {
+                    // everything, including QNN's own log lines when the NPU / GPU failed: something to paste into a report
+                    val clipboard = LocalClipboardManager.current
+                    TextButton(onClick = {
+                        val text = buildString {
+                            append("NestGallery speed test · ${testedModel ?: ""} · ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · ")
+                            append("SoC ${if (android.os.Build.VERSION.SDK_INT >= 31) android.os.Build.SOC_MODEL else "?"} · Android ${android.os.Build.VERSION.RELEASE}\n")
+                            for (r in results) {
+                                append("${r.accelerator.title}: ")
+                                append(r.photosPerSecond?.let { "%.2f photos/s, setup %d ms".format(it, r.setupMs) } ?: "-")
+                                if (r.note.isNotEmpty()) append(" · ${r.note}")
+                                append('\n')
+                                if (r.details.isNotEmpty()) append(r.details.trim()).append('\n')
+                            }
+                        }
+                        clipboard.setText(AnnotatedString(text))
+                    }) { Text("Copy details") }
                 }
                 if (!testing && best != null) {
                     Spacer(Modifier.height(6.dp))

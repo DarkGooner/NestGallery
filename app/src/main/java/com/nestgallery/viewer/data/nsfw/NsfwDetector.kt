@@ -58,6 +58,9 @@ object NsfwModels {
  */
 class YoloDetector(context: Context, val model: NsfwModel, val accelerator: NsfwAccelerator = NsfwAccelerator.CPU) {
     private val session: OrtSession
+    /** NPU / GPU: "whole model" or "partly, rest on the CPU". Empty on the CPU. */
+    var placement: String = ""
+        private set
     private val inputName: String
     private val size = model.inputSize
     private val square = accelerator == NsfwAccelerator.NPU || accelerator == NsfwAccelerator.GPU
@@ -70,19 +73,46 @@ class YoloDetector(context: Context, val model: NsfwModel, val accelerator: Nsfw
         // A clone without `git lfs pull` ships the ~130-byte pointer instead of the model; say so instead of an ORT error.
         check(file.length() > 4096) { "${model.asset} is a Git LFS pointer, not the model. Run `git lfs pull` and rebuild." }
         session = when (accelerator) {
-            NsfwAccelerator.NPU -> {
-                // Compiling for the HTP takes a while, so the compiled graph is cached; a stale or broken cache is rebuilt.
-                val ctx = NsfwSessions.contextFile(context, model)
-                val cached = if (ctx.exists()) try {
-                    Ort.env.createSession(ctx.absolutePath, NsfwSessions.options(context, model, accelerator, null))
-                } catch (e: Exception) { ctx.delete(); null } else null
-                cached ?: Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, ctx))
+            NsfwAccelerator.NPU -> openNpu(context, file)
+            NsfwAccelerator.GPU -> {
+                // Strict: either QNN's GPU backend runs the whole model or this fails (and the scanner uses the CPU).
+                Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, null, strict = true))
+                    .also { placement = "whole model" }
             }
             else -> Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, null))
         }
         inputName = session.inputNames.first()
         val classes = (session.outputInfo.values.first().info as TensorInfo).shape[1] - 4
         require(classes == model.labels.size.toLong()) { "${model.asset}: $classes classes, expected ${model.labels.size}" }
+    }
+
+    /**
+     * The HTP compiles the model once and the compiled graph is cached (a stale or broken cache is rebuilt). First the
+     * whole model is required on the NPU; if QNN rejects some nodes, a split NPU + CPU session is accepted only if the
+     * compiled graph really contains an NPU part - otherwise everything would silently run on the CPU.
+     */
+    private fun openNpu(context: Context, file: File): OrtSession {
+        val ctx = NsfwSessions.contextFile(context, model)
+        if (ctx.exists() && !NsfwSessions.hasQnnPartition(ctx)) ctx.delete()   // a cache without an NPU part is useless
+        if (ctx.exists()) {
+            try {
+                return Ort.env.createSession(ctx.absolutePath, NsfwSessions.options(context, model, accelerator, null))
+                    .also { placement = "compiled graph from cache" }
+            } catch (e: Exception) { ctx.delete() }
+        }
+        val strictError = try {
+            return Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, ctx, strict = true))
+                .also { placement = "whole model" }
+        } catch (e: Exception) { ctx.delete(); e }
+        val s = Ort.env.createSession(file.absolutePath, NsfwSessions.options(context, model, accelerator, ctx))
+        if (!NsfwSessions.hasQnnPartition(ctx)) {
+            s.close(); ctx.delete()
+            throw IllegalStateException(
+                "QNN ran none of the model on the NPU (${strictError.message?.lineSequence()?.firstOrNull()?.take(100)})"
+            )
+        }
+        placement = "partly, the rest on the CPU"
+        return s
     }
 
     /**
@@ -154,6 +184,9 @@ class NsfwAnalyzer(context: Context, val model: NsfwModel, val accelerator: Nsfw
     }
 
     fun analyze(d: Decoded): List<NsfwDetection> = detector.detect(d.bitmap, d.width, d.height)
+
+    /** Where the model's nodes ended up (see [YoloDetector.placement]). */
+    val placement: String get() = detector.placement
 
     fun close() = detector.close()
 

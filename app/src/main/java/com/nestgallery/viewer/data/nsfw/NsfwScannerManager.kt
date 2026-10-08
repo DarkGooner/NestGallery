@@ -183,7 +183,7 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
             try {
                 val analyzer = probe(m, accel)
                 val workers = NsfwSessions.workers(appContext, m, accel)
-                val label = accel.title + (if (accel == NsfwAccelerator.CPU) " · $workers photos at once" else "") +
+                val label = accel.title + (if (accel == NsfwAccelerator.CPU) " · $workers photos at once" else " · ${analyzer.placement}") +
                     (if (failures.isNotEmpty()) " (${failures.joinToString("; ")})" else "")
                 return analyzer to NsfwBackend(accel, workers, label)
             } catch (e: Throwable) {
@@ -218,8 +218,11 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
         return android.graphics.Bitmap.createBitmap(px, w, h, android.graphics.Bitmap.Config.ARGB_8888)
     }
 
-    /** One speed-test row: photos per second with the scanner's own parallelism, or why it could not run. */
-    class SpeedResult(val accelerator: NsfwAccelerator, val photosPerSecond: Double?, val setupMs: Long, val note: String)
+    /**
+     * One speed-test row: photos per second with the scanner's own parallelism, or why it could not run. [details]
+     * holds the error and the app's recent QNN log lines when an accelerator failed (Settings can copy them).
+     */
+    class SpeedResult(val accelerator: NsfwAccelerator, val photosPerSecond: Double?, val setupMs: Long, val note: String, val details: String = "")
 
     /**
      * Times [m] on every hardware option the way a scan would use it (same number of photos at once). Each option
@@ -234,7 +237,8 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
             }
             val t0 = System.nanoTime()
             val analyzer = try { probe(m, accel) } catch (e: Throwable) {
-                onResult(SpeedResult(accel, null, 0, "Not available: " + (e.message?.lineSequence()?.firstOrNull()?.take(120) ?: e.javaClass.simpleName)))
+                val reason = e.message?.lineSequence()?.firstOrNull()?.take(160) ?: e.javaClass.simpleName
+                onResult(SpeedResult(accel, null, 0, "Not available: $reason", "${e}\n${NsfwSessions.recentQnnLog()}"))
                 continue
             }
             val setupMs = (System.nanoTime() - t0) / 1_000_000
@@ -250,7 +254,7 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
                 val seconds = (System.nanoTime() - start) / 1e9
                 bmp.recycle()
                 val rate = workers * perWorker / seconds
-                onResult(SpeedResult(accel, rate, setupMs, if (accel == NsfwAccelerator.CPU) "$workers photos at once" else ""))
+                onResult(SpeedResult(accel, rate, setupMs, if (accel == NsfwAccelerator.CPU) "$workers photos at once" else analyzer.placement))
             } catch (e: Throwable) {
                 onResult(SpeedResult(accel, null, setupMs, "Failed while running: " + (e.message?.take(120) ?: e.javaClass.simpleName)))
             } finally {
