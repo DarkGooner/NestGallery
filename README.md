@@ -89,8 +89,9 @@ every photo in the folder and its subfolders with NudeNet, on the device, and le
   filters work while the scan runs, a stopped scan resumes, and later scans only look at new or changed photos. Videos
   are skipped.
 - **Filters tab**: one card per label found in the folder, with a bar chart of how many photos have 0, 1, 2... of it
-  (tap a bar for "exactly that many"), a range slider from 0 to the highest count, and quick choices (Any / None /
-  1 or more / 2 or more). A photo passes only if it fits **every** narrowed card (e.g. Face female "Exactly 2" = two
+  (tap a bar for "exactly that many"), a range slider from 0 to the highest count with each bar right above its stop,
+  and quick choices (Any / None / 1 or more / 2 or more). Scrolling the list never changes a filter: the sliders move
+  only when a thumb is dragged sideways (tapping the track does nothing), and taps right after a scroll are ignored. A photo passes only if it fits **every** narrowed card (e.g. Face female "Exactly 2" = two
   women's faces). **Minimum confidence** (default 45%) decides which detections count; changing it never rescans,
   because every detection down to 25% is stored. The summary card shows how many photos match, with **Clear filters**.
 - **Photos tab**: the matching photos, with the active filters as removable chips; tapping a photo opens the viewer on

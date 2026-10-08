@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -279,8 +280,12 @@ private fun FiltersTab(index: NsfwFolderIndex, filter: NsfwFilterState, active: 
             i to group.takeIf { k == 0 || NsfwLabels.group(NsfwLabels.ALL[present[k - 1]]) != it }
         }
     }
+    // Sliders, bars and chips ignore touches while this list scrolls and just after (no accidental changes)
+    val listState = rememberLazyListState()
+    val guard = rememberTouchGuard(listState)
     LazyColumn(
         Modifier.fillMaxSize(),
+        state = listState,
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -311,7 +316,7 @@ private fun FiltersTab(index: NsfwFolderIndex, filter: NsfwFilterState, active: 
                 }
             }
         }
-        item(key = "confidence") { NsfwConfidenceCard(filter) }
+        item(key = "confidence") { NsfwConfidenceCard(filter, guard) }
         if (rows.isEmpty()) {
             item(key = "none") {
                 Text(
@@ -334,7 +339,7 @@ private fun FiltersTab(index: NsfwFolderIndex, filter: NsfwFilterState, active: 
                         modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 8.dp)
                     )
                 }
-                NsfwLabelCard(index, i, filter)
+                NsfwLabelCard(index, i, filter, guard)
             }
         }
     }
