@@ -49,17 +49,27 @@ class VlcPlayerController(
 ) {
     companion object {
         private const val TAG = "NestGalleryVLC"
+
+        @Volatile private var shared: LibVLC? = null
+
+        /**
+         * One LibVLC for the whole app, as VLC recommends: creating it loads every plugin (slow), and creating /
+         * releasing one per video while the pager swipes raced its native threads. Never released (process-wide).
+         */
+        private fun libVlc(context: Context): LibVLC = shared ?: synchronized(this) {
+            shared ?: LibVLC(
+                context.applicationContext,
+                arrayListOf(
+                    "--no-video-title-show",
+                    "--audio-time-stretch",            // keep the pitch when the speed changes
+                    "--sub-autodetect-file"            // pick up "movie.srt" / ".ass" / ... next to "movie.mkv"
+                )
+            ).also { shared = it }
+        }
     }
 
     private val appContext = context.applicationContext
-    private val libVlc = LibVLC(
-        appContext,
-        arrayListOf(
-            "--no-video-title-show",
-            "--audio-time-stretch",            // keep the pitch when the speed changes
-            "--sub-autodetect-file"            // pick up "movie.srt" / ".ass" / ... next to "movie.mkv"
-        )
-    )
+    private val libVlc = libVlc(appContext)
     val mediaPlayer: MediaPlayer = MediaPlayer(libVlc)
     private val main = Handler(Looper.getMainLooper())
 
@@ -76,6 +86,8 @@ class VlcPlayerController(
     init {
         mediaPlayer.setEventListener { event ->
             if (event.type == MediaPlayer.Event.TimeChanged) lastKnownPositionMs = event.timeChanged
+            if (event.type == MediaPlayer.Event.EndReached || event.type == MediaPlayer.Event.Stopped ||
+                event.type == MediaPlayer.Event.EncounteredError) PlaybackCrashGuard.end(appContext, file)
             if (event.type == MediaPlayer.Event.EndReached && repeat && !released) {
                 main.post { if (!released) restartFromBeginning() }
             }
@@ -85,8 +97,13 @@ class VlcPlayerController(
                 main.post {
                     if (!released) {
                         usingHardware = false
-                        openMedia(startMs = lastKnownPositionMs)
-                        onDecoderFallback?.invoke()
+                        try {
+                            openMedia(startMs = lastKnownPositionMs)
+                            onDecoderFallback?.invoke()
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "Software reopen failed: ${file.absolutePath}", t)
+                            onAttachError?.invoke()
+                        }
                     }
                 }
                 return@setEventListener
@@ -116,6 +133,11 @@ class VlcPlayerController(
     fun attach(view: TextureView, startMs: Long = 0L, autoPlay: Boolean = true) {
         if (released) return
         textureView = view
+        if (!file.canRead()) {
+            Log.w(TAG, "Not readable: ${file.absolutePath}")
+            main.post { if (!released) onAttachError?.invoke() }
+            return
+        }
         try {
             val vout = mediaPlayer.getVLCVout()
             if (vout.areViewsAttached()) vout.detachViews()
@@ -140,21 +162,27 @@ class VlcPlayerController(
         if (startMs > 0) media.addOption(":start-time=${startMs / 1000.0}")
         mediaPlayer.setMedia(media)
         media.release()
-        if (autoPlay) mediaPlayer.play()
+        if (autoPlay) { PlaybackCrashGuard.begin(appContext, file); mediaPlayer.play() }
     }
 
     private fun restartFromBeginning() {
+        PlaybackCrashGuard.begin(appContext, file)
         runCatching { mediaPlayer.stop(); mediaPlayer.play() }
     }
 
     fun play() {
         if (released) return
+        PlaybackCrashGuard.begin(appContext, file)
         // after the end VLC is stopped: playing again starts from the top
         if (mediaPlayer.playerState == org.videolan.libvlc.interfaces.IMedia.State.Ended) restartFromBeginning() else mediaPlayer.play()
     }
 
     fun pause() {
-        if (!released) mediaPlayer.pause()
+        if (released) return
+        mediaPlayer.pause()
+        // nothing is decoding while paused (this also covers the app going to the background, where the player
+        // pauses): a later process death is not this file's fault
+        PlaybackCrashGuard.end(appContext, file)
     }
 
     fun togglePlayPause() {
@@ -233,7 +261,7 @@ class VlcPlayerController(
         runCatching { if (mediaPlayer.getVLCVout().areViewsAttached()) mediaPlayer.getVLCVout().detachViews() }
         runCatching { mediaPlayer.stop() }
         runCatching { mediaPlayer.release() }
-        runCatching { libVlc.release() }
+        PlaybackCrashGuard.end(appContext, file)
         textureView = null
     }
 }
