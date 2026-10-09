@@ -37,6 +37,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -203,6 +204,8 @@ fun VideoPlayer(
     var resumeChip by remember(entry.file) { mutableStateOf(resumeAt > 0) }
     var reopenAt by remember(entry.file) { mutableLongStateOf(resumeAt) }
     val currentPage by rememberUpdatedState(isCurrentPage)
+    // read inside pointerInput blocks, which outlive recompositions: a plain parameter there stays at its first value
+    val chromeShown by rememberUpdatedState(chromeVisible)
     val loopNow by rememberUpdatedState(loop)
 
     val controller = remember(entry.file, hardware) {
@@ -365,7 +368,7 @@ fun VideoPlayer(
                     detectTapGestures(
                         onTap = {
                             if (locked) lockHint = !lockHint
-                            else onChromeVisibleChange(!chromeVisible)
+                            else onChromeVisibleChange(!chromeShown)
                         },
                         onDoubleTap = { p ->
                             if (locked || durationMs <= 0) return@detectTapGestures
@@ -792,10 +795,15 @@ private fun ScrubBar(
 private fun ScrubPreview(bitmap: Bitmap?, positionMs: Long, fraction: Float, trackWidthPx: Float) {
     val density = LocalDensity.current
     val wPx = with(density) { 168.dp.toPx() }
-    val liftPx = with(density) { 132.dp.roundToPx() }
+    val liftPx = with(density) { 52.dp.roundToPx() }
     val x = (fraction * trackWidthPx - wPx / 2).coerceIn(0f, (trackWidthPx - wPx).coerceAtLeast(0f))
+    // unbounded: the bar's 44 dp box would otherwise squash the frame and cut the time off; bottom-aligned to the
+    // box, then lifted so the preview ends just above the thumb
     Column(
-        Modifier.offset { IntOffset(x.roundToInt(), -liftPx) }.width(168.dp),
+        Modifier
+            .wrapContentHeight(align = Alignment.Bottom, unbounded = true)
+            .offset { IntOffset(x.roundToInt(), -liftPx) }
+            .width(168.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(Modifier.width(168.dp).height(95.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFF202124))) {
