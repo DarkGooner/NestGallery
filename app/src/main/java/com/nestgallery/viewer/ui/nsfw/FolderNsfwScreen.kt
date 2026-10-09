@@ -17,13 +17,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,14 +31,11 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -56,21 +49,17 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,7 +72,6 @@ import androidx.compose.ui.unit.dp
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.nsfw.NsfwFilter
 import com.nestgallery.viewer.data.nsfw.NsfwFolderIndex
-import com.nestgallery.viewer.data.nsfw.NsfwLabels
 import com.nestgallery.viewer.data.nsfw.NsfwScanService
 import com.nestgallery.viewer.data.nsfw.NsfwScanStatus
 import com.nestgallery.viewer.data.nsfw.NsfwScannerManager
@@ -93,15 +81,14 @@ import com.nestgallery.viewer.ui.MediaImageTile
 import com.nestgallery.viewer.ui.ScreenInsets
 import com.nestgallery.viewer.ui.ScrollKeys
 import com.nestgallery.viewer.ui.rememberKeptGridState
-import com.nestgallery.viewer.ui.rememberKeptListState
 import com.nestgallery.viewer.ui.TopBarInsets
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 
 /**
  * NSFW hub for a recursive view, laid out like the face screen: top bar (scan / rescan, overflow with Settings),
- * progress card while scanning, and two tabs - **Filters** (one card per label found: histogram + range slider) and
- * **Photos** (the photos that pass every filter; tapping one opens the viewer on that set).
+ * progress card while scanning, then a filter chip bar over the photos that pass every filter (tapping one opens the
+ * viewer on that set). Filters are edited in [NsfwFilterSheet].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -123,8 +110,9 @@ fun FolderNsfwScreen(
     val filter = remember(rootPath) { NsfwFilterState.forFolder(rootPath) }
     val n = remember { NumberFormat.getInstance() }
 
-    // 0: Filters, 1: Photos. Kept per folder (the screen is rebuilt after the viewer), as are both scroll positions.
-    var selectedTab by filter::tab
+    // The grid's scroll position is kept per folder (the screen is rebuilt after the viewer).
+    var showSheet by remember { mutableStateOf(false) }
+    var sheetFocus by remember { mutableStateOf<Int?>(null) }
     val scrollKey = ScrollKeys.nsfw(rootPath)
     val photos = remember(files) { files.filter { !it.isVideo && NsfwScannerManager.isScannable(it.file) } }
     var showMenu by remember { mutableStateOf(false) }
@@ -138,9 +126,9 @@ fun FolderNsfwScreen(
         value = nsfw.folderIndex(photos.map { it.file }, filter.threshold)
     }
     val active = filter.activeRanges(index.maxCounts)
-    // Every narrowed slider must hold (AND); with no filter all scanned photos are listed.
-    val shown = remember(index, active, photos) {
-        photos.filterIndexed { i, _ -> index.counts.getOrNull(i) != null && NsfwFilter.matches(index.counts[i], active) }
+    // Every narrowed label range must hold (AND), plus hide-empty; with no filter all scanned photos are listed.
+    val shown = remember(index, active, photos, filter.hideEmpty) {
+        photos.filterIndexed { i, _ -> filter.matches(index.counts.getOrNull(i), active) }
     }
     val scanningHere = status.activeFolder == rootPath
     val busyElsewhere = status.activeFolder.let { it != null && it != rootPath }
@@ -216,41 +204,23 @@ fun FolderNsfwScreen(
                     return@Column
                 }
 
-                PrimaryTabRow(selectedTabIndex = selectedTab) {
-                    Tab(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        text = { Text("Filters") },
-                        icon = {
-                            BadgedBox(badge = { if (active.isNotEmpty()) Badge { Text("${active.size}") } }) {
-                                Icon(Icons.Default.FilterAlt, contentDescription = null, modifier = Modifier.size(20.dp))
-                            }
-                        }
-                    )
-                    Tab(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        text = { Text("Photos (${n.format(shown.size)})") },
-                        icon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(20.dp)) }
-                    )
-                }
-
-                if (selectedTab == 0) {
-                    FiltersTab(index, filter, active, shown.size, scrollKey + "filters", onShowPhotos = { selectedTab = 1 })
-                } else {
-                    PhotosTab(
-                        shown = shown,
-                        index = index,
-                        active = active,
-                        filter = filter,
-                        scrollKey = scrollKey + "photos",
-                        onOpen = { i -> onOpenImage(shown, i) },
-                        onHold = { previewEntry = it }
-                    )
-                }
+                NsfwFilterBar(index, active, filter, shown.size, onOpenSheet = { focus -> sheetFocus = focus; showSheet = true })
+                PhotosGrid(
+                    shown = shown,
+                    filtered = active.isNotEmpty() || filter.hideEmpty,
+                    filter = filter,
+                    scrollKey = scrollKey + "photos",
+                    onOpen = { i -> onOpenImage(shown, i) },
+                    onHold = { previewEntry = it },
+                    onEditFilters = { sheetFocus = null; showSheet = true }
+                )
             }
             previewEntry?.let { HoldPreviewOverlay(entry = it) }
         }
+    }
+
+    if (showSheet && index.scanned > 0) {
+        NsfwFilterSheet(index, filter, shown.size, sheetFocus, onDismiss = { showSheet = false })
     }
 
     if (confirmForget) {
@@ -278,111 +248,40 @@ private fun NsfwScanStatus.folderOf(): String? = when (this) {
     NsfwScanStatus.Idle -> null
 }
 
+/** The photos that pass every filter (all scanned photos when none is set); tapping one opens the viewer on them. */
 @Composable
-private fun FiltersTab(
-    index: NsfwFolderIndex,
-    filter: NsfwFilterState,
-    active: Map<Int, IntRange>,
-    shownCount: Int,
-    scrollKey: String,
-    onShowPhotos: () -> Unit
-) {
-    val n = NumberFormat.getInstance()
-    // (label index, group heading to show above it or null); ALL is ordered by group
-    val rows = index.presentLabels.let { present ->
-        present.mapIndexed { k, i ->
-            val group = NsfwLabels.group(NsfwLabels.ALL[i])
-            i to group.takeIf { k == 0 || NsfwLabels.group(NsfwLabels.ALL[present[k - 1]]) != it }
-        }
-    }
-    // Sliders, bars and chips ignore touches while this list scrolls and just after (no accidental changes)
-    val listState = rememberKeptListState(scrollKey, rows.size + 3)      // + summary, confidence, empty note
-    val guard = rememberTouchGuard(listState)
-    LazyColumn(
-        Modifier.fillMaxSize(),
-        state = listState,
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 32.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        item(key = "summary") {
-            Card(
-                Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-            ) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            n.format(shownCount),
-                            style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Text(
-                            (if (active.isEmpty()) "photos scanned · no filter" else "of ${n.format(index.scanned)} scanned photos match") +
-                                if (active.size > 1) " (all ${active.size} filters)" else "",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                        )
-                    }
-                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Button(onClick = onShowPhotos, enabled = shownCount > 0) { Text("Show photos") }
-                        if (active.isNotEmpty()) OutlinedButton(onClick = { filter.clear() }) { Text("Clear filters") }
-                    }
-                }
-            }
-        }
-        item(key = "confidence") { NsfwConfidenceCard(filter, guard) }
-        if (rows.isEmpty()) {
-            item(key = "none") {
-                Text(
-                    "Nothing detected at this confidence.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 24.dp).fillMaxWidth(),
-                    textAlign = TextAlign.Center
-                )
-            }
-        }
-        items(rows, key = { it.first }) { (i, heading) ->
-            Column {
-                if (heading != null) {
-                    Text(
-                        heading.uppercase(),
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(start = 4.dp, top = 12.dp, bottom = 8.dp)
-                    )
-                }
-                NsfwLabelCard(index, i, filter, guard)
-            }
-        }
-    }
-}
-
-@Composable
-private fun PhotosTab(
+private fun PhotosGrid(
     shown: List<DocEntry>,
-    index: NsfwFolderIndex,
-    active: Map<Int, IntRange>,
+    filtered: Boolean,
     filter: NsfwFilterState,
     scrollKey: String,
     onOpen: (Int) -> Unit,
-    onHold: (DocEntry?) -> Unit
+    onHold: (DocEntry?) -> Unit,
+    onEditFilters: () -> Unit
 ) {
     val grid = rememberKeptGridState(scrollKey, shown.size)
     val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize()) {
-        if (active.isNotEmpty()) {
-            Spacer(Modifier.height(8.dp))
-            NsfwActiveFilterChips(active, index.maxCounts, filter)
-        }
         if (shown.isEmpty()) {
             Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("No photos match these filters", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (active.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    FilledTonalButton(onClick = { filter.clear() }) { Text("Clear filters") }
+                Icon(Icons.Default.FilterAlt, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (filtered) "No photos match these filters" else "Nothing to show yet",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                if (filtered) {
+                    Text(
+                        "Loosen a filter or clear them all.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onEditFilters) { Text("Edit filters") }
+                        FilledTonalButton(onClick = { filter.reset() }) { Text("Clear filters") }
+                    }
                 }
             }
             return@Column

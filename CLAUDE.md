@@ -57,7 +57,8 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
 
 Own screen (`FolderNsfwScreen`, opened from the recursive view's shield icon, built like `FolderFaceScreen`): NudeNet
 320n @ 320 (640m dropped 2026-10-09: ~2 photos/s vs ~40) -> `YoloDecoder` -> `nest_nsfw.db` (rows keyed by model id) +
-in-memory map -> Filters tab (histogram + RangeSlider per label, AND) / Photos tab. EraX was removed on 2026-10-09 at
+in-memory map -> photo grid with a filter chip bar + filter sheet (label rows with faceted counts, AND; hide-empty;
+confidence presets). EraX was removed on 2026-10-09 at
 the user's request. Mirrors the face scan (manager + foreground service), not Room/WorkManager. NMS is within
 `NsfwLabels.nmsGroup`; the counting threshold (default 0.45) is applied at load time, every box >= 0.25 is stored.
 **Models are Git LFS** (`nudenet_*.onnx`; `git lfs install --local` done here

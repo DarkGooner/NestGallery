@@ -100,14 +100,16 @@ every photo in the folder and its subfolders with NudeNet, on the device, and le
   time left, Pause / Resume / Stop, and the same progress card on the screen. Results are saved as they come in, so the
   filters work while the scan runs, a stopped scan resumes, and later scans only look at new or changed photos. Videos
   are skipped.
-- **Filters tab**: one card per label found in the folder, with a bar chart of how many photos have 0, 1, 2... of it
-  (tap a bar for "exactly that many"), a range slider from 0 to the highest count with each bar right above its stop,
-  and quick choices (Any / None / 1 or more / 2 or more). Scrolling the list never changes a filter: the sliders move
-  only when a thumb is dragged sideways (tapping the track does nothing), and taps right after a scroll are ignored. A photo passes only if it fits **every** narrowed card (e.g. Face female "Exactly 2" = two
-  women's faces). **Minimum confidence** (default 45%) decides which detections count; changing it never rescans,
-  because every detection down to 25% is stored. The summary card shows how many photos match, with **Clear filters**.
-- **Photos tab**: the matching photos, with the active filters as removable chips; tapping a photo opens the viewer on
-  that set.
+- **Photos and filters**: the screen shows the matching photos, with a chip row above them: **Filters** (opens the
+  filter sheet), **Something detected** (hides photos where nothing was found), one removable chip per active filter
+  (tap to edit it), and while nothing is filtered a few one-tap suggestions ("+ Buttocks · exposed"). Under it,
+  "N of M photos match" and **Clear all**. Tapping a photo opens the viewer on that set.
+- **Filter sheet**: the hide-nothing-detected switch; **detection confidence** as 30 / 45 / 60 / 75% (default 45%;
+  changing it never rescans, because every detection down to 25% is stored); then one row per label found, grouped
+  Faces / Exposed / Covered, saying how many photos have it among those the other filters leave. Expanding a row offers
+  Any / None / 1+ / 2+ / 3+, each with the number of photos it would leave (choices that leave none are greyed out),
+  and **Custom** for any from-to range with +/- buttons. A photo passes only if it fits **every** filter (e.g. Female
+  face "Exactly 2" = two women's faces). Reset at the top, **Show N photos** at the bottom.
 - **Model**: NudeNet 320n (YOLOv8n, 12 MB). About 40 photos/s on a Snapdragon 7 Gen 3, so 20,000 photos take under
   10 minutes. (The larger 640m variant was tried and dropped: about 2 photos/s on the same phone.)
 - **Hardware** (Settings, from the 3-dot menu here, in the folder browser and in the recursive view): *Auto* (default:

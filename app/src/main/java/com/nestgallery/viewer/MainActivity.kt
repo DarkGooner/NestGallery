@@ -44,7 +44,6 @@ import java.io.File
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.GalleryCache
 import com.nestgallery.viewer.ui.ScrollKeys
-import com.nestgallery.viewer.ui.nsfw.NsfwFilterState
 import com.nestgallery.viewer.data.storageRootEntry
 import com.nestgallery.viewer.ui.ExploreScreen
 import com.nestgallery.viewer.ui.GalleryScreen
@@ -237,7 +236,6 @@ private fun NestGalleryApp() {
                     },
                     onOpenNsfw = { root, files ->
                         GalleryCache.forgetScrolls(ScrollKeys.nsfw(root.file.absolutePath))
-                        NsfwFilterState.forFolder(root.file.absolutePath).tab = 0
                         screen = Screen.FolderNsfw(root = root, files = files, returnTo = s)
                     },
                     onOpenSettings = { screen = Screen.Settings(returnTo = s) },

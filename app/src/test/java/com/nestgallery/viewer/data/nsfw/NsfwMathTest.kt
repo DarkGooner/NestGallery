@@ -225,11 +225,38 @@ class NsfwMathTest {
         assertArrayEquals(intArrayOf(0, 1, 0, 1), idx.histograms[i("FACE_FEMALE")])
         assertArrayEquals(intArrayOf(1, 1), idx.histograms[i("BELLY_EXPOSED")])
         assertTrue(idx.counts[2] == null && idx.counts[3] == null)
+        assertEquals(0, idx.empty)
+        // nothing detected, or only below the threshold: empty
+        assertEquals(2, NsfwFolderIndex.build(listOf(result(), result(det("FACE_FEMALE", 0.3f)), results[0]), 0.45f).empty)
 
         assertTrue(NsfwFilter.isActive(1..3, 3))
         assertTrue(NsfwFilter.isActive(0..2, 3))
         assertFalse(NsfwFilter.isActive(0..3, 3))
         assertArrayEquals(IntArray(NsfwLabels.ALL.size), NsfwFolderIndex.build(emptyList(), 0.45f).maxCounts)
+    }
+
+    @Test
+    fun facetHistogramsIgnoreTheirOwnRange() {
+        val n = NsfwLabels.ALL.size
+        val a = NsfwLabels.indexOf("FACE_FEMALE")
+        val b = NsfwLabels.indexOf("BELLY_EXPOSED")
+        fun photo(fa: Int, be: Int) = IntArray(n).also { it[a] = fa; it[b] = be }
+        val counts = listOf(photo(0, 0), photo(1, 0), photo(2, 1), photo(1, 1), null)
+        val max = NsfwFilter.maxCounts(counts)
+        // no filter: plain histograms
+        assertArrayEquals(intArrayOf(1, 2, 1), NsfwFilter.facetHistograms(counts, max, emptyMap())[a])
+        // belly 1+: faces counted among the 2 photos with a belly; belly itself counted over all photos
+        val h = NsfwFilter.facetHistograms(counts, max, mapOf(b to 1..NsfwFilter.NO_MAX))
+        assertArrayEquals(intArrayOf(0, 1, 1), h[a])
+        assertArrayEquals(intArrayOf(2, 2), h[b])
+        // both filtered: a photo failing both ranges counts nowhere
+        val h2 = NsfwFilter.facetHistograms(counts, max, mapOf(b to 1..NsfwFilter.NO_MAX, a to 2..2))
+        assertArrayEquals(intArrayOf(0, 1, 1), h2[a])        // photos with a belly
+        assertArrayEquals(intArrayOf(0, 1), h2[b])           // photos with exactly 2 faces
+        // hiding empty photos drops (0, 0) from every label's counts
+        val h3 = NsfwFilter.facetHistograms(counts, max, emptyMap(), skipEmpty = true)
+        assertArrayEquals(intArrayOf(0, 2, 1), h3[a])
+        assertArrayEquals(intArrayOf(1, 2), h3[b])
     }
 
     @Test

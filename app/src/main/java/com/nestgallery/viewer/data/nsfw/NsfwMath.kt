@@ -262,6 +262,39 @@ object NsfwFilter {
         for ((i, r) in ranges) if (counts[i] < r.first || counts[i] > r.last) return false
         return true
     }
+
+    /** True when nothing at all was detected (every count 0). */
+    fun isEmpty(counts: IntArray): Boolean = counts.all { it == 0 }
+
+    /**
+     * Faceted histograms: result[label][n] = photos with exactly n of that label that pass every OTHER active range,
+     * so the filter sheet can say how many photos each choice for a label would leave. One pass over the photos: a
+     * photo failing no range counts for every label, one failing a single range only for that range's label.
+     * [skipEmpty] leaves out photos where nothing was detected (the "hide empty" filter applies to every label).
+     */
+    fun facetHistograms(
+        counts: List<IntArray?>,
+        maxCounts: IntArray,
+        ranges: Map<Int, IntRange>,
+        skipEmpty: Boolean = false
+    ): List<IntArray> {
+        val hist = List(maxCounts.size) { IntArray(maxCounts[it] + 1) }
+        val keys = ranges.keys.toIntArray()
+        for (c in counts) {
+            if (c == null || (skipEmpty && isEmpty(c))) continue
+            var failed = -1
+            var failures = 0
+            for (k in keys) {
+                val r = ranges.getValue(k)
+                if (c[k] < r.first || c[k] > r.last) { failures++; failed = k; if (failures > 1) break }
+            }
+            when (failures) {
+                0 -> for (i in hist.indices) hist[i][c[i].coerceAtMost(maxCounts[i])]++
+                1 -> hist[failed][c[failed].coerceAtMost(maxCounts[failed])]++
+            }
+        }
+        return hist
+    }
 }
 
 /**
@@ -274,7 +307,9 @@ class NsfwFolderIndex(
     val maxCounts: IntArray,
     val photosWithLabel: IntArray,
     val histograms: List<IntArray>,
-    val scanned: Int
+    val scanned: Int,
+    /** Scanned photos where nothing was detected at this threshold. */
+    val empty: Int = 0
 ) {
     /** Labels found at least once, in [NsfwLabels.ALL] order (one slider each). */
     val presentLabels: List<Int> get() = maxCounts.indices.filter { maxCounts[it] > 0 }
@@ -291,7 +326,11 @@ class NsfwFolderIndex(
                 if (c[i] > 0) with[i]++
                 hist[i][c[i]]++
             }
-            return NsfwFolderIndex(counts, max, with, hist, counts.count { it != null })
+            return NsfwFolderIndex(
+                counts, max, with, hist,
+                scanned = counts.count { it != null },
+                empty = counts.count { it != null && NsfwFilter.isEmpty(it) }
+            )
         }
     }
 }
