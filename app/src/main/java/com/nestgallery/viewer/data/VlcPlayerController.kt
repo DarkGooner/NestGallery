@@ -45,12 +45,24 @@ class VlcPlayerController(
     private val onAttachError: (() -> Unit)? = null,
     /** Called (main thread) when hardware decoding failed and playback was reopened in software. */
     private val onDecoderFallback: (() -> Unit)? = null,
+    /** Called (main thread) when the video track shows no picture with either decoder (it plays, but stays black). */
+    private val onNoPicture: (() -> Unit)? = null,
     private val onEvent: ((MediaPlayer.Event) -> Unit)? = null
 ) {
     companion object {
         private const val TAG = "NestGalleryVLC"
 
         @Volatile private var shared: LibVLC? = null
+
+        /** Playing with no picture this long (with a video track) = the decoder isn't coping: try the other one. */
+        private const val NO_PICTURE_MS = 6_000L
+
+        /**
+         * stop() / release() block until VLC's input and decoder threads have finished. With a decoder that is stuck
+         * (software VP9 at 4K, a broken file) that took seconds on the main thread: a frozen screen and then Android
+         * killing the app as not responding. They run here instead, one after another, off the main thread.
+         */
+        private val teardown = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "vlc-teardown") }
 
         /**
          * One LibVLC for the whole app, as VLC recommends: creating it loads every plugin (slow), and creating /
@@ -82,10 +94,17 @@ class VlcPlayerController(
         private set
     private var fellBack = false
     private var lastKnownPositionMs = 0L
+    @Volatile private var gotPicture = false
+    private var noPictureCheckArmed = false
+    private val noPictureCheck = Runnable { checkPicture() }
 
     init {
         mediaPlayer.setEventListener { event ->
             if (event.type == MediaPlayer.Event.TimeChanged) lastKnownPositionMs = event.timeChanged
+            if (event.type == MediaPlayer.Event.Vout && event.voutCount > 0) gotPicture = true
+            if (event.type == MediaPlayer.Event.Playing && !gotPicture && !released) {
+                main.post { if (!released && !noPictureCheckArmed) { noPictureCheckArmed = true; main.postDelayed(noPictureCheck, NO_PICTURE_MS) } }
+            }
             if (event.type == MediaPlayer.Event.EndReached || event.type == MediaPlayer.Event.Stopped ||
                 event.type == MediaPlayer.Event.EncounteredError) PlaybackCrashGuard.end(appContext, file)
             if (event.type == MediaPlayer.Event.EndReached && repeat && !released) {
@@ -155,6 +174,9 @@ class VlcPlayerController(
     }
 
     private fun openMedia(startMs: Long = 0L, autoPlay: Boolean = true) {
+        gotPicture = false
+        noPictureCheckArmed = false
+        main.removeCallbacks(noPictureCheck)
         val media = Media(libVlc, Uri.fromFile(file))
         media.setHWDecoderEnabled(usingHardware, false)
         if (!usingHardware) media.addOption(":avcodec-hw=none")
@@ -167,7 +189,38 @@ class VlcPlayerController(
 
     private fun restartFromBeginning() {
         PlaybackCrashGuard.begin(appContext, file)
-        runCatching { mediaPlayer.stop(); mediaPlayer.play() }
+        // stop() blocks until the decoders have finished (see teardown); play() after it, on the same thread
+        teardown.execute { if (!released) runCatching { mediaPlayer.stop(); if (!released) mediaPlayer.play() } }
+    }
+
+    /**
+     * Runs [NO_PICTURE_MS] after playback started without a picture. A file with a video track that still has no
+     * video output means the decoder can't handle it (or can't keep up): reopen once with the other decoder where we
+     * were, like the hardware-error fallback; if that one shows nothing either, report it. Audio-only files (no video
+     * track) are left alone.
+     */
+    private fun checkPicture() {
+        noPictureCheckArmed = false
+        if (released || gotPicture || !isPlaying) return
+        val hasVideo = runCatching { mediaPlayer.videoTracksCount > 0 }.getOrDefault(false)
+        if (!hasVideo) return
+        if (!fellBack) {
+            fellBack = true
+            Log.w(TAG, "No picture after ${NO_PICTURE_MS} ms (${if (usingHardware) "hardware" else "software"}), switching decoder: ${file.absolutePath}")
+            usingHardware = !usingHardware
+            try {
+                openMedia(startMs = lastKnownPositionMs)
+                onDecoderFallback?.invoke()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Reopen failed: ${file.absolutePath}", t)
+                onAttachError?.invoke()
+            }
+        } else {
+            Log.w(TAG, "No picture with either decoder: ${file.absolutePath}")
+            runCatching { mediaPlayer.pause() }
+            PlaybackCrashGuard.end(appContext, file)
+            onNoPicture?.invoke()
+        }
     }
 
     fun play() {
@@ -256,12 +309,18 @@ class VlcPlayerController(
     fun release() {
         if (released) return
         released = true
+        main.removeCallbacks(noPictureCheck)
         runCatching { textureView?.let { tv -> sizeListener?.let { tv.removeOnLayoutChangeListener(it) } } }
         sizeListener = null
+        // the views belong to the UI thread; stopping the decoders may block, so that part runs off it (see teardown)
         runCatching { if (mediaPlayer.getVLCVout().areViewsAttached()) mediaPlayer.getVLCVout().detachViews() }
-        runCatching { mediaPlayer.stop() }
-        runCatching { mediaPlayer.release() }
-        PlaybackCrashGuard.end(appContext, file)
+        runCatching { mediaPlayer.setEventListener(null) }
         textureView = null
+        val player = mediaPlayer
+        teardown.execute {
+            runCatching { player.stop() }
+            runCatching { player.release() }
+            PlaybackCrashGuard.end(appContext, file)
+        }
     }
 }
