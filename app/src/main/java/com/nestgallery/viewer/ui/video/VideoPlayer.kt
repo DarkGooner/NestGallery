@@ -198,6 +198,7 @@ fun VideoPlayer(
     var userPaused by remember { mutableStateOf(false) }
     var showRemaining by remember { mutableStateOf(true) }
     var loopRestarts by remember { mutableIntStateOf(0) }
+    var streamsChanged by remember { mutableIntStateOf(0) }
 
     // Where to start: the remembered position (VLC-style resume), or where we were when the decoder was switched.
     val resumeAt = remember(entry.file) { prefs.resumePosition(entry.file) }
@@ -223,7 +224,7 @@ fun VideoPlayer(
         ) { event ->
             when (event.type) {
                 MediaPlayer.Event.Opening, MediaPlayer.Event.Buffering -> if (durationMs <= 0) isBuffering = true
-                MediaPlayer.Event.Playing -> { isBuffering = false; isPlaying = true; ended = false }
+                MediaPlayer.Event.Playing -> { isBuffering = false; isPlaying = true; ended = false; streamsChanged++ }
                 MediaPlayer.Event.Paused, MediaPlayer.Event.Stopped -> { isBuffering = false; isPlaying = false }
                 MediaPlayer.Event.EndReached -> {
                     isBuffering = false; isPlaying = false
@@ -233,12 +234,13 @@ fun VideoPlayer(
                     isBuffering = false; isPlaying = false
                     errorMessage = "VLC could not decode this file."
                 }
-                MediaPlayer.Event.ESAdded, MediaPlayer.Event.ESSelected, MediaPlayer.Event.Vout -> Unit
+                MediaPlayer.Event.ESAdded, MediaPlayer.Event.ESDeleted, MediaPlayer.Event.ESSelected, MediaPlayer.Event.Vout -> streamsChanged++
             }
         }
     }
 
-    // Track lists and the video description appear once VLC has parsed the streams.
+    // Track lists and the video description appear once VLC has parsed the streams; read again only when VLC reports
+    // a stream change (each read builds the lists over JNI, which a timer did every 1.2 s before).
     fun refreshTracks() {
         audioTracks = controller.audioTracks()
         subtitleTracks = controller.subtitleTracks()
@@ -288,15 +290,17 @@ fun VideoPlayer(
     // loop: the end event can't reach the controller it comes from, so it bumps a counter this effect reacts to
     LaunchedEffect(loopRestarts) { if (loopRestarts > 0) controller.play() }
 
+    LaunchedEffect(controller, streamsChanged) { refreshTracks() }
+
+    // The position only shows with the controls, so poll quickly then and slowly (play state, keep-screen-on) while
+    // the video plays without them - fewer recompositions and JNI calls during normal watching.
     LaunchedEffect(controller) {
-        var ticks = 0
         while (isActive) {
             if (!isScrubbing) positionMs = controller.positionMs
             val d = controller.durationMs
             if (d > 0) { durationMs = d; isBuffering = false }
             isPlaying = controller.isPlaying
-            if (ticks++ % 6 == 0) refreshTracks()
-            delay(200)
+            delay(if (chromeShown || durationMs <= 0) 200L else 1000L)
         }
     }
 
@@ -806,8 +810,9 @@ private fun ScrubPreview(bitmap: Bitmap?, positionMs: Long, fraction: Float, tra
             .width(168.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        val image = remember(bitmap) { bitmap?.asImageBitmap() }
         Box(Modifier.width(168.dp).height(95.dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFF202124))) {
-            bitmap?.let { Image(it.asImageBitmap(), contentDescription = "Preview", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
+            image?.let { Image(it, contentDescription = "Preview", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize()) }
         }
         Spacer(Modifier.height(4.dp))
         Surface(color = Color.Black.copy(alpha = 0.85f), shape = RoundedCornerShape(6.dp)) {

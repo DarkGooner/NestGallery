@@ -130,6 +130,13 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    // Coil trims its own memory cache; these are the app's own caches.
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        com.nestgallery.viewer.ui.gallery.ThumbnailCache.trim(level)
+        com.nestgallery.viewer.data.GalleryCache.trim(level)
+    }
 }
 
 @Composable

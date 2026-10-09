@@ -29,6 +29,26 @@ enum class VideoScale(val label: String, internal val vlc: MediaPlayer.ScaleType
 }
 
 /**
+ * The one LibVLC instance of the process. Creating a LibVLC per video (as before) loaded VLC's module bank again for
+ * every player and hold preview; MediaPlayers can share one instance, so it is made once and never released.
+ */
+object VlcEngine {
+    @Volatile private var instance: LibVLC? = null
+
+    fun get(context: Context): LibVLC =
+        instance ?: synchronized(this) {
+            instance ?: LibVLC(
+                context.applicationContext,
+                arrayListOf(
+                    "--no-video-title-show",
+                    "--audio-time-stretch",            // keep the pitch when the speed changes
+                    "--sub-autodetect-file"            // pick up "movie.srt" / ".ass" / ... next to "movie.mkv"
+                )
+            ).also { instance = it }
+        }
+}
+
+/**
  * Lifecycle wrapper around LibVLC for local-file playback (the viewer and the hold-to-preview tiles).
  *
  * Decoding is software by default ([hardwareDecoding] false): it is the compatibility path for legacy AVI / DivX /
@@ -51,15 +71,7 @@ class VlcPlayerController(
         private const val TAG = "NestGalleryVLC"
     }
 
-    private val appContext = context.applicationContext
-    private val libVlc = LibVLC(
-        appContext,
-        arrayListOf(
-            "--no-video-title-show",
-            "--audio-time-stretch",            // keep the pitch when the speed changes
-            "--sub-autodetect-file"            // pick up "movie.srt" / ".ass" / ... next to "movie.mkv"
-        )
-    )
+    private val libVlc = VlcEngine.get(context)
     val mediaPlayer: MediaPlayer = MediaPlayer(libVlc)
     private val main = Handler(Looper.getMainLooper())
 
@@ -77,6 +89,7 @@ class VlcPlayerController(
         mediaPlayer.setEventListener { event ->
             if (event.type == MediaPlayer.Event.TimeChanged) lastKnownPositionMs = event.timeChanged
             if (event.type == MediaPlayer.Event.EndReached && repeat && !released) {
+                // backup for files the input-repeat option can't loop
                 main.post { if (!released) restartFromBeginning() }
             }
             if (event.type == MediaPlayer.Event.EncounteredError && usingHardware && !fellBack && !released) {
@@ -137,6 +150,11 @@ class VlcPlayerController(
         media.setHWDecoderEnabled(usingHardware, false)
         if (!usingHardware) media.addOption(":avcodec-hw=none")
         media.addOption(":file-caching=300")
+        if (muted) {                                  // previews: no audio decoder / output, no subtitle parsing
+            media.addOption(":no-audio")
+            media.addOption(":no-spu")
+        }
+        if (repeat) media.addOption(":input-repeat=65535")
         if (startMs > 0) media.addOption(":start-time=${startMs / 1000.0}")
         mediaPlayer.setMedia(media)
         media.release()
@@ -213,12 +231,41 @@ class VlcPlayerController(
         return parts.joinToString(" · ")
     }
 
+    // Two reused buffers for captureFrame: scrubbing grabs a frame every ~130 ms, and a fresh bitmap each time was
+    // pure garbage. Alternating means the one on screen is never overwritten while it is drawn, and each capture
+    // returns a different object, so Compose sees the change.
+    private val frames = arrayOfNulls<Bitmap>(2)
+    private var nextFrame = 0
+
+    /** The frame on screen, scaled to [targetWidth]. The bitmap is reused by the capture after next: don't keep it. */
     fun captureFrame(targetWidth: Int = 360): Bitmap? {
         val view = textureView ?: return null
         if (!view.isAvailable || view.width <= 0 || view.height <= 0) return null
         val targetHeight = (targetWidth.toFloat() * view.height / view.width).toInt()
         if (targetHeight <= 0) return null
-        return runCatching { view.getBitmap(targetWidth, targetHeight) }.getOrNull()
+        val i = nextFrame
+        var buffer = frames[i]
+        if (buffer == null || buffer.width != targetWidth || buffer.height != targetHeight) {
+            buffer = runCatching { Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888) }.getOrNull() ?: return null
+            frames[i] = buffer
+        }
+        if (runCatching { view.getBitmap(buffer) }.isFailure) return null
+        nextFrame = 1 - i
+        return buffer
+    }
+
+    /**
+     * Display aspect ratio (width / height) of the video track once VLC knows it, with the pixel aspect and a
+     * 90 / 270 degree rotation applied, or null.
+     */
+    fun videoAspect(): Float? {
+        if (released) return null
+        val t = runCatching { mediaPlayer.currentVideoTrack }.getOrNull() ?: return null
+        if (t.width <= 0 || t.height <= 0) return null
+        val sar = if (t.sarNum > 0 && t.sarDen > 0) t.sarNum.toFloat() / t.sarDen else 1f
+        val ar = t.width * sar / t.height
+        // orientations 4..7 (LeftTop ... RightBottom) are transposed
+        return if (t.orientation >= 4) 1f / ar else ar
     }
 
     fun setTextureView(view: TextureView?) {
@@ -233,7 +280,7 @@ class VlcPlayerController(
         runCatching { if (mediaPlayer.getVLCVout().areViewsAttached()) mediaPlayer.getVLCVout().detachViews() }
         runCatching { mediaPlayer.stop() }
         runCatching { mediaPlayer.release() }
-        runCatching { libVlc.release() }
         textureView = null
+        frames.fill(null)
     }
 }

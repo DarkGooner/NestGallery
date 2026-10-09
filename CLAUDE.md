@@ -94,6 +94,10 @@ setup was ~2.5 ms of main thread per cell and made flings drop frames. Judge smo
 (release speed, debug-signed: installs over a debug build keeping data), not a debug build. On the user's phone
 (12 fast swipes) janky frames went 1.4-1.9% -> 1.0-1.5%, 99th percentile 25-32 -> 19-25 ms.
 
+**Video (2026-10-10):** one process-wide LibVLC (`VlcEngine`); every player / hold preview is just a MediaPlayer on
+it. Hold preview (`HoldPreviewOverlay`) = card sized to the video's aspect, poster frame until VLC's first frame,
+`:no-audio :no-spu :input-repeat`. Not tried on a phone yet.
+
 **NSFW scan is off by default** (Settings switch, `UiPrefs.nsfwEnabled`): while off it is hidden everywhere
 (explorer shield button, gallery menus, Settings hardware section, info-sheet tags); switching off stops a running
 scan; saved results are kept.

@@ -38,6 +38,18 @@ object GalleryCache {
         scrollPositions.remove(key)
     }
 
+    /**
+     * Drops the cached listings (scroll positions are tiny and kept) once the app is in the background and memory
+     * is tight: a big recursive listing is tens of thousands of entries, and it is rebuilt on the next visit anyway.
+     */
+    fun trim(level: Int) {
+        @Suppress("DEPRECATION")
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
+            entries.clear()
+            counts.clear()
+        }
+    }
+
     fun clearAll() {
         entries.clear()
         counts.clear()

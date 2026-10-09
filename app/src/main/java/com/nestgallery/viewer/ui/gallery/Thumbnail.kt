@@ -131,4 +131,13 @@ object ThumbnailCache {
     }
 
     private fun ImageBitmap.asAndroidBitmapSize(): Int = width * height * 4
+
+    /** Gives memory back when Android asks ([android.content.ComponentCallbacks2] levels). */
+    fun trim(level: Int) {
+        @Suppress("DEPRECATION")
+        when {
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> cache.evictAll()
+            level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW -> cache.trimToSize(cache.size() / 2)
+        }
+    }
 }
