@@ -25,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,6 +55,12 @@ import com.nestgallery.viewer.ui.nsfw.FolderNsfwScreen
 import com.nestgallery.viewer.ui.face.FolderFaceScreen
 import com.nestgallery.viewer.ui.face.PersonDetailScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
+import com.nestgallery.viewer.data.UiPrefs
+import com.nestgallery.viewer.ui.gallery.AlbumScreen
+import com.nestgallery.viewer.ui.gallery.GalleryActions
+import com.nestgallery.viewer.ui.gallery.GalleryHomeScreen
+import com.nestgallery.viewer.ui.gallery.GalleryTab
+import com.nestgallery.viewer.ui.gallery.albumScrollKey
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.verticalScroll
@@ -69,6 +76,9 @@ private sealed class Screen {
     data class PersonDetail(val personId: Long, val folderPath: String? = null, val returnTo: Screen) : Screen()
     data class FolderNsfw(val root: DocEntry, val files: List<DocEntry>, val returnTo: Screen) : Screen()
     data class Settings(val returnTo: Screen) : Screen()
+    /** The gallery view: Photos / Albums tabs (the tab itself is kept outside, so switching it doesn't crossfade). */
+    data object Library : Screen()
+    data class Album(val albumId: String, val returnTo: Screen) : Screen()
 }
 
 private fun hasStorageAccess(): Boolean {
@@ -107,6 +117,9 @@ class MainActivity : ComponentActivity() {
                 .components {
                     add(GifDecoder.Factory())
                     add(VideoFrameDecoder.Factory())
+                    // the gallery view's grid thumbnails: MediaStore's cached ones instead of decoding originals
+                    add(com.nestgallery.viewer.data.MediaThumbKeyer())
+                    add(com.nestgallery.viewer.data.MediaThumbFetcher.Factory())
                 }
                 .build()
         )
@@ -123,13 +136,21 @@ class MainActivity : ComponentActivity() {
 private fun NestGalleryApp() {
     val context = LocalContext.current
 
+    val uiPrefs = remember { UiPrefs.getInstance(context) }
+    val nsfwEnabled by uiPrefs.nsfwEnabled.collectAsState()
     var granted by remember { mutableStateOf(hasAccess(context)) }
     var pathStack by remember {
         mutableStateOf(if (granted) listOf(storageRootEntry()) else emptyList())
     }
+    fun home(): Screen = if (uiPrefs.galleryMode) Screen.Library else Screen.Browser
     var screen by remember {
-        mutableStateOf<Screen>(if (granted) Screen.Browser else Screen.NeedsPermission)
+        mutableStateOf(if (granted) home() else Screen.NeedsPermission)
     }
+    var galleryTab by remember { mutableStateOf(GalleryTab.ALBUMS) }
+    var galleryColumns by remember { mutableStateOf(uiPrefs.galleryColumns) }
+    fun setGalleryColumns(n: Int) { galleryColumns = n; uiPrefs.galleryColumns = n }
+    fun switchToGallery() { uiPrefs.galleryMode = true; screen = Screen.Library }
+    fun switchToExplorer() { uiPrefs.galleryMode = false; screen = Screen.Browser }
     var hideHidden by remember { mutableStateOf(true) }
     var listMode by remember { mutableStateOf(true) }
     var personListMode by remember { mutableStateOf(false) } // a person's photos: grid by default, own toggle
@@ -138,7 +159,7 @@ private fun NestGalleryApp() {
     fun onAccessGranted() {
         granted = true
         pathStack = listOf(storageRootEntry())
-        screen = Screen.Browser
+        screen = home()
     }
 
     val allFilesLauncher = rememberLauncherForActivityResult(
@@ -173,6 +194,12 @@ private fun NestGalleryApp() {
     if (screen is Screen.Explore) {
         BackHandler {
             screen = Screen.Browser
+        }
+    }
+    val albumScreen = screen as? Screen.Album
+    if (albumScreen != null) {
+        BackHandler {
+            screen = albumScreen.returnTo
         }
     }
     val searchScreen = screen as? Screen.Search
@@ -213,6 +240,7 @@ private fun NestGalleryApp() {
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onExploreFolder = { folder -> screen = Screen.Explore(folder) },
                     onOpenSettings = { screen = Screen.Settings(returnTo = s) },
+                    onSwitchToGallery = { switchToGallery() },
                     onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
                     onBack = { if (pathStack.size > 1) pathStack = pathStack.dropLast(1) },
                     canGoBack = pathStack.size > 1
@@ -234,11 +262,12 @@ private fun NestGalleryApp() {
                         GalleryCache.forgetScrolls(ScrollKeys.faces(root.file.absolutePath))
                         screen = Screen.FolderFaces(root = root, files = files, returnTo = s)
                     },
-                    onOpenNsfw = { root, files ->
+                    onOpenNsfw = if (!nsfwEnabled) null else { root, files ->
                         GalleryCache.forgetScrolls(ScrollKeys.nsfw(root.file.absolutePath))
                         screen = Screen.FolderNsfw(root = root, files = files, returnTo = s)
                     },
                     onOpenSettings = { screen = Screen.Settings(returnTo = s) },
+                    onSwitchToGallery = { switchToGallery() },
                     onBack = { screen = Screen.Browser }
                 )
             }
@@ -287,7 +316,48 @@ private fun NestGalleryApp() {
                     onOpenSettings = { screen = Screen.Settings(returnTo = s) }
                 )
             }
-            is Screen.Settings -> SettingsScreen(onBack = { screen = s.returnTo })
+            is Screen.Settings -> SettingsScreen(onBack = {
+                // NSFW scan was switched off from its own screen's Settings: don't go back into it
+                val back = s.returnTo
+                screen = if (back is Screen.FolderNsfw && !uiPrefs.nsfwEnabled.value) back.returnTo else back
+            })
+            is Screen.Library, is Screen.Album -> {
+                val actions = GalleryActions(
+                    onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
+                    onSearch = { screen = Screen.Search(root = storageRootEntry(), returnTo = s) },
+                    onOpenFaces = { root, files ->
+                        GalleryCache.forgetScrolls(ScrollKeys.faces(root.file.absolutePath))
+                        screen = Screen.FolderFaces(root = root, files = files, returnTo = s)
+                    },
+                    onOpenNsfw = if (!nsfwEnabled) null else { root, files ->
+                        GalleryCache.forgetScrolls(ScrollKeys.nsfw(root.file.absolutePath))
+                        screen = Screen.FolderNsfw(root = root, files = files, returnTo = s)
+                    },
+                    onOpenSettings = { screen = Screen.Settings(returnTo = s) },
+                    onSwitchToExplorer = { switchToExplorer() }
+                )
+                if (s is Screen.Album) {
+                    AlbumScreen(
+                        albumId = s.albumId,
+                        columns = galleryColumns,
+                        onColumnsChange = { setGalleryColumns(it) },
+                        onBack = { screen = s.returnTo },
+                        actions = actions
+                    )
+                } else {
+                    GalleryHomeScreen(
+                        tab = galleryTab,
+                        onTabChange = { galleryTab = it },
+                        columns = galleryColumns,
+                        onColumnsChange = { setGalleryColumns(it) },
+                        onOpenAlbum = { id ->
+                            GalleryCache.forgetScrolls(albumScrollKey(id))
+                            screen = Screen.Album(id, returnTo = s)
+                        },
+                        actions = actions
+                    )
+                }
+            }
             is Screen.PersonDetail -> {
                 PersonDetailScreen(
                     personId = s.personId,

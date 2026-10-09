@@ -38,6 +38,13 @@ android {
             )
             signingConfig = signingConfigs.getByName("release")
         }
+        // Release speed (not debuggable) but signed with the debug key, so it installs over a debug build without
+        // wiping the app's data: for measuring scrolling / scan speed on a phone. `:app:assembleBenchmark`.
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            isDebuggable = false
+        }
     }
 
     buildFeatures {

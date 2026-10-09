@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,7 +50,9 @@ fun FastScrollbar(
     firstVisibleIndex: Int,
     isScrolling: Boolean,
     onDragToIndex: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Optional: text for an item index (e.g. its month), shown in a bubble beside the thumb while dragging. */
+    label: ((Int) -> String)? = null
 ) {
     if (itemCount <= visibleCount || itemCount <= 0) return
 
@@ -56,6 +60,7 @@ fun FastScrollbar(
     var visible by remember { mutableStateOf(false) }
     var dragOffsetPx by remember { mutableFloatStateOf(0f) }
     var trackHeightPx by remember { mutableFloatStateOf(0f) }
+    var dragIndex by remember { mutableStateOf(0) }
 
     LaunchedEffect(isScrolling, isDragging) {
         if (isScrolling || isDragging) {
@@ -95,7 +100,7 @@ fun FastScrollbar(
         BoxWithConstraints(
             Modifier
                 .fillMaxHeight()
-                .width(28.dp)
+                .width(if (label != null) 220.dp else 28.dp)
                 .onGloballyPositioned { trackHeightPx = it.size.height.toFloat() }
         ) {
             val thumbOffsetPx = if (isDragging) dragOffsetPx else restingOffsetPx
@@ -124,10 +129,29 @@ fun FastScrollbar(
                             dragOffsetPx = (dragOffsetPx + dragAmount.y).coerceIn(0f, maxOffset)
                             val fraction = if (maxOffset > 0f) dragOffsetPx / maxOffset else 0f
                             val targetIndex = (fraction * latestScrollRange).roundToInt().coerceIn(0, latestItemCount - 1)
+                            dragIndex = targetIndex
                             onDragToIndex(targetIndex)
                         }
                     }
             )
+            if (label != null && isDragging) {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 24.dp)
+                        .offset(y = with(density) { (thumbOffsetPx + thumbHeightPx / 2).toDp() } - 18.dp)
+                ) {
+                    Text(
+                        label(dragIndex.coerceIn(0, itemCount - 1)),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                    )
+                }
+            }
         }
     }
 }

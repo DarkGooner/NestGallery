@@ -150,8 +150,11 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     private suspend fun runPipeline(todo: List<File>): Pair<Int, Int> = coroutineScope {
         val total = todo.size
         val cores = Runtime.getRuntime().availableProcessors()
-        val decoderCount = (cores / 4).coerceIn(1, 2)
-        val analysisCount = (cores / 2).coerceIn(1, 4)
+        // Measured on a Snapdragon 7 Gen 3 (8 cores), 80 library photos, no saving: decoding (~35 ms per camera photo)
+        // starved the models with 2 decoders. 2 decoders / 4 workers: 20.5 photos/s (16-17 when warm); 3 / 4: 25.2
+        // (19); 4 / 5: 21.4 when warm, the best of the tried set. More workers alone did not help (6: 24, 8: 21-24).
+        val decoderCount = (cores / 2).coerceIn(1, 4)
+        val analysisCount = (cores * 5 / 8).coerceIn(1, 5)
         val decoded = Channel<Decoded>(2)
         val results = Channel<ScannedFile>(64)
         val next = AtomicInteger(0)

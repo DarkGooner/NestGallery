@@ -22,6 +22,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
+import androidx.compose.foundation.selection.toggleable
+import com.nestgallery.viewer.data.UiPrefs
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -52,12 +55,14 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 
-/** App settings. For now: the hardware the NSFW scan runs on, with a speed test. */
+/** App settings: whether NSFW scan is available at all, and (when it is) the hardware it runs on, with a speed test. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val nsfw = remember { NsfwScannerManager.getInstance(context) }
+    val uiPrefs = remember { UiPrefs.getInstance(context) }
+    val nsfwEnabled by uiPrefs.nsfwEnabled.collectAsState()
     val model by nsfw.model.collectAsState()
     val status by nsfw.status.collectAsState()
     val scanning = status.activeFolder != null
@@ -76,6 +81,12 @@ fun SettingsScreen(onBack: () -> Unit) {
         Column(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
+            NsfwSwitch(nsfwEnabled) { on ->
+                if (!on) nsfw.stopScan()          // hidden from now on, so don't leave a scan running out of sight
+                uiPrefs.setNsfwEnabled(on)
+            }
+            if (!nsfwEnabled) return@Column
+            Spacer(Modifier.height(20.dp))
             if (scanning) {
                 Text(
                     "An NSFW scan is running. Stop it to change the hardware.",
@@ -86,6 +97,30 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
             HardwareSection(nsfw, model, scanning)
         }
+    }
+}
+
+/** The on/off switch for the whole NSFW scan feature (off by default). */
+@Composable
+private fun NsfwSwitch(enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .toggleable(value = enabled, role = Role.Switch, onValueChange = onChange)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text("NSFW scan", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Finds and filters explicit photos on this phone. When off, NSFW scan is hidden everywhere in the app; " +
+                    "results from earlier scans are kept.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = enabled, onCheckedChange = null)
     }
 }
 

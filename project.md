@@ -142,6 +142,19 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
   - Prevents reloading or re-sorting folder contents when navigating back and forth between the browser and fullscreen viewer.
   - Supports invalidation (`invalidate(key)` and `clearAll()`) when files are modified, rescanned, or deleted.
 
+#### [`app/src/main/java/com/nestgallery/viewer/data/MediaLibrary.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/MediaLibrary.kt)
+- **Role**: the gallery view's data. Unlike the file explorer, which walks folders itself, this asks MediaStore (Files
+  table, images + videos) once, newest first by date taken (date modified if there's no date taken), and reloads by
+  itself on MediaStore changes (a `ContentObserver`, debounced 1.5 s). So, like any gallery app, it skips `.nomedia`
+  folders and formats Android doesn't index (e.g. WMV), which the explorer still shows.
+- **Functionality**: `MediaItem` (file `DocEntry` + content URI, date, local day, folder = album, video duration);
+  `albums()` groups by folder (Camera, Screenshots first, then newest); `delete()` deletes the files (All Files Access,
+  no system prompt) and their MediaStore rows, falling back to a rescan.
+
+#### [`app/src/main/java/com/nestgallery/viewer/data/UiPrefs.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/UiPrefs.kt)
+- **Role**: singleton; whether the app opens in the gallery view (default) or the file explorer, the gallery's photos
+  per row, and the NSFW scan switch (`nsfwEnabled` StateFlow, off by default; hides the feature everywhere).
+
 #### [`app/src/main/java/com/nestgallery/viewer/data/VlcPlayerController.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/VlcPlayerController.kt)
 - **Role**: LibVLC lifecycle controller and playback coordinator.
 - **Functionality**:
@@ -280,6 +293,7 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 - **Role**: High-performance draggable scrollbar for massive lists (10k+ items).
 - **Functionality**:
   - Draggable thumb overlay with smooth enter/exit animations.
+  - Optional `label` (e.g. the month, in the gallery view) shown in a bubble beside the thumb while dragging.
   - Calculates proportional jump offsets across thousands of items without freezing the Compose render thread.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/KeptScroll.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/KeptScroll.kt)
@@ -290,6 +304,22 @@ Every grouping run regroups all people the user has not curated (that costs a ne
   grid and Filters list (its selected tab is kept in `NsfwFilterState`). `MainActivity` calls
   `GalleryCache.forgetScrolls(ScrollKeys.x(...))` when one of these screens is opened afresh, so only returns keep the
   position. `ExploreScreen` has its own equivalent.
+
+#### Gallery view: [`ui/gallery/GalleryHomeScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/gallery/GalleryHomeScreen.kt), [`ui/gallery/MediaTimeline.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/gallery/MediaTimeline.kt)
+- **Role**: the default view (opens on Albums); the file explorer is the alternative, switched from the three-dot
+  menu ("Gallery view" / "File explorer view") and remembered (`UiPrefs`), so the app reopens in the same view.
+  NSFW scan entries appear only while Settings' "NSFW scan" switch is on (`UiPrefs.nsfwEnabled`, off by default).
+- **Thumbnail.kt**: the timeline's thumbnails (MediaStore's cached thumbnails, loaded off the main thread, cancelled
+  when the cell scrolls away, byte-sized LRU), much cheaper per cell than Coil's AsyncImage.
+- **GalleryHomeScreen**: bottom navigation with Photos (every photo and video as a date timeline) and Albums (a
+  "Videos" collection, then one album per folder); `AlbumScreen` shows one album as a timeline. Menus: Select, People
+  and NSFW scan (the existing face / NSFW screens, given the library or the album as root + files), File explorer
+  view, Settings. While selecting, the title bar becomes count / select all / share (system share sheet, MediaStore
+  URIs) / delete (confirmation dialog, permanent).
+- **MediaTimeline**: day headers (Today, Yesterday, weekday, then date), square edge-to-edge thumbnails, video
+  duration badges, pinch to step through 2/3/4/5/7 columns, long-press to select (a day header's check selects the
+  day), fast scroller with a month bubble. The tab is kept in `MainActivity` (not in `Screen`), so switching tabs
+  doesn't crossfade the whole screen; scroll positions use `rememberKeptGridState`.
 
 ---
 

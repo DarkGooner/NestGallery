@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.LabelOff
@@ -85,8 +86,10 @@ fun ExploreScreen(
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onSearch: (DocEntry) -> Unit,
     onOpenFaces: (DocEntry, List<DocEntry>) -> Unit,
-    onOpenNsfw: (DocEntry, List<DocEntry>) -> Unit,
+    /** Null while NSFW scan is switched off in Settings (then its button is hidden). */
+    onOpenNsfw: ((DocEntry, List<DocEntry>) -> Unit)?,
     onOpenSettings: () -> Unit,
+    onSwitchToGallery: () -> Unit,
     onBack: () -> Unit
 ) {
     // A plain (non-Compose-state-backed) cache key. GalleryCache is a
@@ -265,8 +268,10 @@ fun ExploreScreen(
                     IconButton(onClick = { onOpenFaces(root, items.toList()) }, modifier = Modifier.size(44.dp)) {
                         Icon(Icons.Default.Face, contentDescription = "Faces in this folder")
                     }
-                    IconButton(onClick = { onOpenNsfw(root, items.toList()) }, modifier = Modifier.size(44.dp)) {
-                        Icon(Icons.Default.Shield, contentDescription = "NSFW scan and filters for this folder")
+                    if (onOpenNsfw != null) {
+                        IconButton(onClick = { onOpenNsfw(root, items.toList()) }, modifier = Modifier.size(44.dp)) {
+                            Icon(Icons.Default.Shield, contentDescription = "NSFW scan and filters for this folder")
+                        }
                     }
                 },
                 menu = listOf(
@@ -274,6 +279,7 @@ fun ExploreScreen(
                         if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, onToggleShowNames),
                     TopBarMenuItem(if (hideHidden) "Show hidden items" else "Hide hidden items",
                         if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onToggleHideHidden),
+                    TopBarMenuItem("Gallery view", Icons.Default.PhotoLibrary, onSwitchToGallery),
                     TopBarMenuItem("Settings", Icons.Default.Settings, onOpenSettings)
                 ),
                 modifier = Modifier.align(Alignment.TopCenter).alpha(if (previewEntry == null) 1f else 0f)

@@ -51,6 +51,11 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
 - Cost to watch on the phone: AdaFace is ~2.5x ResNet-50 compute per face, and every scan that finds new faces
   now regroups all uncurated faces (a full kNN pass). Speed work (caching kNN lists in the DB, so a scan only searches
   new x all) is the planned follow-up; the user said accuracy first, speed later.
+- Scan speed (2026-10-09, user's SM7550, 80 library photos, one thread): decode 35 ms/photo, SCRFD 53 ms/photo,
+  AdaFace 193 ms/face (batching faces doesn't help). Decoding was the pipeline's bottleneck: 2 decoders / 4 workers
+  20.5 photos/s -> now 4 / 5 (scaled by core count), ~20-30% faster. Larger gains need the GPU (QNN only runs float
+  models; the user declined a fp16 recogniser copy) or a smaller detector input (accuracy cost). This ORT QNN
+  build has no XNNPACK.
 - Not done: real Daz3D / Blender / Honey Select test images (DigiFace is the stand-in), learned clustering, anime.
 
 ## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`)
@@ -77,6 +82,21 @@ float op even at fp16 (error 3110), so the NPU now loads QDQ copies (`nudenet_*_
 identical counts to float on 45 held-out photos). Then the DSP could not load the skel's libc++.so.1 /
 libc++abi.so.1 (no qnn-runtime / QAIRT ships them; /vendor/dsp/cdsp is closed to apps and even to adb on this Motorola):
 NPU unusable there without root. The Secure Folder was not a bottleneck (that comparison mixed 320n and 640m).
+
+## Gallery view (ui/gallery, data/MediaLibrary.kt; added 2026-10-09)
+
+The app opens in the gallery view by default, on the Albums tab; three-dot menu "Gallery view" / "File explorer
+view" switches the whole UI (remembered in `UiPrefs`). Gallery view = MediaStore-backed Albums (one per folder) +
+Photos timeline tabs, selection with share / permanent delete, pinch for columns. It shows what MediaStore indexes
+(no `.nomedia` folders, no WMV etc.; rows whose file is gone are dropped and rescanned); the explorer still shows
+all. Grid thumbnails use `ui/gallery/Thumbnail.kt` (MediaStore thumbnails, own LRU), not Coil: Coil's per-image
+setup was ~2.5 ms of main thread per cell and made flings drop frames. Judge smoothness on `:app:assembleBenchmark`
+(release speed, debug-signed: installs over a debug build keeping data), not a debug build. On the user's phone
+(12 fast swipes) janky frames went 1.4-1.9% -> 1.0-1.5%, 99th percentile 25-32 -> 19-25 ms.
+
+**NSFW scan is off by default** (Settings switch, `UiPrefs.nsfwEnabled`): while off it is hidden everywhere
+(explorer shield button, gallery menus, Settings hardware section, info-sheet tags); switching off stops a running
+scan; saved results are kept.
 
 ## Eval tooling (tools/face-eval)
 

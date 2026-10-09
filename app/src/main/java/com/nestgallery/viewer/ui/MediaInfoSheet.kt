@@ -28,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import android.content.Context
 import com.nestgallery.viewer.data.DocEntry
+import com.nestgallery.viewer.data.UiPrefs
 import com.nestgallery.viewer.data.nsfw.NsfwScannerManager
 import com.nestgallery.viewer.ui.nsfw.NsfwFilterState
 import kotlinx.coroutines.Dispatchers
@@ -84,7 +85,7 @@ private fun mediaDetails(entry: DocEntry, sizeText: String): List<Pair<String, S
 
 /** The photo's NSFW scan result as a tag string ("2FACE_FEMALE, 1BELLY_EXPOSED"), if it has been scanned. */
 private suspend fun nsfwDetails(context: Context, entry: DocEntry): List<Pair<String, String>> {
-    if (entry.isVideo) return emptyList()
+    if (entry.isVideo || !UiPrefs.getInstance(context).nsfwEnabled.value) return emptyList()
     val nsfw = NsfwScannerManager.getInstance(context)
     nsfw.ensureLoaded()
     val r = nsfw.result(entry.file.absolutePath)?.takeIf { it.decoded } ?: return emptyList()
