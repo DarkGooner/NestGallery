@@ -128,6 +128,9 @@ class MainActivity : ComponentActivity() {
                 .build()
         )
 
+        // builds VLC's font cache in the background so the first video preview doesn't wait ~20 s for it
+        com.nestgallery.viewer.data.VlcEngine.warmUp(applicationContext)
+
         setContent {
             NestGalleryTheme {
                 NestGalleryApp()

@@ -54,6 +54,7 @@ import coil.decode.BitmapFactoryDecoder
 import coil.request.ImageRequest
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.PlayerPrefs
+import com.nestgallery.viewer.data.VideoScale
 import com.nestgallery.viewer.data.VlcPlayerController
 import com.nestgallery.viewer.ui.video.formatTime
 import kotlinx.coroutines.delay
@@ -307,12 +308,19 @@ private fun HoldPreviewVideo(entry: DocEntry, maxW: Dp, maxH: Dp) {
             muted = true,
             repeat = true,
             hardwareDecoding = PlayerPrefs(context).hardwareDecoding,
-            onAttachError = { failed = true }
-        ) { event ->
-            when (event.type) {
-                MediaPlayer.Event.Vout -> if (event.voutCount > 0) playing = true
-                MediaPlayer.Event.EncounteredError -> failed = true
+            onAttachError = { failed = true },
+            // not Event.Vout: the output exists a moment before it has drawn anything, and the empty TextureView
+            // flashed black between the poster and the video
+            onFirstFrame = { vlcAspect ->
+                vlcAspect?.let { aspect = it }
+                playing = true
             }
+        ) { event ->
+            if (event.type == MediaPlayer.Event.EncounteredError) failed = true
+        }.also {
+            // fill the card (it has the video's aspect): a brief size mismatch then crops a few pixels instead of
+            // drawing black bars
+            it.setScale(VideoScale.FILL)
         }
     }
     DisposableEffect(controller) {

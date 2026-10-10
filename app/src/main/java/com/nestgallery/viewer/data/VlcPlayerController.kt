@@ -2,6 +2,7 @@ package com.nestgallery.viewer.data
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.SurfaceTexture
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -11,6 +12,9 @@ import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** An audio or subtitle track as VLC names it; id -1 = "off" for subtitles. */
 data class VlcTrack(val id: Int, val name: String)
@@ -33,7 +37,71 @@ enum class VideoScale(val label: String, internal val vlc: MediaPlayer.ScaleType
  * every player and hold preview; MediaPlayers can share one instance, so it is made once and never released.
  */
 object VlcEngine {
+    private const val TAG = "NestGalleryVLC"
+
     @Volatile private var instance: LibVLC? = null
+    @Volatile private var warmUpStarted = false
+
+    /**
+     * Stops and releases players off the main thread. LibVLC's stop() waits for the playback threads to finish, which
+     * can take seconds (the first video output's font scan, below): on the main thread that was an ANR.
+     */
+    private val releaser = Executors.newSingleThreadExecutor { r -> Thread(r, "vlc-release") }
+
+    internal fun releaseLater(player: MediaPlayer) {
+        releaser.execute {
+            runCatching { player.stop() }
+            runCatching { player.release() }
+        }
+    }
+
+    /**
+     * The first video output of a fresh install loads VLC's text renderer, whose fontconfig reads every font in
+     * /system/fonts (~20 s on an SM7550) until its cache is saved; a hold preview sat on a spinner that long, and
+     * killing the app mid-scan (the ANR dialog) meant scanning again next time. This plays a tiny PNG in the
+     * background at startup, so the scan happens once, out of sight, and later starts only read the cache. No window
+     * is attached, so the video output itself fails (logged as "video output creation failed"), but VLC loads the
+     * text renderer before it asks for the window, which is all this is for (`:vout=dummy` is not accepted per media).
+     * Also creates the LibVLC instance off the main thread. Measured on the SM7550 with a saved cache: ~350 ms.
+     */
+    fun warmUp(context: Context) {
+        if (warmUpStarted) return
+        warmUpStarted = true
+        val app = context.applicationContext
+        Thread({
+            runCatching { warmUpBlocking(app) }.onFailure { Log.w(TAG, "VLC warm-up failed", it) }
+        }, "vlc-warmup").apply { isDaemon = true }.start()
+    }
+
+    private fun warmUpBlocking(context: Context) {
+        val vlc = get(context)
+        val png = File(context.cacheDir, "vlc-warmup.png")
+        if (!png.exists()) {
+            val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+            png.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            bitmap.recycle()
+        }
+        val done = CountDownLatch(1)
+        val player = MediaPlayer(vlc)
+        player.setEventListener { event ->
+            when (event.type) {
+                MediaPlayer.Event.Vout, MediaPlayer.Event.EndReached,
+                MediaPlayer.Event.EncounteredError, MediaPlayer.Event.Stopped -> done.countDown()
+            }
+        }
+        val media = Media(vlc, Uri.fromFile(png))
+        media.addOption(":no-audio")
+        media.addOption(":image-duration=1")
+        player.setMedia(media)
+        media.release()
+        val start = System.nanoTime()
+        player.play()
+        done.await(90, TimeUnit.SECONDS)
+        player.setEventListener(null)
+        runCatching { player.stop() }
+        runCatching { player.release() }
+        Log.i(TAG, "VLC warm-up done in ${(System.nanoTime() - start) / 1_000_000} ms")
+    }
 
     fun get(context: Context): LibVLC =
         instance ?: synchronized(this) {
@@ -65,6 +133,11 @@ class VlcPlayerController(
     private val onAttachError: (() -> Unit)? = null,
     /** Called (main thread) when hardware decoding failed and playback was reopened in software. */
     private val onDecoderFallback: (() -> Unit)? = null,
+    /**
+     * Called (main thread) once VLC's first frame is on the TextureView, which is later than Event.Vout, with the
+     * [videoAspect] known by then.
+     */
+    private val onFirstFrame: ((aspect: Float?) -> Unit)? = null,
     private val onEvent: ((MediaPlayer.Event) -> Unit)? = null
 ) {
     companion object {
@@ -134,6 +207,7 @@ class VlcPlayerController(
             if (vout.areViewsAttached()) vout.detachViews()
             vout.setVideoView(view)
             vout.attachViews()
+            onFirstFrame?.let { notifyFirstFrame(view, it) }
             view.addOnLayoutChangeListener(layoutListener().also { sizeListener = it })
             if (view.width > 0 && view.height > 0) vout.setWindowSize(view.width, view.height)
             openMedia(startMs, autoPlay)
@@ -142,6 +216,33 @@ class VlcPlayerController(
             Log.e(TAG, "Failed to attach/play: ${file.absolutePath}", t)
             runCatching { mediaPlayer.stop() }
             if (!released) main.post { if (!released) onAttachError?.invoke() }
+        }
+    }
+
+    /**
+     * Wraps the SurfaceTextureListener attachViews() installed (VLC renders through it, so it is delegated, not
+     * replaced) to learn when the first frame has been drawn. Without VLC's listener, falls back to now.
+     */
+    private fun notifyFirstFrame(view: TextureView, callback: (Float?) -> Unit) {
+        val inner = view.surfaceTextureListener ?: run { callback(null); return }
+        var fired = false
+        view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) =
+                inner.onSurfaceTextureAvailable(surface, width, height)
+
+            override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) =
+                inner.onSurfaceTextureSizeChanged(surface, width, height)
+
+            override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean =
+                inner.onSurfaceTextureDestroyed(surface)
+
+            override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
+                inner.onSurfaceTextureUpdated(surface)
+                if (!fired && !released) {
+                    fired = true
+                    callback(videoAspect())
+                }
+            }
         }
     }
 
@@ -278,8 +379,8 @@ class VlcPlayerController(
         runCatching { textureView?.let { tv -> sizeListener?.let { tv.removeOnLayoutChangeListener(it) } } }
         sizeListener = null
         runCatching { if (mediaPlayer.getVLCVout().areViewsAttached()) mediaPlayer.getVLCVout().detachViews() }
-        runCatching { mediaPlayer.stop() }
-        runCatching { mediaPlayer.release() }
+        runCatching { mediaPlayer.setEventListener(null) }
+        VlcEngine.releaseLater(mediaPlayer)        // stop() can block for seconds: never on the main thread
         textureView = null
         frames.fill(null)
     }
