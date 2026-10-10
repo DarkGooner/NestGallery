@@ -84,6 +84,8 @@ private fun matchesQuery(entry: DocEntry, query: String, root: DocEntry, recursi
 @Composable
 fun SearchScreen(
     root: DocEntry,
+    /** Start out searching subfolders too; otherwise only [root] until the user taps the tree button. */
+    startRecursive: Boolean = false,
     hideHidden: Boolean,
     showNames: Boolean,
     listMode: Boolean,
@@ -92,7 +94,9 @@ fun SearchScreen(
     onBack: () -> Unit
 ) {
     var query by remember { mutableStateOf("") }
-    var recursive by remember { mutableStateOf(true) }
+    // A folder's search starts in that folder only: searching subfolders walks the whole tree (the recursive scan),
+    // so it waits until the user taps the tree button instead of starting the moment the search screen opens.
+    var recursive by remember { mutableStateOf(startRecursive) }
     var debouncedQuery by remember { mutableStateOf("") }
 
     // Debounce keystrokes: filtering only runs once typing pauses, instead

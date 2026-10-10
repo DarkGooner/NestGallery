@@ -71,7 +71,8 @@ private sealed class Screen {
     data object NeedsPermission : Screen()
     data object Browser : Screen()
     data class Explore(val root: DocEntry) : Screen()
-    data class Search(val root: DocEntry, val returnTo: Screen) : Screen()
+    /** [recursive]: start out searching subfolders too (the gallery view's whole-storage search); folders start local. */
+    data class Search(val root: DocEntry, val returnTo: Screen, val recursive: Boolean = false) : Screen()
     data class Viewer(val images: List<DocEntry>, val startIndex: Int, val returnTo: Screen) : Screen()
     data class FolderFaces(val root: DocEntry, val files: List<DocEntry>, val returnTo: Screen) : Screen()
     data class PersonDetail(val personId: Long, val folderPath: String? = null, val returnTo: Screen) : Screen()
@@ -288,6 +289,7 @@ private fun NestGalleryApp() {
             is Screen.Search -> {
                 SearchScreen(
                     root = s.root,
+                    startRecursive = s.recursive,
                     hideHidden = hideHidden,
                     showNames = showNames,
                     listMode = listMode,
@@ -338,7 +340,7 @@ private fun NestGalleryApp() {
             is Screen.Library, is Screen.Album -> {
                 val actions = GalleryActions(
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
-                    onSearch = { screen = Screen.Search(root = storageRootEntry(), returnTo = s) },
+                    onSearch = { screen = Screen.Search(root = storageRootEntry(), returnTo = s, recursive = true) },
                     onOpenFaces = { root, files ->
                         GalleryCache.forgetScrolls(ScrollKeys.faces(root.file.absolutePath))
                         screen = Screen.FolderFaces(root = root, files = files, returnTo = s)
