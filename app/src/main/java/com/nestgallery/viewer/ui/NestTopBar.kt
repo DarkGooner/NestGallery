@@ -128,8 +128,9 @@ class RecursiveAction(
 /**
  * Floating two-tier capsule used by the browser, the recursive explorer and search.
  *
- *  Header tier (folds away on scroll): back / folder badge, title + subtitle, path chips, extra actions, overflow.
- *  Dock tier (always pinned): search, recursive-scan button, animated grid/list switch.
+ *  Header tier (folds away on scroll): folder badge, title + subtitle, path chips, extra actions, overflow.
+ *  Dock tier (always pinned): back, search, recursive-scan button, animated grid/list switch. Back lives here, next
+ *  to search, so it stays in the same place whether or not the header is folded away.
  */
 @Composable
 fun NestTopBar(
@@ -177,12 +178,12 @@ fun NestTopBar(
                             .graphicsLayer { alpha = 1f - state.fraction }
                     ) {
                         Column(Modifier.onSizeChanged { state.headerHeightPx = it.height.toFloat() }) {
-                            HeaderRow(title, subtitle, onBack, headerActions, menu)
+                            HeaderRow(title, subtitle, headerActions, menu)
                             if (pathChips != null && pathChips.isNotEmpty()) PathChips(pathChips, onPathClick)
                         }
                     }
                 }
-                Dock(onBack.takeIf { !showHeader }, listMode, onToggleViewMode, recursive, searchContent)
+                Dock(onBack, listMode, onToggleViewMode, recursive, searchContent)
             }
         }
     }
@@ -192,22 +193,15 @@ fun NestTopBar(
 private fun HeaderRow(
     title: String,
     subtitle: String?,
-    onBack: (() -> Unit)?,
     actions: @Composable RowScope.() -> Unit,
     menu: List<TopBarMenuItem>
 ) {
     Row(Modifier.padding(start = 6.dp, end = 2.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (onBack != null) {
-            IconButton(onClick = onBack, modifier = Modifier.size(44.dp)) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-            }
-        } else {
-            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-                Box(
-                    Modifier.size(32.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
-                    contentAlignment = Alignment.Center
-                ) { Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)) }
-            }
+        Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier.size(32.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) { Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)) }
         }
         Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
