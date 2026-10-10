@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.view.TextureView
 import coil.compose.AsyncImage
+import coil.decode.BitmapFactoryDecoder
 import coil.request.ImageRequest
 import com.nestgallery.viewer.data.DocEntry
 import com.nestgallery.viewer.data.PlayerPrefs
@@ -58,6 +59,23 @@ import com.nestgallery.viewer.ui.video.formatTime
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import org.videolan.libvlc.MediaPlayer
+
+private val stillDecoder = BitmapFactoryDecoder.Factory()
+
+/**
+ * The Coil model for a browsing thumbnail (grid tiles, list rows): a still, size-sampled bitmap. GIFs and animated
+ * WebP show their first frame instead of animating - Coil's GIF decoder keeps the whole file plus a full-size frame
+ * per visible GIF and draws every frame on the main thread, which froze the grid on a folder of GIFs. The viewer
+ * and the hold preview still animate. Videos keep Coil's video-frame decoder.
+ */
+@Composable
+fun rememberThumbModel(entry: DocEntry): Any {
+    if (entry.isVideo) return entry.file
+    val context = LocalContext.current
+    return remember(entry.file) {
+        ImageRequest.Builder(context).data(entry.file).decoderFactory(stillDecoder).build()
+    }
+}
 
 /**
  * Grid tile shared by the regular browser and the recursive explorer, so
@@ -94,7 +112,7 @@ fun MediaImageTile(
             }
         }
         AsyncImage(
-            model = entry.file,
+            model = rememberThumbModel(entry),
             contentDescription = entry.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
@@ -107,6 +125,18 @@ fun MediaImageTile(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .size(32.dp)
+            )
+        } else if (entry.file.extension.equals("gif", ignoreCase = true)) {
+            // the tile is a still frame; the badge says it animates when opened
+            Text(
+                "GIF",
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 4.dp, vertical = 1.dp)
             )
         }
         if (showNames) {

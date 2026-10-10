@@ -345,7 +345,7 @@ private fun ImageRow(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) {
     ) {
         Box(Modifier.fillMaxWidth()) {
             AsyncImage(
-                model = entry.file,
+                model = rememberThumbModel(entry),
                 contentDescription = entry.name,
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier

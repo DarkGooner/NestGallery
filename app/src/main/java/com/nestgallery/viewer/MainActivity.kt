@@ -39,6 +39,7 @@ import androidx.core.content.ContextCompat
 import coil.Coil
 import coil.ImageLoader
 import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import coil.decode.VideoFrameDecoder
 import android.graphics.Bitmap
 import java.io.File
@@ -115,7 +116,10 @@ class MainActivity : ComponentActivity() {
         Coil.setImageLoader(
             ImageLoader.Builder(applicationContext)
                 .components {
-                    add(GifDecoder.Factory())
+                    // Android 9+: AnimatedImageDrawable decodes frames off the main thread at the sampled size;
+                    // GifDecoder (android.graphics.Movie) keeps full-size frames and draws them on the main thread
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) add(ImageDecoderDecoder.Factory())
+                    else add(GifDecoder.Factory())
                     add(VideoFrameDecoder.Factory())
                     // the gallery view's grid thumbnails: MediaStore's cached ones instead of decoding originals
                     add(com.nestgallery.viewer.data.MediaThumbKeyer())

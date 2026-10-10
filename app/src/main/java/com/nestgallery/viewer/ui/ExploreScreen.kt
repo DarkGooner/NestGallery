@@ -298,7 +298,7 @@ private fun ExploreImageRow(entry: DocEntry, root: DocEntry, showNames: Boolean,
     ) {
         Box(Modifier.fillMaxWidth()) {
             AsyncImage(
-                model = entry.file,
+                model = rememberThumbModel(entry),
                 contentDescription = entry.name,
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier.fillMaxWidth()

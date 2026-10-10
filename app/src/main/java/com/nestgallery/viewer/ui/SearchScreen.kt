@@ -270,7 +270,7 @@ private fun SearchResultRow(entry: DocEntry, showNames: Boolean, relDir: String,
     ) {
         Box(Modifier.fillMaxWidth()) {
             AsyncImage(
-                model = entry.file,
+                model = rememberThumbModel(entry),
                 contentDescription = entry.name,
                 contentScale = ContentScale.FillWidth,
                 modifier = Modifier.fillMaxWidth()

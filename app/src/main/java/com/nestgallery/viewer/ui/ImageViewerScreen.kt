@@ -132,7 +132,8 @@ fun ImageViewerScreen(
         val loader = context.imageLoader
         for (i in listOf(pagerState.settledPage + 1, pagerState.settledPage - 1)) {
             val e = images.getOrNull(i) ?: continue
-            if (e.isVideo) continue
+            // GIFs decode to an animation, which Coil doesn't memory-cache: prefetching one is wasted work
+            if (e.isVideo || e.file.extension.equals("gif", ignoreCase = true)) continue
             loader.enqueue(ImageRequest.Builder(context).data(e.file).size(screen.first, screen.second).build())
         }
     }
