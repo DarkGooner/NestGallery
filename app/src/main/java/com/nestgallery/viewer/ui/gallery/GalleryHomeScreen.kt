@@ -1,5 +1,7 @@
 package com.nestgallery.viewer.ui.gallery
 
+import com.nestgallery.viewer.ui.PullTarget
+import com.nestgallery.viewer.ui.NestPullToRefresh
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
@@ -134,6 +136,9 @@ fun GalleryHomeScreen(
     val all = items.orEmpty()
     val allPhotos = remember(all) { all.filter { !it.entry.isVideo }.map { it.entry } }
     val libraryRoot = remember { storageRootEntry().copy(name = "All photos") }
+    val scope = rememberCoroutineScope()
+    var refreshing by remember { mutableStateOf(false) }
+    var refreshResult by remember { mutableStateOf("Up to date") }
 
     Scaffold(
         contentWindowInsets = ScreenInsets,
@@ -185,6 +190,25 @@ fun GalleryHomeScreen(
         }
     ) { padding ->
         val list = items
+        NestPullToRefresh(
+            isRefreshing = refreshing,
+            topInset = padding.calculateTopPadding(),
+            doneLabel = refreshResult,
+            onRefresh = {
+                if (!refreshing) scope.launch {
+                    refreshing = true
+                    val r = library.refresh()
+                    refreshResult = when {
+                        r.added > 0 && r.removed > 0 -> "${r.added} new · ${r.removed} removed"
+                        r.added > 0 -> "${r.added} new"
+                        r.removed > 0 -> "${r.removed} removed"
+                        else -> "Up to date"
+                    }
+                    refreshing = false
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        ) {
         when {
             list == null -> Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             list.isEmpty() -> EmptyLibrary(Modifier.padding(padding))
@@ -205,6 +229,7 @@ fun GalleryHomeScreen(
             }
             else -> AlbumsGrid(list, padding, onOpenAlbum)
         }
+        }
     }
 }
 
@@ -220,7 +245,9 @@ private fun androidx.compose.foundation.layout.RowScope.NavTab(selected: Boolean
 
 @Composable
 private fun EmptyLibrary(modifier: Modifier) {
-    Column(modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+    Box(modifier.fillMaxSize()) {
+    PullTarget()
+    Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Outlined.PhotoLibrary, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(56.dp))
         Text("No photos or videos yet", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
         Text(
@@ -229,6 +256,7 @@ private fun EmptyLibrary(modifier: Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 8.dp)
         )
+    }
     }
 }
 

@@ -160,10 +160,50 @@ fun ExploreScreen(
     val bar = rememberCollapsingBar()
     val topPad = bar.contentTopPadding()
 
+    // Pull to refresh rescans in the background and swaps the list in when done, so the grid stays usable meanwhile
+    // (the rescan button starts over from an empty list instead).
+    var refreshing by remember(exploreKey) { mutableStateOf(false) }
+    var refreshFound by remember { mutableIntStateOf(0) }
+    var refreshResult by remember { mutableStateOf("Up to date") }
+
     Scaffold(contentWindowInsets = ScreenInsets) { padding ->
         Box(Modifier.fillMaxSize().padding(padding).nestedScroll(bar.connection)) {
+        NestPullToRefresh(
+            isRefreshing = refreshing,
+            topInset = topPad,
+            refreshingLabel = "Rescanning… $refreshFound found",
+            doneLabel = refreshResult,
+            onRefresh = {
+                if (scanning) {
+                    refreshResult = "Already scanning"
+                } else if (!refreshing) {
+                    coroutineScope.launch {
+                        refreshing = true
+                        refreshFound = 0
+                        val fresh = ArrayList<DocEntry>()
+                        exploreMediaFlow(root.file, hideHidden).collect { batch ->
+                            fresh.addAll(batch)
+                            refreshFound = fresh.size
+                        }
+                        val before = items.size
+                        GalleryCache.putEntries(exploreKey, fresh)
+                        items.clear()
+                        items.addAll(fresh)
+                        val delta = fresh.size - before
+                        refreshResult = when {
+                            delta > 0 -> "$delta new · ${fresh.size} items"
+                            delta < 0 -> "${-delta} removed · ${fresh.size} items"
+                            else -> "Up to date · ${fresh.size} items"
+                        }
+                        refreshing = false
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        ) {
             if (items.isEmpty()) {
                 Box(Modifier.fillMaxSize().padding(top = topPad), contentAlignment = Alignment.Center) {
+                    PullTarget()
                     if (scanning) {
                         CircularProgressIndicator()
                     } else {
@@ -225,6 +265,7 @@ fun ExploreScreen(
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
+        }
 
             if (scanning && items.isNotEmpty()) {
                 Box(
@@ -250,7 +291,11 @@ fun ExploreScreen(
             NestTopBar(
                 state = bar,
                 title = root.name,
-                subtitle = if (scanning) "Scanning… ${items.size} found" else "${items.size} items · all subfolders",
+                subtitle = when {
+                    scanning -> "Scanning… ${items.size} found"
+                    refreshing -> "${items.size} items · rescanning…"
+                    else -> "${items.size} items · all subfolders"
+                },
                 onBack = onBack,
                 listMode = listMode,
                 onToggleViewMode = onToggleViewMode,

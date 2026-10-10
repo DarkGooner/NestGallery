@@ -80,6 +80,32 @@ class MediaLibrary private constructor(private val appContext: Context) {
         }
     }
 
+    /** What a pull to refresh changed. */
+    class RefreshResult(val added: Int, val removed: Int, val total: Int)
+
+    /**
+     * Pull to refresh: queries MediaStore again now, drops rows whose file is gone (and has MediaStore rescan those
+     * paths so the rows go away), and asks the media scanner to re-check every album folder for files other apps
+     * added without telling it. That folder scan runs in the background; whatever it finds arrives through the
+     * change observer a little later.
+     */
+    suspend fun refresh(): RefreshResult = withContext(Dispatchers.IO) {
+        loadJob?.cancel()
+        val before = _items.value.orEmpty().mapTo(HashSet()) { it.id }
+        val (present, missing) = query().partition { it.entry.file.exists() }
+        _items.value = present
+        if (missing.isNotEmpty()) {
+            MediaScannerConnection.scanFile(appContext, missing.map { it.entry.file.path }.toTypedArray(), null, null)
+        }
+        GalleryCache.clearAll()
+        // each folder once: one nested in another album's folder is covered by that folder's (recursive) scan
+        val folders = present.mapTo(sortedSetOf()) { it.albumId }
+        val roots = folders.filter { dir -> folders.none { other -> other != dir && dir.startsWith("$other/") } }
+        if (roots.isNotEmpty()) MediaScannerConnection.scanFile(appContext, roots.toTypedArray(), null, null)
+        val now = present.mapTo(HashSet()) { it.id }
+        RefreshResult(added = now.count { it !in before }, removed = before.count { it !in now }, total = present.size)
+    }
+
     private fun query(): List<MediaItem> {
         val uri = MediaStore.Files.getContentUri("external")
         val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} IN (" +

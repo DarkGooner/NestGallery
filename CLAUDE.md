@@ -97,6 +97,16 @@ setup was ~2.5 ms of main thread per cell and made flings drop frames. Judge smo
 **Video (2026-10-10):** one process-wide LibVLC (`VlcEngine`); every player / hold preview is just a MediaPlayer on
 it. Hold preview (`HoldPreviewOverlay`) = card sized to the video's aspect, poster frame until VLC's first frame,
 `:no-audio :no-spu :input-repeat`. Not tried on a phone yet.
+2026-10-11: the first video output loads VLC's text renderer, whose fontconfig reads every system font (~20 s on
+the SM7550) until its cache is saved; `mediaPlayer.stop()` on the main thread waited for that = ANR. Players are now
+stopped/released on a background thread (`VlcEngine.releaseLater`) and `VlcEngine.warmUp` (MainActivity) triggers
+the font load at startup (~350 ms with a saved cache; per-media `:vout=dummy` is ignored, so it logs harmless
+"video output creation failed"). Hold preview drops its poster on the first drawn frame (`onFirstFrame`), not on
+`Event.Vout`, and uses FILL scale (no black flash). The app lives in a secondary user ("Vault Profile", user 14):
+`adb install -r -t --user 14`.
+
+**Pull to refresh** (`ui/NestPullToRefresh.kt`): folder view, recursive view (background rescan, swaps the list
+when done), gallery Albums / Photos (`MediaLibrary.refresh`: requery, drop missing files, media-scan album folders).
 
 **NSFW scan is off by default** (Settings switch, `UiPrefs.nsfwEnabled`): while off it is hidden everywhere
 (explorer shield button, gallery menus, Settings hardware section, info-sheet tags); switching off stops a running

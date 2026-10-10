@@ -3,9 +3,6 @@ package com.nestgallery.viewer.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,9 +22,7 @@ import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
@@ -147,14 +142,14 @@ fun GalleryScreen(
 
     val bar = rememberCollapsingBar()
     val topPad = bar.contentTopPadding()
-    val pullState = rememberPullToRefreshState()
 
     Scaffold(contentWindowInsets = ScreenInsets) { padding ->
         val currentEntries = entries
 
         Box(Modifier.fillMaxSize().padding(padding).nestedScroll(bar.connection)) {
-        PullToRefreshBox(
+        NestPullToRefresh(
             isRefreshing = refreshing,
+            topInset = topPad,
             onRefresh = {
                 coroutineScope.launch {
                     refreshing = true
@@ -167,23 +162,17 @@ fun GalleryScreen(
                     refreshing = false
                 }
             },
-            modifier = Modifier.fillMaxSize(),
-            state = pullState,
-            indicator = {
-                PullToRefreshDefaults.Indicator(
-                    state = pullState,
-                    isRefreshing = refreshing,
-                    modifier = Modifier.align(Alignment.TopCenter).padding(top = topPad)
-                )
-            }
+            modifier = Modifier.fillMaxSize()
         ) {
         Box(Modifier.fillMaxSize()) {
             if (currentEntries == null) {
-                Box(Modifier.fillMaxSize().padding(top = topPad).verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().padding(top = topPad), contentAlignment = Alignment.Center) {
+                    PullTarget()
                     CircularProgressIndicator()
                 }
             } else if (currentEntries.isEmpty()) {
-                Box(Modifier.fillMaxSize().padding(top = topPad).verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().padding(top = topPad), contentAlignment = Alignment.Center) {
+                    PullTarget()
                     Text("Nothing here", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else if (listMode) {
