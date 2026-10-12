@@ -23,4 +23,4 @@ if (-not $Lan -and (Test-Path $adb)) {
     if ($LASTEXITCODE -eq 0) { Write-Host "adb reverse set up: the phone's localhost:$Port now reaches this PC." }
 }
 
-& $Py -B @args
+& $Py -B @pyArgs
