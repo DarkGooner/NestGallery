@@ -56,6 +56,13 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
   20.5 photos/s -> now 4 / 5 (scaled by core count), ~20-30% faster. Larger gains need the GPU (QNN only runs float
   models; the user declined a fp16 recogniser copy) or a smaller detector input (accuracy cost). This ORT QNN
   build has no XNNPACK.
+- Scan hardware (2026-10-12, Settings "Face scan hardware": CPU / GPU / CPU + GPU, default CPU): one CPU worker per
+  core (was 5 of 8; user saw 5-7 -> 8-9 photos/s on 9,750 photos). GPU = QNN GPU, float only: `scrfd_500m_640.onnx`
+  (fixed shape) and `adaface_ir101_gpu.onnx`, a float graph whose weights are external-data byte ranges of the int8
+  asset (+0.8 MB; `tools/face-eval/make_gpu_models.py`; ORT folds the weight DQs with `session.disable_quant_qdq=1`).
+  LFW 600 faces: cos(int8, float) 0.984, TAR@1e-3 0.930 int8 / 0.931 float / 0.930 mixed, so mixed-hardware DBs share
+  MODEL_ID. Strict sessions (no CPU fallback inside a model), crash marker in prefs `face`. **Not tried on a phone.**
+  The 45 identity MaxPools were stripped from the int8 asset (bit-identical, ~5% x86).
 - Not done: real Daz3D / Blender / Honey Select test images (DigiFace is the stand-in), learned clustering, anime.
 
 ## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`)

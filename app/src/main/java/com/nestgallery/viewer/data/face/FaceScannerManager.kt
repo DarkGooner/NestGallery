@@ -44,6 +44,19 @@ sealed class ScanStatus {
     data class Completed(val totalScanned: Int, val facesFound: Int) : ScanStatus()
 }
 
+/** Where the face models run during a scan (Settings). The GPU goes through Qualcomm QNN, so only Snapdragon phones have it. */
+enum class FaceAccelerator(val title: String, val description: String) {
+    CPU("CPU", "All cores, one photo each. Runs everywhere."),
+    GPU("GPU (Adreno)", "Face detection and recognition run on the graphics processor; the CPU only decodes photos. " +
+        "Cooler and lighter on the battery, but the GPU handles one face at a time. Experimental."),
+    CPU_GPU("CPU + GPU", "Both at once: most cores analyse photos while the GPU analyses others. Usually the fastest " +
+        "if the GPU works. Experimental.");
+
+    companion object {
+        fun byName(name: String?): FaceAccelerator = entries.firstOrNull { it.name == name } ?: CPU
+    }
+}
+
 /** A face found in the photo the user picked for "Find by face". [aligned] is the 112px crop shown in the UI. */
 class QueryFace(val aligned: Bitmap, val embedding: FloatArray)
 
@@ -79,6 +92,13 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     private val storeMutex = Mutex()
     @Volatile private var storeLoaded = false
 
+    private val prefs = appContext.getSharedPreferences("face", Context.MODE_PRIVATE)
+    private val _accelerator = MutableStateFlow(FaceAccelerator.byName(prefs.getString(KEY_ACCEL, null)))
+    val accelerator: StateFlow<FaceAccelerator> = _accelerator.asStateFlow()
+    /** What the current / last scan actually ran on (e.g. after a GPU fallback); null before the first scan. */
+    private val _backendLabel = MutableStateFlow<String?>(null)
+    val backendLabel: StateFlow<String?> = _backendLabel.asStateFlow()
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var scanJob: Job? = null
     private val paused = MutableStateFlow(false)
@@ -90,6 +110,8 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     private val thumbDir by lazy { File(appContext.filesDir, "face_thumbs").apply { mkdirs() } }
 
     init {
+        // A native crash while the GPU was being set up leaves the probe marker behind: don't try it again by itself.
+        if (prefs.getBoolean(KEY_PROBE, false)) prefs.edit().remove(KEY_PROBE).putBoolean(KEY_GPU_CRASHED, true).commit()
         // The previous version cached face crops in cacheDir (evictable, and name-colliding). Drop them.
         scope.launch(Dispatchers.IO) { File(appContext.cacheDir, "face_thumbs").deleteRecursively() }
     }
@@ -147,9 +169,74 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         }
     }
 
+    fun isScanning(): Boolean = scanJob?.isActive == true
+
+    /** Switches the scan hardware (used from the next scan). Refused (false) while a scan runs. */
+    fun setAccelerator(a: FaceAccelerator): Boolean {
+        if (isScanning()) return false
+        prefs.edit().putString(KEY_ACCEL, a.name).apply()
+        _accelerator.value = a
+        return true
+    }
+
+    /** True once setting up the GPU crashed the app; it is then skipped until [forgetGpuCrash]. */
+    fun gpuCrashed(): Boolean = prefs.getBoolean(KEY_GPU_CRASHED, false)
+
+    fun forgetGpuCrash() { prefs.edit().remove(KEY_GPU_CRASHED).apply() }
+
+    /** The GPU sessions of one scan; null = that model could not run on the GPU (see [note]). */
+    private class GpuModels(val detector: ScrfdDetector?, val embedder: ArcFaceEmbedder?, val note: String) {
+        fun close() { detector?.close(); embedder?.close() }
+    }
+
+    /**
+     * Opens both models on the GPU, each on its own (one can work without the other), and runs each once: some
+     * drivers only fail on the first run. A committed marker around it turns a native crash into "skip the GPU".
+     */
+    private fun openGpu(): GpuModels {
+        if (gpuCrashed()) return GpuModels(null, null, "GPU crashed the app before; Settings can try it again")
+        fun reason(e: Throwable) = e.message?.lineSequence()?.firstOrNull()?.take(80) ?: e.javaClass.simpleName
+        prefs.edit().putBoolean(KEY_PROBE, true).commit()
+        try {
+            val notes = ArrayList<String>()
+            val det = try {
+                ScrfdDetector(appContext, gpu = true).also { d ->
+                    val bmp = noisePicture(640, 480)
+                    try { d.detect(bmp) } catch (e: Throwable) { d.close(); throw e } finally { bmp.recycle() }
+                }
+            } catch (e: Throwable) { e.printStackTrace(); notes += "detector on CPU (GPU: ${reason(e)})"; null }
+            val emb = try {
+                ArcFaceEmbedder(appContext, gpu = true).also { m ->
+                    val bmp = noisePicture(FaceMath.ALIGN_SIZE, FaceMath.ALIGN_SIZE)
+                    try {
+                        val v = m.embed(bmp)
+                        check(v.all { it.isFinite() } && v.any { it != 0f }) { "the GPU returned an invalid embedding" }
+                    } catch (e: Throwable) { m.close(); throw e } finally { bmp.recycle() }
+                }
+            } catch (e: Throwable) { e.printStackTrace(); notes += "recogniser on CPU (GPU: ${reason(e)})"; null }
+            return GpuModels(det, emb, notes.joinToString("; "))
+        } finally {
+            prefs.edit().remove(KEY_PROBE).commit()
+        }
+    }
+
+    private fun noisePicture(w: Int, h: Int): Bitmap {
+        val r = java.util.Random(7)
+        val px = IntArray(w * h) { 0xFF000000.toInt() or r.nextInt(0x1000000) }
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+    }
+
     /** @return (photos processed, faces found) */
+    private suspend fun runPipeline(todo: List<File>): Pair<Int, Int> {
+        val accel = _accelerator.value
+        if (todo.isNotEmpty() && accel != FaceAccelerator.CPU) _status.value = ScanStatus.Scanning(0, todo.size, 0, "Starting the GPU…")
+        val gpu = if (todo.isNotEmpty() && accel != FaceAccelerator.CPU) withContext(Dispatchers.IO) { openGpu() } else null
+        // Sessions are closed only after every worker has finished: coroutineScope waits for them even when cancelled.
+        try { return runPipeline(todo, accel, gpu) } finally { gpu?.close() }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    private suspend fun runPipeline(todo: List<File>): Pair<Int, Int> = coroutineScope {
+    private suspend fun runPipeline(todo: List<File>, accel: FaceAccelerator, gpu: GpuModels?): Pair<Int, Int> = coroutineScope {
         val total = todo.size
         val cores = Runtime.getRuntime().availableProcessors()
         // Measured on a Snapdragon 7 Gen 3 (8 cores), 80 library photos, no saving: decoding (~35 ms per camera photo)
@@ -160,8 +247,27 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         // left 3 cores idle. One worker per core keeps them all busy in both cases (idle workers just wait on the
         // channel). They get their own threads so blocking model calls never starve Dispatchers.Default.
         val decoderCount = (cores / 2).coerceIn(1, 4)
-        val analysisCount = cores.coerceIn(1, 8)
-        val analysisDispatcher = Dispatchers.IO.limitedParallelism(analysisCount)
+        val cpuWorkers = cores.coerceIn(1, 8)
+        // GPU: it runs one model call at a time, so a few photos in flight keep it fed (one is prepared while another
+        // runs). If only the detector made it onto the GPU, recognition is still CPU work: one worker per core.
+        // CPU + GPU: the GPU's workers spend most of their time waiting on it, so they take two cores' places.
+        val gpuAnalyzer = gpu?.takeIf { it.detector != null || it.embedder != null }
+            ?.let { FaceAnalyzer(it.detector ?: detector, it.embedder ?: embedder) }
+        val workerAnalyzers: List<FaceAnalyzer> = when {
+            gpuAnalyzer == null -> List(cpuWorkers) { analyzer }
+            accel == FaceAccelerator.GPU -> List(if (gpu.embedder != null) 4 else cpuWorkers) { gpuAnalyzer }
+            else -> List(max(1, cpuWorkers - 2)) { analyzer } + List(2) { gpuAnalyzer }
+        }
+        val onGpu = listOfNotNull(gpu?.detector?.let { "detection" }, gpu?.embedder?.let { "recognition" })
+        _backendLabel.value = when {
+            gpu == null -> "CPU · $cpuWorkers photos at once"
+            gpuAnalyzer == null -> "CPU · $cpuWorkers photos at once (GPU unavailable: ${gpu.note})"
+            accel == FaceAccelerator.GPU -> "GPU (${onGpu.joinToString(" + ")}) · ${workerAnalyzers.size} photos at once" +
+                (if (gpu.note.isNotEmpty()) " (${gpu.note})" else "")
+            else -> "CPU + GPU · ${workerAnalyzers.size - 2} CPU + 2 GPU photos at once; GPU: ${onGpu.joinToString(" + ")}" +
+                (if (gpu.note.isNotEmpty()) " (${gpu.note})" else "")
+        }
+        val analysisDispatcher = Dispatchers.IO.limitedParallelism(workerAnalyzers.size)
         val decoded = Channel<Decoded>(2)
         val results = Channel<ScannedFile>(64)
         val next = AtomicInteger(0)
@@ -181,7 +287,7 @@ class FaceScannerManager private constructor(private val appContext: Context) {
                 }
             }
         }
-        val workers = List(analysisCount) {
+        val workers = workerAnalyzers.map { analyzer ->
             launch(analysisDispatcher) {
                 for (d in decoded) {
                     val bmp = d.bitmap
@@ -435,6 +541,9 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         private const val CLUSTER_ALGO_KEY = "cluster_algo"
         private const val CLUSTER_ALGO = "avg-linkage-v2"
         private const val MAX_PERSON_ID_KEY = "max_person_id"
+        private const val KEY_ACCEL = "accelerator"
+        private const val KEY_PROBE = "gpu_probe"
+        private const val KEY_GPU_CRASHED = "gpu_crashed"
         @Volatile private var INSTANCE: FaceScannerManager? = null
         fun getInstance(context: Context): FaceScannerManager =
             INSTANCE ?: synchronized(this) { INSTANCE ?: FaceScannerManager(context.applicationContext).also { INSTANCE = it } }

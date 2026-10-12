@@ -37,6 +37,21 @@ internal object Ort {
         setInterOpNumThreads(1)
         setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
     }
+
+    /**
+     * Qualcomm QNN's GPU backend (Adreno), float models only. Strict: QNN must take every node, or session creation
+     * fails and the caller uses the CPU (a partial GPU graph would run its leftovers as slow float ops on the CPU).
+     * @param dims symbolic input dimensions to pin (QNN needs fixed shapes)
+     */
+    fun gpuOptions(context: Context, dims: Map<String, Long> = emptyMap(), configure: OrtSession.SessionOptions.() -> Unit = {}) =
+        OrtSession.SessionOptions().apply {
+            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            setIntraOpNumThreads(1)
+            addConfigEntry("session.disable_cpu_ep_fallback", "1")
+            for ((name, v) in dims) setSymbolicDimensionValue(name, v)
+            configure()
+            addQnn(mapOf("backend_path" to "${context.applicationInfo.nativeLibraryDir}/libQnnGpu.so"))
+        }
 }
 
 /**
@@ -44,8 +59,10 @@ internal object Ort {
  * landmarks per face, which is what makes proper ArcFace alignment possible.
  * Input: a bitmap whose longest side is <= [INPUT_SIZE]; it is placed top-left on a zero (grey) canvas.
  */
-class ScrfdDetector(context: Context) {
+class ScrfdDetector(context: Context, val gpu: Boolean = false) {
     private val session: OrtSession
+    /** The GPU runs one photo at a time; preparing the next input still overlaps. */
+    private val runLock = Any()
     private val inputName: String
     private val scratch = object : ThreadLocal<FloatArray>() {
         override fun initialValue() = FloatArray(3 * INPUT_SIZE * INPUT_SIZE)
@@ -59,8 +76,9 @@ class ScrfdDetector(context: Context) {
     private val outputSlot = IntArray(9)
 
     init {
-        val file = ModelFiles.materialize(context, "scrfd_500m.onnx")
-        session = Ort.env.createSession(file.absolutePath, Ort.options())
+        // The GPU needs a fixed shape: scrfd_500m_640.onnx is the same model pinned to 640x640 (make_gpu_models.py).
+        val file = ModelFiles.materialize(context, if (gpu) "scrfd_500m_640.onnx" else "scrfd_500m.onnx")
+        session = Ort.env.createSession(file.absolutePath, if (gpu) Ort.gpuOptions(context) else Ort.options())
         inputName = session.inputNames.first()
         // The head emits 3 scores [N,1], 3 boxes [N,4], 3 keypoints [N,10]; N shrinks 4x per stride.
         val infos = session.outputInfo.values.map { (it.info as ai.onnxruntime.TensorInfo).shape }
@@ -73,13 +91,14 @@ class ScrfdDetector(context: Context) {
      * @param bitmap longest side <= [INPUT_SIZE]. It is placed top-left on a canvas of its own size rounded up to
      * a multiple of 32 (the model accepts any such size), so a 4:3 or 16:9 photo costs 25-45% less than the old
      * fixed 640x640 square. Measured on sample photos: same faces, same boxes.
+     * On the GPU the canvas is always the full 640x640 square.
      * @return detections in [bitmap] pixel coordinates
      */
     fun detect(bitmap: Bitmap, scoreThreshold: Float = 0.5f): List<RawDetection> {
         val w = bitmap.width; val h = bitmap.height
         require(w <= INPUT_SIZE && h <= INPUT_SIZE) { "detector input too large: ${w}x$h" }
-        val cw = (w + 31) / 32 * 32
-        val ch = (h + 31) / 32 * 32
+        val cw = if (gpu) INPUT_SIZE else (w + 31) / 32 * 32
+        val ch = if (gpu) INPUT_SIZE else (h + 31) / 32 * 32
         val data = scratch.get()!!
         java.util.Arrays.fill(data, 0, 3 * cw * ch, 0f)
         val px = pixelScratch.get()!!
@@ -100,7 +119,7 @@ class ScrfdDetector(context: Context) {
         val kps = arrayOfNulls<FloatArray>(3)
         val input = FloatBuffer.wrap(data, 0, 3 * plane).slice()
         OnnxTensor.createTensor(Ort.env, input, longArrayOf(1, 3, ch.toLong(), cw.toLong())).use { tensor ->
-            session.run(mapOf(inputName to tensor)).use { result ->
+            run(tensor).use { result ->
                 for (i in 0 until 9) {
                     val fb = (result.get(i) as OnnxTensor).floatBuffer
                     val arr = FloatArray(fb.remaining()); fb.get(arr)
@@ -118,6 +137,9 @@ class ScrfdDetector(context: Context) {
         )
     }
 
+    private fun run(tensor: OnnxTensor): OrtSession.Result =
+        if (gpu) synchronized(runLock) { session.run(mapOf(inputName to tensor)) } else session.run(mapOf(inputName to tensor))
+
     fun close() = session.close()
 
     companion object { const val INPUT_SIZE = 640 }
@@ -133,8 +155,9 @@ class ScrfdDetector(context: Context) {
  * expression / lighting / accessories, and is ahead on synthetic hand/food occlusion and cross-pose photos too.
  * It costs about 2.5x the compute of ResNet-50 per face.
  */
-class ArcFaceEmbedder(context: Context) {
+class ArcFaceEmbedder(context: Context, val gpu: Boolean = false) {
     private val session: OrtSession
+    private val runLock = Any()
     private val inputName: String
     private val pixelScratch = object : ThreadLocal<IntArray>() {
         override fun initialValue() = IntArray(SIZE * SIZE)
@@ -142,7 +165,16 @@ class ArcFaceEmbedder(context: Context) {
 
     init {
         val file = ModelFiles.materialize(context, ASSET)
-        session = Ort.env.createSession(file.absolutePath, Ort.options())
+        session = if (gpu) {
+            // GPU_ASSET is a float graph whose weights are byte ranges of ASSET (external data, make_gpu_models.py), so
+            // ASSET must sit next to it. disable_quant_qdq makes ORT fold the weight DequantizeLinear nodes into float
+            // weights before QNN sees the graph. Embeddings: cos ~0.98 to the CPU model's, same accuracy (LFW).
+            val gpuFile = ModelFiles.materialize(context, GPU_ASSET)
+            check(gpuFile.parentFile == file.parentFile)
+            Ort.env.createSession(gpuFile.absolutePath, Ort.gpuOptions(context, mapOf("n" to 1L)) {
+                addConfigEntry("session.disable_quant_qdq", "1")
+            })
+        } else Ort.env.createSession(file.absolutePath, Ort.options())
         inputName = session.inputNames.first()
     }
 
@@ -155,6 +187,7 @@ class ArcFaceEmbedder(context: Context) {
      */
     fun embedBatch(faces: List<Bitmap>): List<FloatArray> {
         if (faces.isEmpty()) return emptyList()
+        if (gpu && faces.size > 1) return faces.flatMap { embedBatch(listOf(it)) }     // the GPU graph is pinned to batch 1
         val n = faces.size
         val plane = SIZE * SIZE
         val data = FloatArray(n * 3 * plane)
@@ -171,7 +204,7 @@ class ArcFaceEmbedder(context: Context) {
             }
         }
         val raw = OnnxTensor.createTensor(Ort.env, FloatBuffer.wrap(data), longArrayOf(n.toLong(), 3, SIZE.toLong(), SIZE.toLong())).use { input ->
-            session.run(mapOf(inputName to input)).use { result ->
+            (if (gpu) synchronized(runLock) { session.run(mapOf(inputName to input)) } else session.run(mapOf(inputName to input))).use { result ->
                 val fb = (result.get(0) as OnnxTensor).floatBuffer
                 FloatArray(fb.remaining()).also { fb.get(it) }
             }
@@ -184,6 +217,8 @@ class ArcFaceEmbedder(context: Context) {
 
     companion object {
         const val ASSET = "adaface_ir101_int8.onnx"
+        /** The float graph the GPU runs, sharing [ASSET]'s weights. Same vector space, so no separate [MODEL_ID]. */
+        const val GPU_ASSET = "adaface_ir101_gpu.onnx"
         /** Stored in the DB; if it changes, old embeddings are discarded (they live in a different vector space). */
         const val MODEL_ID = "scrfd500m+adaface_ir101_webface12m_int8:v1"
         const val SIZE = FaceMath.ALIGN_SIZE

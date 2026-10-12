@@ -39,6 +39,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.nestgallery.viewer.data.nsfw.NsfwScannerManager
+import com.nestgallery.viewer.data.face.FaceAccelerator
+import com.nestgallery.viewer.data.face.FaceScannerManager
+import com.nestgallery.viewer.data.face.ScanStatus
 import com.nestgallery.viewer.data.nsfw.NsfwAccelerator
 import com.nestgallery.viewer.data.nsfw.NsfwModel
 import com.nestgallery.viewer.data.nsfw.NsfwScanService
@@ -55,7 +58,10 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 
-/** App settings: whether NSFW scan is available at all, and (when it is) the hardware it runs on, with a speed test. */
+/**
+ * App settings: the face scan's hardware; whether NSFW scan is available at all, and (when it is) the hardware it
+ * runs on, with a speed test.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
@@ -81,6 +87,8 @@ fun SettingsScreen(onBack: () -> Unit) {
         Column(
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
+            FaceHardwareSection()
+            Spacer(Modifier.height(20.dp))
             NsfwSwitch(nsfwEnabled) { on ->
                 if (!on) nsfw.stopScan()          // hidden from now on, so don't leave a scan running out of sight
                 uiPrefs.setNsfwEnabled(on)
@@ -97,6 +105,52 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
             HardwareSection(nsfw, model, scanning)
         }
+    }
+}
+
+/** Where the face scan's models run. Compare the photos-per-second the scan shows to pick the fastest. */
+@Composable
+private fun FaceHardwareSection() {
+    val context = LocalContext.current
+    val faces = remember { FaceScannerManager.getInstance(context) }
+    val accel by faces.accelerator.collectAsState()
+    val label by faces.backendLabel.collectAsState()
+    val status by faces.status.collectAsState()
+    val scanning = status !is ScanStatus.Idle && status !is ScanStatus.Completed
+    var crashed by remember { mutableStateOf(faces.gpuCrashed()) }
+
+    Text("Face scan hardware", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp))
+    Text(
+        "Used from the next face scan. Whatever can't run on the GPU runs on the CPU. Compare the photos per second " +
+            "the scan shows to find the fastest on this phone." +
+            (if (scanning) "\nA face scan is running. Stop it to change the hardware." else "") +
+            (label?.let { "\nLast scan: $it" } ?: ""),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
+    )
+    Column(Modifier.selectableGroup()) {
+        for (a in FaceAccelerator.entries) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(enabled = !scanning, role = Role.RadioButton) { faces.setAccelerator(a) }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                RadioButton(selected = a == accel, onClick = null, enabled = !scanning, modifier = Modifier.padding(12.dp))
+                Column(Modifier.weight(1f).padding(top = 8.dp, end = 8.dp)) {
+                    val note = if (crashed && a != FaceAccelerator.CPU) "  (GPU crashed before, CPU used)" else ""
+                    Text(a.title + note, style = MaterialTheme.typography.titleSmall)
+                    Text(a.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+    if (crashed) {
+        TextButton(onClick = { faces.forgetGpuCrash(); crashed = faces.gpuCrashed() }) { Text("Try the GPU again") }
     }
 }
 
