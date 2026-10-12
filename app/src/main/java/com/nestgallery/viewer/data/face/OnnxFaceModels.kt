@@ -145,6 +145,12 @@ class ScrfdDetector(context: Context, val gpu: Boolean = false) {
     companion object { const val INPUT_SIZE = 640 }
 }
 
+/** Aligned 112x112 faces in, L2-normalised 512-d embeddings out (in the input order). */
+interface FaceEmbedder {
+    fun embedBatch(faces: List<Bitmap>): List<FloatArray>
+    fun embed(aligned: Bitmap): FloatArray = embedBatch(listOf(aligned))[0]
+}
+
 /**
  * Face recogniser: AdaFace IR-101 trained on WebFace12M (CVLFace release), int8-quantised (convolutions only,
  * percentile calibration, see tools/face-eval/quant.py). 112x112 aligned RGB in, L2-normalised 512-d embedding out.
@@ -155,7 +161,7 @@ class ScrfdDetector(context: Context, val gpu: Boolean = false) {
  * expression / lighting / accessories, and is ahead on synthetic hand/food occlusion and cross-pose photos too.
  * It costs about 2.5x the compute of ResNet-50 per face.
  */
-class ArcFaceEmbedder(context: Context, val gpu: Boolean = false) {
+class ArcFaceEmbedder(context: Context, val gpu: Boolean = false) : FaceEmbedder {
     private val session: OrtSession
     private val runLock = Any()
     private val inputName: String
@@ -179,13 +185,13 @@ class ArcFaceEmbedder(context: Context, val gpu: Boolean = false) {
     }
 
     /** @param aligned a 112x112 ARGB bitmap produced by [FaceAligner]. */
-    fun embed(aligned: Bitmap): FloatArray = embedBatch(listOf(aligned))[0]
+    override fun embed(aligned: Bitmap): FloatArray = embedBatch(listOf(aligned))[0]
 
     /**
      * Embeds several aligned faces in one model call (about 18% less time per face than one call each,
      * measured on the same CPU). Returns L2-normalised vectors in the input order.
      */
-    fun embedBatch(faces: List<Bitmap>): List<FloatArray> {
+    override fun embedBatch(faces: List<Bitmap>): List<FloatArray> {
         if (faces.isEmpty()) return emptyList()
         if (gpu && faces.size > 1) return faces.flatMap { embedBatch(listOf(it)) }     // the GPU graph is pinned to batch 1
         val n = faces.size

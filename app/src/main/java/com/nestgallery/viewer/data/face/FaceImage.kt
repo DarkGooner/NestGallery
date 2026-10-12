@@ -108,7 +108,7 @@ class AnalyzedFace(
 )
 
 /** Detect -> align -> embed -> quality, for one decoded photo. Thread-safe (sessions are shared). */
-class FaceAnalyzer(private val detector: ScrfdDetector, private val embedder: ArcFaceEmbedder) {
+class FaceAnalyzer(private val detector: ScrfdDetector, private val embedder: FaceEmbedder) {
 
     private class Pending(val det: RawDetection, val aligned: Bitmap, val quality: Float, val detW: Float, val detH: Float)
 

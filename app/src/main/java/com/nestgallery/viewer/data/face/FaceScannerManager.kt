@@ -50,7 +50,10 @@ enum class FaceAccelerator(val title: String, val description: String) {
     GPU("GPU (Adreno)", "Face detection and recognition run on the graphics processor; the CPU only decodes photos. " +
         "Cooler and lighter on the battery, but the GPU handles one face at a time. Experimental."),
     CPU_GPU("CPU + GPU", "Both at once: most cores analyse photos while the GPU analyses others. Usually the fastest " +
-        "if the GPU works. Experimental.");
+        "on the phone, but it can make the phone laggy while it runs. Experimental."),
+    PC("NVIDIA PC", "Face recognition runs on your own computer's NVIDIA graphics card (tools/nvidia-server, over USB " +
+        "or Wi-Fi); the phone only finds the faces. Only face crops are sent, nothing is kept on the PC. If the PC " +
+        "can't be reached, the phone does the work itself.");
 
     companion object {
         fun byName(name: String?): FaceAccelerator = entries.firstOrNull { it.name == name } ?: CPU
@@ -179,6 +182,14 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         return true
     }
 
+    /** The "NVIDIA PC" endpoint (e.g. http://localhost:8765) and its token, as typed in Settings. */
+    val pcEndpoint: String get() = prefs.getString(KEY_PC_URL, null) ?: "http://localhost:8765"
+    val pcToken: String get() = prefs.getString(KEY_PC_TOKEN, null) ?: ""
+
+    fun setPcEndpoint(url: String, token: String) {
+        prefs.edit().putString(KEY_PC_URL, url.trim()).putString(KEY_PC_TOKEN, token.trim()).apply()
+    }
+
     /** True once setting up the GPU crashed the app; it is then skipped until [forgetGpuCrash]. */
     fun gpuCrashed(): Boolean = prefs.getBoolean(KEY_GPU_CRASHED, false)
 
@@ -229,15 +240,41 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     /** @return (photos processed, faces found) */
     private suspend fun runPipeline(todo: List<File>): Pair<Int, Int> {
         val accel = _accelerator.value
+        if (accel == FaceAccelerator.PC) return runPcPipeline(todo)
         if (todo.isNotEmpty() && accel != FaceAccelerator.CPU) _status.value = ScanStatus.Scanning(0, todo.size, 0, "Starting the GPU…")
         val gpu = if (todo.isNotEmpty() && accel != FaceAccelerator.CPU) withContext(Dispatchers.IO) { openGpu() } else null
         // Sessions are closed only after every worker has finished: coroutineScope waits for them even when cancelled.
         try { return runPipeline(todo, accel, gpu) } finally { gpu?.close() }
     }
 
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private suspend fun runPipeline(todo: List<File>, accel: FaceAccelerator, gpu: GpuModels?): Pair<Int, Int> = coroutineScope {
-        val total = todo.size
+    /**
+     * "NVIDIA PC": the phone decodes, detects and aligns (CPU, one worker per core plus two, since workers also wait
+     * on the network), the PC embeds. Unreachable PC = the phone embeds that photo itself (see [RemoteEmbedder]).
+     */
+    private suspend fun runPcPipeline(todo: List<File>): Pair<Int, Int> {
+        val cores = Runtime.getRuntime().availableProcessors()
+        val cpuWorkers = cores.coerceIn(1, 8)
+        if (todo.isEmpty()) return runPipeline(todo, List(cpuWorkers) { analyzer })
+        _status.value = ScanStatus.Scanning(0, todo.size, 0, "Connecting to the PC…")
+        val health = withContext(Dispatchers.IO) { RemoteEmbedder.check(pcEndpoint, pcToken) }
+        if (!health.ok) {
+            _backendLabel.value = "CPU · $cpuWorkers photos at once (NVIDIA PC: ${health.message})"
+            return runPipeline(todo, List(cpuWorkers) { analyzer })
+        }
+        val remote = RemoteEmbedder(pcEndpoint, pcToken, embedder)
+        val pcAnalyzer = FaceAnalyzer(detector, remote)
+        val workers = cpuWorkers + 2
+        _backendLabel.value = "NVIDIA PC · $workers photos at once · ${health.message}"
+        try {
+            return runPipeline(todo, List(workers) { pcAnalyzer })
+        } finally {
+            val fell = remote.fallbackFaces.get()
+            if (fell > 0) _backendLabel.value = "NVIDIA PC · $workers photos at once · $fell faces done on the phone " +
+                "because the PC failed (${remote.lastError?.take(80)})"
+        }
+    }
+
+    private suspend fun runPipeline(todo: List<File>, accel: FaceAccelerator, gpu: GpuModels?): Pair<Int, Int> {
         val cores = Runtime.getRuntime().availableProcessors()
         // Measured on a Snapdragon 7 Gen 3 (8 cores), 80 library photos, no saving: decoding (~35 ms per camera photo)
         // starved the models with 2 decoders. 2 decoders / 4 workers: 20.5 photos/s (16-17 when warm); 3 / 4: 25.2
@@ -246,7 +283,6 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         // recogniser (~190 ms per face) dominates: the decoders then mostly wait on the full channel, and 5 workers
         // left 3 cores idle. One worker per core keeps them all busy in both cases (idle workers just wait on the
         // channel). They get their own threads so blocking model calls never starve Dispatchers.Default.
-        val decoderCount = (cores / 2).coerceIn(1, 4)
         val cpuWorkers = cores.coerceIn(1, 8)
         // GPU: it runs one model call at a time, so a few photos in flight keep it fed (one is prepared while another
         // runs). If only the detector made it onto the GPU, recognition is still CPU work: one worker per core.
@@ -267,6 +303,15 @@ class FaceScannerManager private constructor(private val appContext: Context) {
             else -> "CPU + GPU · ${workerAnalyzers.size - 2} CPU + 2 GPU photos at once; GPU: ${onGpu.joinToString(" + ")}" +
                 (if (gpu.note.isNotEmpty()) " (${gpu.note})" else "")
         }
+        return runPipeline(todo, workerAnalyzers)
+    }
+
+    /** Decoders -> one worker per entry of [workerAnalyzers] -> batched writer. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private suspend fun runPipeline(todo: List<File>, workerAnalyzers: List<FaceAnalyzer>): Pair<Int, Int> = coroutineScope {
+        val total = todo.size
+        val cores = Runtime.getRuntime().availableProcessors()
+        val decoderCount = (cores / 2).coerceIn(1, 4)
         val analysisDispatcher = Dispatchers.IO.limitedParallelism(workerAnalyzers.size)
         val decoded = Channel<Decoded>(2)
         val results = Channel<ScannedFile>(64)
@@ -544,6 +589,8 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         private const val KEY_ACCEL = "accelerator"
         private const val KEY_PROBE = "gpu_probe"
         private const val KEY_GPU_CRASHED = "gpu_crashed"
+        private const val KEY_PC_URL = "pc_endpoint"
+        private const val KEY_PC_TOKEN = "pc_token"
         @Volatile private var INSTANCE: FaceScannerManager? = null
         fun getInstance(context: Context): FaceScannerManager =
             INSTANCE ?: synchronized(this) { INSTANCE ?: FaceScannerManager(context.applicationContext).also { INSTANCE = it } }

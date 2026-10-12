@@ -41,6 +41,12 @@ import androidx.compose.ui.unit.dp
 import com.nestgallery.viewer.data.nsfw.NsfwScannerManager
 import com.nestgallery.viewer.data.face.FaceAccelerator
 import com.nestgallery.viewer.data.face.FaceScannerManager
+import com.nestgallery.viewer.data.face.RemoteEmbedder
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.nestgallery.viewer.data.face.ScanStatus
 import com.nestgallery.viewer.data.nsfw.NsfwAccelerator
 import com.nestgallery.viewer.data.nsfw.NsfwModel
@@ -151,6 +157,62 @@ private fun FaceHardwareSection() {
     }
     if (crashed) {
         TextButton(onClick = { faces.forgetGpuCrash(); crashed = faces.gpuCrashed() }) { Text("Try the GPU again") }
+    }
+    if (accel == FaceAccelerator.PC) PcEndpointCard(faces)
+}
+
+/** Address + token of the user's "NVIDIA PC" face endpoint, with a connection test. */
+@Composable
+private fun PcEndpointCard(faces: FaceScannerManager) {
+    val scope = rememberCoroutineScope()
+    var url by remember { mutableStateOf(faces.pcEndpoint) }
+    var token by remember { mutableStateOf(faces.pcToken) }
+    var result by remember { mutableStateOf<RemoteEmbedder.Health?>(null) }
+    var testing by remember { mutableStateOf(false) }
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("NVIDIA PC endpoint", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "On the PC, run tools/nvidia-server/setup.cmd once, then start.cmd. Over USB use http://localhost:8765 " +
+                    "(start.cmd sets up adb reverse); over Wi-Fi use start.cmd -Lan and the address it shows. The token " +
+                    "is shown in the PC's window.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+            )
+            OutlinedTextField(
+                value = url, singleLine = true, label = { Text("Endpoint") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                onValueChange = { url = it; result = null; faces.setPcEndpoint(it, token) },
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token, singleLine = true, label = { Text("Token") },
+                onValueChange = { token = it; result = null; faces.setPcEndpoint(url, it) },
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                Button(enabled = !testing, onClick = {
+                    testing = true
+                    scope.launch {
+                        result = withContext(Dispatchers.IO) { RemoteEmbedder.check(url, token) }
+                        testing = false
+                    }
+                }) { Text(if (testing) "Testing…" else "Test connection") }
+            }
+            result?.let {
+                Text(
+                    it.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (it.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+        }
     }
 }
 

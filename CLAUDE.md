@@ -63,6 +63,15 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
   LFW 600 faces: cos(int8, float) 0.984, TAR@1e-3 0.930 int8 / 0.931 float / 0.930 mixed, so mixed-hardware DBs share
   MODEL_ID. Strict sessions (no CPU fallback inside a model), crash marker in prefs `face`. **Not tried on a phone.**
   The 45 identity MaxPools were stripped from the int8 asset (bit-identical, ~5% x86).
+- User's phone run (2026-10-12): GPU-only crashed the app (cause unknown, no log); CPU + GPU 12-15 photos/s but the
+  whole phone got laggy.
+- **NVIDIA PC endpoint (branch `NVIDIA`, 2026-10-12):** Settings option "NVIDIA PC" (endpoint + token + Test
+  connection). The phone decodes / detects / aligns and POSTs 112x112 RGB crops to `tools/nvidia-server/server.py`
+  (stdlib HTTP, micro-batched CUDA runs of the same float graph as the phone GPU, model id
+  `adaface_ir101_gpu_from_int8:v1` = `RemoteEmbedder.MODEL_ID`). PC unreachable -> that photo is embedded on the
+  phone, PC retried after 15 s. App now has INTERNET + cleartext (only for that endpoint). `setup.cmd` installs uv,
+  Python 3.12, onnxruntime-gpu 1.22 + cuDNN 9.10 pip libs and the models (pinned commit + SHA-256) into the folder
+  only. Server checked here on CPU (`--allow-cpu`): cos 0.984 to int8; **not run on CUDA / Windows or a phone yet**.
 - Not done: real Daz3D / Blender / Honey Select test images (DigiFace is the stand-in), learned clustering, anime.
 
 ## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`)
