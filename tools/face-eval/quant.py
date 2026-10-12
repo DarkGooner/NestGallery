@@ -12,8 +12,10 @@ of fp32 (README). Percentile needs a few GB of RAM for the histograms (fine on 1
 The source model must be opset >= 13 (w600k_r50 ships as opset 11):
     python -c "import onnx;from onnx import version_converter as v;onnx.save(v.convert_version(onnx.load('w600k_r50.onnx'),13),'r50_op13.onnx')"
 Run embed.py on the calibration sets first (it caches the aligned faces).
+The output goes through strip_identity_pools.py (bit-identical, ~5% faster); the shipped asset was stripped that way.
 """
-import argparse, os, shutil, tempfile, numpy as np, onnx
+import argparse, os, tempfile, numpy as np, onnx
+import strip_identity_pools
 from onnxruntime.quantization import quantize_static, CalibrationDataReader, CalibrationMethod, QuantFormat, QuantType
 from onnxruntime.quantization.shape_inference import quant_pre_process
 
@@ -50,5 +52,7 @@ with tempfile.TemporaryDirectory() as tmp:
     quantize_static(pre, out, Reader(name), quant_format=QuantFormat.QDQ, per_channel=True,
                     activation_type=QuantType.QInt8, weight_type=QuantType.QInt8,
                     op_types_to_quantize=["Conv", "Gemm", "MatMul"], **calib)
-    shutil.copyfile(out, dst)
+    m = onnx.load(out)
+    print("removed", strip_identity_pools.strip(m), "identity MaxPools")
+    onnx.save(m, dst)
 print("wrote", dst, os.path.getsize(dst) // 1024, "KB")

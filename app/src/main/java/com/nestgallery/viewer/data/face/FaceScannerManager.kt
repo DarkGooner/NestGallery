@@ -7,6 +7,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
@@ -147,14 +148,20 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     }
 
     /** @return (photos processed, faces found) */
+    @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun runPipeline(todo: List<File>): Pair<Int, Int> = coroutineScope {
         val total = todo.size
         val cores = Runtime.getRuntime().availableProcessors()
         // Measured on a Snapdragon 7 Gen 3 (8 cores), 80 library photos, no saving: decoding (~35 ms per camera photo)
         // starved the models with 2 decoders. 2 decoders / 4 workers: 20.5 photos/s (16-17 when warm); 3 / 4: 25.2
         // (19); 4 / 5: 21.4 when warm, the best of the tried set. More workers alone did not help (6: 24, 8: 21-24).
+        // That set had about one face per photo, so decoding was the limit. Real libraries average more faces and the
+        // recogniser (~190 ms per face) dominates: the decoders then mostly wait on the full channel, and 5 workers
+        // left 3 cores idle. One worker per core keeps them all busy in both cases (idle workers just wait on the
+        // channel). They get their own threads so blocking model calls never starve Dispatchers.Default.
         val decoderCount = (cores / 2).coerceIn(1, 4)
-        val analysisCount = (cores * 5 / 8).coerceIn(1, 5)
+        val analysisCount = cores.coerceIn(1, 8)
+        val analysisDispatcher = Dispatchers.IO.limitedParallelism(analysisCount)
         val decoded = Channel<Decoded>(2)
         val results = Channel<ScannedFile>(64)
         val next = AtomicInteger(0)
@@ -175,7 +182,7 @@ class FaceScannerManager private constructor(private val appContext: Context) {
             }
         }
         val workers = List(analysisCount) {
-            launch(Dispatchers.Default) {
+            launch(analysisDispatcher) {
                 for (d in decoded) {
                     val bmp = d.bitmap
                     val found: List<NewFace> = try {
