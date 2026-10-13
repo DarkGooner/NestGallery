@@ -333,7 +333,7 @@ private fun EmptyState(folder: String, photoCount: Int, modelTitle: String, onSc
                 Spacer(Modifier.width(8.dp))
                 Text("Scan photos in $folder", maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            TextButton(onClick = onOpenSettings) { Text("$modelTitle · hardware settings") }
+            TextButton(onClick = onOpenSettings) { Text("$modelTitle · hardware settings", textAlign = TextAlign.Center) }
         }
     }
 }

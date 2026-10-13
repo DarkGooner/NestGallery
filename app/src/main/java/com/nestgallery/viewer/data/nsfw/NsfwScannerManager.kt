@@ -170,7 +170,9 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
             } catch (e: Throwable) {
                 e.printStackTrace()
                 if (accel == NsfwAccelerator.CPU) throw e
-                failures += "${accel.title} unavailable: ${e.message?.lineSequence()?.firstOrNull()?.take(80) ?: e.javaClass.simpleName}"
+                // The raw ORT / QNN message ("Error code - ORT_FAIL - ...") means nothing in the scan card; it stays in
+                // logcat (above) and in the Settings speed test's "Copy details".
+                failures += "${accel.title} not available on this phone"
             }
         }
         error("no backend")                                   // unreachable: CPU either returns or throws
@@ -410,6 +412,32 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
         val root = folderPath.trimEnd('/')
         results.keys.removeIf { it == root || it.startsWith("$root/") }
         _revision.value++
+    }
+
+    /** Bytes the NSFW database uses on disk (+ WAL). */
+    fun storageBytes(): Long {
+        val db = appContext.getDatabasePath(NsfwDatabase.DB_NAME)
+        return listOf(db, File(db.path + "-wal"), File(db.path + "-shm")).sumOf { it.length() }
+    }
+
+    /** Forgets every model's results for the photos directly in [folderPath]. Refused (false) while a scan runs. */
+    suspend fun deleteFolderData(folderPath: String): Boolean = withContext(Dispatchers.IO) {
+        if (isScanning()) return@withContext false
+        val gone = database.deleteFolder(folderPath)
+        for (p in gone) results.remove(p)
+        database.vacuum()
+        _revision.value++
+        true
+    }
+
+    /** Forgets every NSFW result. Refused (false) while a scan runs. */
+    suspend fun deleteAllData(): Boolean = withContext(Dispatchers.IO) {
+        if (isScanning()) return@withContext false
+        database.clearAll()
+        results.clear()
+        database.vacuum()
+        _revision.value++
+        true
     }
 
     companion object {

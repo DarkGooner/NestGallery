@@ -157,6 +157,12 @@ class FaceStore(val dim: Int = FaceMath.EMBED_DIM) {
         fileRows[fi].clear()
     }
 
+    /** Tombstones every face (all face data was deleted). */
+    fun clear() = lock.write {
+        for (r in 0 until matrix.rows) if (alive[r]) { alive[r] = false; matrix.clearRow(r) }
+        for (rows in fileRows) rows.clear()
+    }
+
     fun maxPersonId(): Long = lock.read { var m = 0L; for (r in 0 until matrix.rows) if (alive[r] && personIds[r] > m) m = personIds[r]; m }
     /** Sets person_id back to 0 for every live face whose person is not in [keep] (dismissed faces stay dismissed). */
     fun unassignExcept(keep: Set<Long>) = lock.write {

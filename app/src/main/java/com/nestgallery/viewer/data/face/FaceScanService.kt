@@ -1,5 +1,6 @@
 package com.nestgallery.viewer.data.face
 
+import com.nestgallery.viewer.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -158,7 +159,7 @@ class FaceScanService : Service() {
         ensureChannel()
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val n = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.drawable.ic_stat_done)
             .setContentTitle(title).setContentText(text)
             .setContentIntent(open).setAutoCancel(true).setSilent(true)
             .build()

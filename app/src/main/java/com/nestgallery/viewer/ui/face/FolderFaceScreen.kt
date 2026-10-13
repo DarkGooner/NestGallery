@@ -108,6 +108,7 @@ import com.nestgallery.viewer.ui.holdPreviewGestures
 import com.nestgallery.viewer.data.face.FaceMath
 import com.nestgallery.viewer.data.face.QueryFace
 import com.nestgallery.viewer.data.face.FaceDatabase
+import com.nestgallery.viewer.data.face.FaceDbStats
 import com.nestgallery.viewer.data.face.FaceMatch
 import com.nestgallery.viewer.data.face.FaceScannerManager
 import com.nestgallery.viewer.data.face.MergeSuggestion
@@ -158,6 +159,8 @@ fun FolderFaceScreen(
 
     var selectedTab by remember { mutableIntStateOf(0) } // 0: People, 1: Search by Face
     var people by remember { mutableStateOf<List<PersonEntity>>(emptyList()) }
+    /** What the face DB holds for this folder tree; null until loaded. */
+    var folderStats by remember { mutableStateOf<FaceDbStats?>(null) }
     var personToRename by remember { mutableStateOf<PersonEntity?>(null) }
     var renameInput by remember { mutableStateOf("") }
 
@@ -190,6 +193,7 @@ fun FolderFaceScreen(
     fun refreshPeople() {
         scope.launch {
             val loaded = withContext(Dispatchers.IO) { db.getPeopleInFolder(root.file.absolutePath) }
+            folderStats = withContext(Dispatchers.IO) { db.getFolderStats(root.file.absolutePath) }
             val questions = scanner.mergeSuggestions(root.file.absolutePath).filter { (it.a.id to it.b.id) !in review.skipped }
             // set together: people first and the card a moment later kept the grid on the first person, card above it
             people = loaded
@@ -300,7 +304,14 @@ fun FolderFaceScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            "${files.size} photos scanned",
+                            // (files.size is every photo in the tree, not what was scanned)
+                            folderStats.let { st ->
+                                when {
+                                    st == null -> ""
+                                    st.totalPhotosIndexed == 0 -> "Not scanned yet"
+                                    else -> "${st.totalPhotosIndexed} photos scanned · ${st.totalFacesFound} faces"
+                                }
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -395,14 +406,18 @@ fun FolderFaceScreen(
                                 )
                             }
                             Spacer(Modifier.height(16.dp))
+                            val scannedBefore = (folderStats?.totalPhotosIndexed ?: 0) > 0
                             Text(
-                                "No faces scanned in this folder yet",
+                                if (scannedBefore) "No people found yet" else "No faces scanned in this folder yet",
                                 style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                "Scan the photos collected by this recursive explorer to automatically group people on this device.",
+                                if (scannedBefore) "A person appears here once the same face is found in at least " +
+                                    "${FaceDatabase.MIN_FACES_TO_SHOW} photos. Scan again after adding photos."
+                                else "Scan the photos collected by this recursive explorer to automatically group people on this device.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
@@ -413,7 +428,7 @@ fun FolderFaceScreen(
                             ) {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
-                                Text("Scan Faces in ${root.name}")
+                                Text(if (scannedBefore) "Scan again" else "Scan Faces in ${root.name}")
                             }
                         }
                     }
@@ -1026,17 +1041,24 @@ private fun FolderScanProgressBanner(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // The title is the only flexible child: a Row measures weighted children last, so the counts and
+                    // both buttons always get their space. (Before, a widening count squeezed the Cancel button to
+                    // zero width and it blinked in and out as the digits changed.)
                     Text(
                         if (isPaused) "Indexing Paused" else if (grouping) "Grouping people..." else "Scanning Faces...",
+                        modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.weight(1f))
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         if (grouping) "${if (total > 0) scanned * 100 / total else 0}%" else "$scanned / $total ($faces faces)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary
+                        style = MaterialTheme.typography.bodySmall.copy(fontFeatureSettings = "tnum"),
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1
                     )
                     Spacer(Modifier.width(8.dp))
                     IconButton(

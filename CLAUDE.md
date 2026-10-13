@@ -65,13 +65,28 @@ decode -> SCRFD-500M detect (5 landmarks) -> similarity-align to 112x112 -> AdaF
   The 45 identity MaxPools were stripped from the int8 asset (bit-identical, ~5% x86).
 - User's phone run (2026-10-12): GPU-only crashed the app (cause unknown, no log); CPU + GPU 12-15 photos/s but the
   whole phone got laggy.
-- **NVIDIA PC endpoint (branch `NVIDIA`, 2026-10-12):** Settings option "NVIDIA PC" (endpoint + token + Test
-  connection). The phone decodes / detects / aligns and POSTs 112x112 RGB crops to `tools/nvidia-server/server.py`
-  (stdlib HTTP, micro-batched CUDA runs of the same float graph as the phone GPU, model id
-  `adaface_ir101_gpu_from_int8:v1` = `RemoteEmbedder.MODEL_ID`). PC unreachable -> that photo is embedded on the
-  phone, PC retried after 15 s. App now has INTERNET + cleartext (only for that endpoint). `setup.cmd` installs uv,
-  Python 3.12, onnxruntime-gpu 1.22 + cuDNN 9.10 pip libs and the models (pinned commit + SHA-256) into the folder
-  only. Server checked here on CPU (`--allow-cpu`): cos 0.984 to int8; **not run on CUDA / Windows or a phone yet**.
+- **NVIDIA PC endpoint (branch `NVIDIA`):** Settings option "NVIDIA PC" (endpoint + Test connection; the token was
+  removed 2026-10-13 at the user's request, local network only). API 2 (2026-10-13): the phone sends each photo
+  (`RemoteFaceAnalyzer`: JPEG/PNG/WebP <= 400 KB as is, else decoded like FaceImageLoader and re-encoded JPEG q90,
+  ~130 KB) to `tools/nvidia-server/server.py`, which runs FaceAnalyzer's steps (Pillow decode, SCRFD 640 on 2 CUDA
+  sessions, align, AdaFace in **float16** (`make_fp16.py`, cos >= 0.99997 to float32 on 360 faces) with one session
+  per padded batch size 8/16/32/64: ORT CUDA re-tunes convs (~200-600 ms) whenever one session sees a new batch size).
+  24 photos in flight; PC failure -> that photo on the phone, PC retried after 15 s. Measured on the user's Moto
+  (USB, 300 synthetic 2.9 MB photos: 4000x3000 JPEG / 1920x1080 PNG / 1080x2400 JPEG): old API 26 photos/s, new 70
+  (same 13 people, 441 vs 444 faces). Now the phone CPU is the limit (~6 of 8 cores; decode at reduced size 46-117 ms
+  per photo, re-encode ~20 ms); the PC alone does ~105 photos/s (Python; 4060 laptop). 300 light JPEGs (~110 KB,
+  sent as is): 85 photos/s. Wi-Fi not measured: the Wi-Fi available here isolates clients. The
+  server prints "scan: N photos ... = X photos/s" after each scan. Test folders on the phone: Pictures/NestBench
+  (300 x 2.9 MB) and Pictures/NestLight (user 14).
+  `setup.ps1` needed `UV_HTTP_TIMEOUT` (cuBLAS wheel timed out) and cuDNN needs `nvidia/cuda_nvrtc/bin` on the DLL
+  path (server adds it). App has INTERNET + cleartext (only for that endpoint).
+- Settings > "Face scan data" / "NSFW scan data" (`ui/ScanDataScreen.kt`, 2026-10-13): totals + DB size, scanned
+  folders (photos directly in each folder) with delete per folder or everything (then VACUUM); refused while a scan
+  runs. Tried on the user's Moto Edge 50 Pro with 60 DigiFace test photos in `Pictures/NestTest` (user 14).
+- Device testing from this PC: the app lives in Moto's Secure Folder (user 14). `am start --user 14` is refused; reopen
+  it from Recents. Test media can be put into user 14 via MediaStore from adb: `content insert --user 14 --uri
+  content://media/external/images/media --bind _display_name:s:x.jpg --bind relative_path:s:Pictures/NestTest/ ...`
+  then `content write --user 14 --uri .../media/<id> < file` (direct `adb push` to /storage/emulated/14 is denied).
 - Not done: real Daz3D / Blender / Honey Select test images (DigiFace is the stand-in), learned clustering, anime.
 
 ## NSFW scan (data/nsfw, ui/nsfw; branch `NSFW`)

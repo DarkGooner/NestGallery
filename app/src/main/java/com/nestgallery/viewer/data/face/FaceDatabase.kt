@@ -38,6 +38,12 @@ class StoredFace(val id: Long, val path: String, val personId: Long, val quality
 
 class FaceLocation(val path: String, val landmarksNorm: FloatArray)
 
+/** A folder that directly holds scanned photos (Settings > Face scan data). */
+data class FaceDataFolder(val path: String, val photos: Int, val faces: Int)
+
+/** What [FaceDatabase.deleteFolder] removed, so the in-memory index and thumbnails can follow. */
+class DeletedFaces(val paths: List<String>, val faceIds: List<Long>, val thumbnails: List<String>, val people: Set<Long>)
+
 /**
  * SQLite persistence for indexed photos, face embeddings and people.
  *
@@ -439,6 +445,82 @@ class FaceDatabase private constructor(context: Context) :
         )
     }
 
+    // ---- managing the stored data (Settings > Face scan data) ------------------------------------
+
+    fun totalStats(): FaceDbStats {
+        fun count(sql: String): Int = readableDatabase.rawQuery(sql, null).use { if (it.moveToFirst()) it.getInt(0) else 0 }
+        return FaceDbStats(
+            count("SELECT COUNT(*) FROM indexed_files"),
+            count("SELECT COUNT(*) FROM faces"),
+            count("SELECT COUNT(*) FROM people")
+        )
+    }
+
+    /** Every folder that directly holds scanned photos, with its photo / face counts; most photos first. */
+    fun scannedFolders(): List<FaceDataFolder> {
+        val photos = HashMap<String, Int>()
+        val faces = HashMap<String, Int>()
+        readableDatabase.rawQuery("SELECT path, face_count FROM indexed_files", null).use {
+            while (it.moveToNext()) {
+                val dir = File(it.getString(0)).parent ?: continue
+                photos.merge(dir, 1, Int::plus)
+                faces.merge(dir, it.getInt(1), Int::plus)
+            }
+        }
+        return photos.map { (dir, n) -> FaceDataFolder(dir, n, faces[dir] ?: 0) }
+            .sortedWith(compareByDescending<FaceDataFolder> { it.photos }.thenBy { it.path })
+    }
+
+    /**
+     * Forgets the photos directly inside [folderPath] (not its subfolders): their faces, rejections and index rows.
+     * People left without faces disappear unless named. The next scan of the folder indexes it again.
+     */
+    fun deleteFolder(folderPath: String): DeletedFaces {
+        val (root, lo, hi) = range(folderPath)
+        val db = writableDatabase
+        val paths = ArrayList<String>()
+        val faceIds = ArrayList<Long>()
+        val thumbs = ArrayList<String>()
+        val people = HashSet<Long>()
+        db.beginTransaction()
+        try {
+            db.rawQuery("SELECT path FROM indexed_files WHERE path >= ? AND path < ?", arrayOf(lo, hi)).use {
+                while (it.moveToNext()) { val p = it.getString(0); if (File(p).parent == root) paths.add(p) }
+            }
+            for (p in paths) {
+                db.rawQuery("SELECT id, person_id, thumbnail_path FROM faces WHERE file_path = ?", arrayOf(p)).use {
+                    while (it.moveToNext()) {
+                        faceIds.add(it.getLong(0))
+                        if (it.getLong(1) > 0) people.add(it.getLong(1))
+                        if (!it.isNull(2)) thumbs.add(it.getString(2))
+                    }
+                }
+                db.execSQL("DELETE FROM face_rejections WHERE face_id IN (SELECT id FROM faces WHERE file_path = ?)", arrayOf(p))
+                db.delete("faces", "file_path = ?", arrayOf(p))
+                db.delete("indexed_files", "path = ?", arrayOf(p))
+            }
+            refreshPersonCounts(db)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return DeletedFaces(paths, faceIds, thumbs, people)
+    }
+
+    /** Forgets every scanned photo, face and person (names and answers included). The model / algorithm tags stay. */
+    fun clearAll() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (t in listOf("faces", "people", "indexed_files", "face_rejections", "person_not_same")) db.execSQL("DELETE FROM $t")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    /** Gives the space of deleted rows back to the file system (SQLite only reuses it otherwise). */
+    fun vacuum() {
+        writableDatabase.execSQL("VACUUM")
+        writableDatabase.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+    }
+
     /**
      * Index-friendly "everything under this folder": path == folder OR folder/ <= path < folder0
      * ('0' is the character right after '/'). Unlike LIKE it is case-exact, can use the b-tree index, and
@@ -450,7 +532,7 @@ class FaceDatabase private constructor(context: Context) :
     }
 
     companion object {
-        private const val DB_NAME = "nest_faces.db"
+        const val DB_NAME = "nest_faces.db"
         private const val DB_VERSION = 5
         const val MIN_FACES_TO_SHOW = 2
 

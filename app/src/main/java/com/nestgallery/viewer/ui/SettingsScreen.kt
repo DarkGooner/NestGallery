@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,7 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.nestgallery.viewer.data.nsfw.NsfwScannerManager
 import com.nestgallery.viewer.data.face.FaceAccelerator
 import com.nestgallery.viewer.data.face.FaceScannerManager
-import com.nestgallery.viewer.data.face.RemoteEmbedder
+import com.nestgallery.viewer.data.face.RemoteFaceAnalyzer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
@@ -78,6 +79,12 @@ fun SettingsScreen(onBack: () -> Unit) {
     val model by nsfw.model.collectAsState()
     val status by nsfw.status.collectAsState()
     val scanning = status.activeFolder != null
+    var dataScreen by remember { mutableStateOf<DataScreen?>(null) }
+    when (dataScreen) {
+        DataScreen.FACES -> { FaceDataScreen(onBack = { dataScreen = null }); return }
+        DataScreen.NSFW -> { NsfwDataScreen(onBack = { dataScreen = null }); return }
+        null -> {}
+    }
     BackHandler { onBack() }
 
     Scaffold(
@@ -94,6 +101,8 @@ fun SettingsScreen(onBack: () -> Unit) {
             Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             FaceHardwareSection()
+            Spacer(Modifier.height(12.dp))
+            DataEntry("Face scan data", onOpen = { dataScreen = DataScreen.FACES })
             Spacer(Modifier.height(20.dp))
             NsfwSwitch(nsfwEnabled) { on ->
                 if (!on) nsfw.stopScan()          // hidden from now on, so don't leave a scan running out of sight
@@ -110,6 +119,8 @@ fun SettingsScreen(onBack: () -> Unit) {
                 )
             }
             HardwareSection(nsfw, model, scanning)
+            Spacer(Modifier.height(12.dp))
+            DataEntry("NSFW scan data", onOpen = { dataScreen = DataScreen.NSFW })
         }
     }
 }
@@ -161,13 +172,37 @@ private fun FaceHardwareSection() {
     if (accel == FaceAccelerator.PC) PcEndpointCard(faces)
 }
 
-/** Address + token of the user's "NVIDIA PC" face endpoint, with a connection test. */
+private enum class DataScreen { FACES, NSFW }
+
+/** Opens a scan's data screen (view / delete what that scan stored). */
+@Composable
+private fun DataEntry(title: String, onOpen: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "See the scanned folders and how much space they use; delete one folder's results or everything.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+    }
+}
+
+/** Address of the user's "NVIDIA PC" face endpoint, with a connection test. */
 @Composable
 private fun PcEndpointCard(faces: FaceScannerManager) {
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf(faces.pcEndpoint) }
-    var token by remember { mutableStateOf(faces.pcToken) }
-    var result by remember { mutableStateOf<RemoteEmbedder.Health?>(null) }
+    var result by remember { mutableStateOf<RemoteFaceAnalyzer.Health?>(null) }
     var testing by remember { mutableStateOf(false) }
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -178,8 +213,8 @@ private fun PcEndpointCard(faces: FaceScannerManager) {
             Text("NVIDIA PC endpoint", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
                 "On the PC, run tools/nvidia-server/setup.cmd once, then start.cmd. Over USB use http://localhost:8765 " +
-                    "(start.cmd sets up adb reverse); over Wi-Fi use start.cmd -Lan and the address it shows. The token " +
-                    "is shown in the PC's window.",
+                    "(start.cmd sets up adb reverse); over Wi-Fi use start.cmd -Lan and the address it shows (only on a " +
+                    "network you trust: anyone on it can use the endpoint).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
@@ -187,19 +222,14 @@ private fun PcEndpointCard(faces: FaceScannerManager) {
             OutlinedTextField(
                 value = url, singleLine = true, label = { Text("Endpoint") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                onValueChange = { url = it; result = null; faces.setPcEndpoint(it, token) },
+                onValueChange = { url = it; result = null; faces.setPcEndpoint(it) },
                 modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = token, singleLine = true, label = { Text("Token") },
-                onValueChange = { token = it; result = null; faces.setPcEndpoint(url, it) },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
             )
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                 Button(enabled = !testing, onClick = {
                     testing = true
                     scope.launch {
-                        result = withContext(Dispatchers.IO) { RemoteEmbedder.check(url, token) }
+                        result = withContext(Dispatchers.IO) { RemoteFaceAnalyzer.check(url) }
                         testing = false
                     }
                 }) { Text(if (testing) "Testing…" else "Test connection") }

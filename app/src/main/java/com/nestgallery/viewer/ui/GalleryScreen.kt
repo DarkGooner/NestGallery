@@ -140,7 +140,7 @@ fun GalleryScreen(
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
     val coroutineScope = rememberCoroutineScope()
 
-    val bar = rememberCollapsingBar()
+    val bar = rememberCollapsingBar(resetKey = cacheKey)
     val topPad = bar.contentTopPadding()
 
     Scaffold(contentWindowInsets = ScreenInsets) { padding ->
@@ -251,7 +251,7 @@ fun GalleryScreen(
         NestTopBar(
             state = bar,
             title = current.name,
-            subtitle = if (currentEntries == null) null else "$folderCount folders · $mediaCount items",
+            subtitle = if (currentEntries == null) null else "${countLabel(folderCount, "folder")} · ${countLabel(mediaCount, "item")}",
             onBack = if (canGoBack) onBack else null,
             listMode = listMode,
             onToggleViewMode = onToggleViewMode,
@@ -303,23 +303,28 @@ private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
     ) {
         Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                entry.name,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            val c = count
-            // Always reserve the line (just hide it) so a row's height never
-            // jumps once its async count resolves - that jump was throwing
-            // off the spacing of everything below it in the list.
-            Text(
-                "${c ?: 0} items",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.alpha(if (c != null && c > 0) 1f else 0f)
-            )
+        // Every row is two lines tall (an invisible placeholder reserves them) so a row's height never jumps once
+        // its async count resolves - that jump was throwing off the spacing of everything below it. Without a count
+        // the name is centred against the icon instead of sitting on the top line.
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            Column(Modifier.alpha(0f)) {
+                Text(" ", style = MaterialTheme.typography.titleMedium)
+                Text(" ", style = MaterialTheme.typography.bodyMedium)
+            }
+            Column {
+                Text(
+                    entry.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val c = count
+                if (c != null && c > 0) Text(
+                    if (c == 1) "1 item" else "$c items",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }
@@ -393,3 +398,5 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
     }
 }
 
+
+private fun countLabel(n: Int, one: String) = if (n == 1) "1 $one" else "$n ${one}s"

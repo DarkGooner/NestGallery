@@ -7,6 +7,9 @@ import android.database.sqlite.SQLiteOpenHelper
 import java.io.File
 
 /** One scanned photo ready to be persisted; [lastModified]/[size] are the values seen when it was decoded. */
+/** A folder that directly holds scanned photos (Settings > NSFW scan data). */
+data class NsfwDataFolder(val path: String, val photos: Int, val withDetections: Int)
+
 class NsfwScannedFile(val path: String, val lastModified: Long, val size: Long, val result: NsfwResult)
 
 /**
@@ -129,6 +132,56 @@ class NsfwDatabase private constructor(context: Context) :
         }
     }
 
+    // ---- managing the stored data (Settings > NSFW scan data) -----------------------------------
+
+    /** Every folder that directly holds scanned photos (any model): photos scanned, photos with any stored region. */
+    fun scannedFolders(): List<NsfwDataFolder> {
+        val photos = HashMap<String, HashSet<String>>()
+        readableDatabase.rawQuery("SELECT path FROM nsfw_files", null).use {
+            while (it.moveToNext()) { val p = it.getString(0); photos.getOrPut(File(p).parent ?: continue) { HashSet() }.add(p) }
+        }
+        val withHits = HashMap<String, HashSet<String>>()
+        readableDatabase.rawQuery("SELECT DISTINCT path FROM nsfw_detections", null).use {
+            while (it.moveToNext()) { val p = it.getString(0); withHits.getOrPut(File(p).parent ?: continue) { HashSet() }.add(p) }
+        }
+        return photos.map { (dir, set) -> NsfwDataFolder(dir, set.size, withHits[dir]?.size ?: 0) }
+            .sortedWith(compareByDescending<NsfwDataFolder> { it.photos }.thenBy { it.path })
+    }
+
+    /** Forgets every model's results for the photos directly inside [folderPath] (not its subfolders). @return those paths */
+    fun deleteFolder(folderPath: String): List<String> {
+        val (root, lo, hi) = range(folderPath)
+        val db = writableDatabase
+        val paths = ArrayList<String>()
+        db.beginTransaction()
+        try {
+            db.rawQuery("SELECT DISTINCT path FROM nsfw_files WHERE path >= ? AND path < ?", arrayOf(lo, hi)).use {
+                while (it.moveToNext()) { val p = it.getString(0); if (File(p).parent == root) paths.add(p) }
+            }
+            for (p in paths) {
+                db.delete("nsfw_detections", "path = ?", arrayOf(p))
+                db.delete("nsfw_files", "path = ?", arrayOf(p))
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        return paths
+    }
+
+    fun clearAll() {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM nsfw_detections"); db.execSQL("DELETE FROM nsfw_files")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    /** Gives the space of deleted rows back to the file system. */
+    fun vacuum() {
+        writableDatabase.execSQL("VACUUM")
+        writableDatabase.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+    }
+
     /** [folderPath] itself, and the half-open range of paths strictly inside it ('0' sorts right after '/'). */
     private fun range(folderPath: String): Triple<String, String, String> {
         val root = folderPath.trimEnd(File.separatorChar, '/')
@@ -136,7 +189,7 @@ class NsfwDatabase private constructor(context: Context) :
     }
 
     companion object {
-        private const val DB_NAME = "nest_nsfw.db"
+        const val DB_NAME = "nest_nsfw.db"
         private const val DB_VERSION = 2
         @Volatile private var INSTANCE: NsfwDatabase? = null
         fun getInstance(context: Context): NsfwDatabase =

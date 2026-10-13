@@ -234,6 +234,13 @@ private fun NestGalleryApp() {
             screen = personDetailScreen.returnTo
         }
     }
+    // Without this, system Back in the photo viewer fell through to the activity and closed the app.
+    val viewerScreen = screen as? Screen.Viewer
+    if (viewerScreen != null) {
+        BackHandler {
+            screen = viewerScreen.returnTo
+        }
+    }
 
     Crossfade(targetState = screen, label = "screen") { s ->
         when (s) {

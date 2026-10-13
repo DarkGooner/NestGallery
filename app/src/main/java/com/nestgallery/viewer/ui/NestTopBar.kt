@@ -104,8 +104,17 @@ class CollapsingBarState {
     }
 }
 
+/**
+ * [resetKey]: the bar unfolds whenever it changes (e.g. the folder shown), so a header folded away in one folder
+ * isn't still folded in the next one, whose list starts at the top.
+ */
 @Composable
-fun rememberCollapsingBar(): CollapsingBarState = remember { CollapsingBarState() }
+fun rememberCollapsingBar(resetKey: Any? = null): CollapsingBarState {
+    val state = remember { CollapsingBarState() }
+    // offsetPx is only read in layout / draw, so writing it here does not recompose
+    remember(resetKey) { state.offsetPx = 0f; resetKey }
+    return state
+}
 
 /** Top padding the scrolling content needs so its first row starts just below the expanded bar. */
 @Composable

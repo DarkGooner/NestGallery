@@ -1,5 +1,8 @@
 package com.nestgallery.viewer.ui.face
 
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -134,6 +137,7 @@ fun PersonDetailScreen(
     }
 
     val currentPerson = person
+    var showMenu by remember { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = ScreenInsets,
@@ -173,16 +177,26 @@ fun PersonDetailScreen(
                         else Icon(Icons.Default.ViewAgenda, contentDescription = "List view")
                     }
                     TextButton(onClick = { selecting = true }, enabled = mediaEntries.isNotEmpty()) { Text("Select") }
-                    IconButton(
-                        onClick = {
-                            renameInput = currentPerson?.name ?: ""
-                            showRenameDialog = true
+                    // Rename / remove live in the overflow: four actions squeezed the name down to "Pers...", and a
+                    // bare trash icon read as "delete these photos".
+                    Box {
+                        IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More") }
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                onClick = {
+                                    showMenu = false
+                                    renameInput = currentPerson?.name ?: ""
+                                    showRenameDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Remove person") },
+                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                                onClick = { showMenu = false; showDeleteDialog = true }
+                            )
                         }
-                    ) {
-                        Icon(Icons.Default.Edit, contentDescription = "Rename Person")
-                    }
-                    IconButton(onClick = { showDeleteDialog = true }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Remove Person")
                     }
                 }
             )

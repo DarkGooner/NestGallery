@@ -310,11 +310,13 @@ fun ExploreScreen(
                 ),
                 searchContent = { SearchPill("Search in ${root.name}") { onSearch(root) } },
                 headerActions = {
-                    IconButton(onClick = { onOpenFaces(root, items.toList()) }, modifier = Modifier.size(44.dp)) {
+                    // Both screens get a snapshot of the list: opened mid-listing they were stuck at "0 photos" (or a
+                    // partial count) with nothing to scan, so they wait for the listing to finish.
+                    IconButton(onClick = { onOpenFaces(root, items.toList()) }, enabled = !scanning, modifier = Modifier.size(44.dp)) {
                         Icon(Icons.Default.Face, contentDescription = "Faces in this folder")
                     }
                     if (onOpenNsfw != null) {
-                        IconButton(onClick = { onOpenNsfw(root, items.toList()) }, modifier = Modifier.size(44.dp)) {
+                        IconButton(onClick = { onOpenNsfw(root, items.toList()) }, enabled = !scanning, modifier = Modifier.size(44.dp)) {
                             Icon(Icons.Default.Shield, contentDescription = "NSFW scan and filters for this folder")
                         }
                     }

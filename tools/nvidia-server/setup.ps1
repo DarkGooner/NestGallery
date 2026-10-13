@@ -20,6 +20,7 @@ $Commit = "558c1d9df90e1363233cbab001bde0e633aef778"
 $ModelFiles = @{
     "adaface_ir101_gpu.onnx"  = "a0eb1183551262ccf1f863ae7a4c13b5e3ec46399f87a00bb99e8b6eca698d9f"
     "adaface_ir101_int8.onnx" = "d64ee585980304db6a974621ab7c684f360639bb80da6adacdb0b7012402fe1b"
+    "scrfd_500m_640.onnx"     = "98cb7b00f99874543cde21b4f63a960b4d2f63bbfa7f68cc36381de817e93673"
 }
 
 # Keep every tool's downloads and caches inside this folder.
@@ -28,6 +29,7 @@ $env:UV_PYTHON_INSTALL_DIR = Join-Path $Runtime "python"
 $env:UV_PYTHON_BIN_DIR = Join-Path $Runtime "python-bin"
 $env:UV_PYTHON_PREFERENCE = "only-managed"
 $env:UV_NO_CONFIG = "1"
+$env:UV_HTTP_TIMEOUT = "600"            # the CUDA wheels are hundreds of MB; uv's default 30 s timed out on them
 $env:PIP_NO_CACHE_DIR = "1"
 $env:PYTHONDONTWRITEBYTECODE = "1"
 
@@ -66,13 +68,14 @@ if (-not (Test-Path $Py)) {
     if ($LASTEXITCODE -ne 0) { throw "Could not create the Python environment" }
 }
 
-# 3. ONNX Runtime GPU + the CUDA 12 / cuDNN 9 runtime libraries (pip wheels, no CUDA toolkit install)
+# 3. ONNX Runtime GPU + the CUDA 12 / cuDNN 9 runtime libraries (pip wheels, no CUDA toolkit install); Pillow decodes
+#    the photos the phone sends, onnx builds the float16 recogniser
 Write-Host "`n[3/4] ONNX Runtime GPU, CUDA and cuDNN libraries (about 1.5 GB, first time only)"
-& $Uv pip install --python $Py "onnxruntime-gpu[cuda,cudnn]==1.22.0" "nvidia-cudnn-cu12==9.10.2.21" "numpy<3"
+& $Uv pip install --python $Py "onnxruntime-gpu[cuda,cudnn]==1.22.0" "nvidia-cudnn-cu12==9.10.2.21" "numpy<3" "pillow==11.2.1" "onnx==1.17.0"
 if ($LASTEXITCODE -ne 0) { throw "Package install failed" }
 
 # 4. The model: copied from this repository if the script runs inside it, else downloaded from GitHub
-Write-Host "`n[4/4] Face model"
+Write-Host "`n[4/4] Face models"
 $RepoAssets = Join-Path $Root "..\..\app\src\main\assets"
 foreach ($name in $ModelFiles.Keys) {
     $dst = Join-Path $Models $name
@@ -87,6 +90,11 @@ foreach ($name in $ModelFiles.Keys) {
     $got = (Get-FileHash $dst -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $want) { Remove-Item $dst; throw "$name has the wrong checksum ($got)" }
 }
+
+# The float16 recogniser (same weights; ~1.9x faster on the GPU). server.py checks it against the float32 graph.
+Write-Host "`nBuilding the float16 recogniser"
+& $Py -B (Join-Path $Root "make_fp16.py") $Models
+if ($LASTEXITCODE -ne 0) { Write-Warning "Could not build the float16 recogniser; the server will use float32 (slower)." }
 
 # Check that the GPU really loads (ONNX Runtime falls back to the CPU silently otherwise).
 Write-Host "`nChecking the GPU..."

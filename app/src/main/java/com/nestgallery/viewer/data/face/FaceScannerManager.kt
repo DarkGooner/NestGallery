@@ -12,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ReceiveChannel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,10 +23,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 import kotlin.math.min
 
@@ -51,9 +56,9 @@ enum class FaceAccelerator(val title: String, val description: String) {
         "Cooler and lighter on the battery, but the GPU handles one face at a time. Experimental."),
     CPU_GPU("CPU + GPU", "Both at once: most cores analyse photos while the GPU analyses others. Usually the fastest " +
         "on the phone, but it can make the phone laggy while it runs. Experimental."),
-    PC("NVIDIA PC", "Face recognition runs on your own computer's NVIDIA graphics card (tools/nvidia-server, over USB " +
-        "or Wi-Fi); the phone only finds the faces. Only face crops are sent, nothing is kept on the PC. If the PC " +
-        "can't be reached, the phone does the work itself.");
+    PC("NVIDIA PC", "The face scan runs on your own computer's NVIDIA graphics card (tools/nvidia-server, over USB " +
+        "or Wi-Fi), by far the fastest option. Each photo is sent to the PC (big ones shrunk first); the PC keeps " +
+        "nothing. If the PC can't be reached, the phone does the work itself.");
 
     companion object {
         fun byName(name: String?): FaceAccelerator = entries.firstOrNull { it.name == name } ?: CPU
@@ -182,12 +187,11 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         return true
     }
 
-    /** The "NVIDIA PC" endpoint (e.g. http://localhost:8765) and its token, as typed in Settings. */
+    /** The "NVIDIA PC" endpoint (e.g. http://localhost:8765), as typed in Settings. */
     val pcEndpoint: String get() = prefs.getString(KEY_PC_URL, null) ?: "http://localhost:8765"
-    val pcToken: String get() = prefs.getString(KEY_PC_TOKEN, null) ?: ""
 
-    fun setPcEndpoint(url: String, token: String) {
-        prefs.edit().putString(KEY_PC_URL, url.trim()).putString(KEY_PC_TOKEN, token.trim()).apply()
+    fun setPcEndpoint(url: String) {
+        prefs.edit().putString(KEY_PC_URL, url.trim()).remove(KEY_PC_TOKEN).apply()
     }
 
     /** True once setting up the GPU crashed the app; it is then skipped until [forgetGpuCrash]. */
@@ -248,29 +252,72 @@ class FaceScannerManager private constructor(private val appContext: Context) {
     }
 
     /**
-     * "NVIDIA PC": the phone decodes, detects and aligns (CPU, one worker per core plus two, since workers also wait
-     * on the network), the PC embeds. Unreachable PC = the phone embeds that photo itself (see [RemoteEmbedder]).
+     * "NVIDIA PC": the PC detects, aligns and embeds; the phone only reads each photo (or decodes and shrinks a big one)
+     * and sends it (see [RemoteFaceAnalyzer]). Many photos are in flight at once so network round trips overlap, while
+     * the CPU part (reading / decoding) is limited to one per core. If the PC fails, that photo is analysed on the
+     * phone and the PC is left alone for [PC_RETRY_MS] before it is tried again; no photo is lost.
      */
-    private suspend fun runPcPipeline(todo: List<File>): Pair<Int, Int> {
+    private suspend fun runPcPipeline(todo: List<File>): Pair<Int, Int> = coroutineScope {
         val cores = Runtime.getRuntime().availableProcessors()
         val cpuWorkers = cores.coerceIn(1, 8)
-        if (todo.isEmpty()) return runPipeline(todo, List(cpuWorkers) { analyzer })
+        if (todo.isEmpty()) return@coroutineScope runPipeline(todo, List(cpuWorkers) { analyzer })
         _status.value = ScanStatus.Scanning(0, todo.size, 0, "Connecting to the PC…")
-        val health = withContext(Dispatchers.IO) { RemoteEmbedder.check(pcEndpoint, pcToken) }
+        val health = withContext(Dispatchers.IO) { RemoteFaceAnalyzer.check(pcEndpoint) }
         if (!health.ok) {
             _backendLabel.value = "CPU · $cpuWorkers photos at once (NVIDIA PC: ${health.message})"
-            return runPipeline(todo, List(cpuWorkers) { analyzer })
+            return@coroutineScope runPipeline(todo, List(cpuWorkers) { analyzer })
         }
-        val remote = RemoteEmbedder(pcEndpoint, pcToken, embedder)
-        val pcAnalyzer = FaceAnalyzer(detector, remote)
-        val workers = cpuWorkers + 2
-        _backendLabel.value = "NVIDIA PC · $workers photos at once · ${health.message}"
+        val remote = RemoteFaceAnalyzer(pcEndpoint)
+        val total = todo.size
+        val cpu = Semaphore(cpuWorkers)
+        val next = AtomicInteger(0)
+        val onPhone = AtomicInteger(0)
+        val downUntil = AtomicLong(0L)
+        val lastError = AtomicReference<String?>(null)
+        val results = Channel<ScannedFile>(64)
+        _backendLabel.value = "NVIDIA PC · $PC_IN_FLIGHT photos in flight · ${health.message}"
+        _status.value = ScanStatus.Scanning(0, total, 0, "Starting…")
+
+        val workers = List(PC_IN_FLIGHT) {
+            launch(Dispatchers.IO) {
+                while (isActive) {
+                    if (paused.value) paused.first { !it }
+                    val i = next.getAndIncrement()
+                    if (i >= total) break
+                    val f = todo[i]
+                    val lastModified = f.lastModified(); val size = f.length()
+                    var faces: List<NewFace>? = null
+                    if (System.currentTimeMillis() >= downUntil.get()) {
+                        val payload = cpu.withPermit { remote.prepare(f) }
+                        if (payload == null) faces = emptyList()           // not decodable: no faces, as on the phone
+                        else try {
+                            faces = remote.analyze(payload)
+                        } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                            lastError.set(e.message ?: e.javaClass.simpleName)
+                            downUntil.set(System.currentTimeMillis() + PC_RETRY_MS)
+                        }
+                    }
+                    if (faces == null) {                                    // PC down: this photo on the phone
+                        onPhone.incrementAndGet()
+                        faces = cpu.withPermit {
+                            val bmp = FaceImageLoader.decodeFile(f)
+                            try {
+                                bmp?.let { b -> analyzer.analyze(b).map { NewFace(it.bounds, it.landmarksNorm, it.embedding, it.quality) } }
+                                    ?: emptyList()
+                            } catch (e: Exception) { emptyList() } finally { bmp?.recycle() }
+                        }
+                    }
+                    results.send(ScannedFile(f.absolutePath, lastModified, size, faces))
+                }
+            }
+        }
+        launch { workers.joinAll(); results.close() }
         try {
-            return runPipeline(todo, List(workers) { pcAnalyzer })
+            saveResults(results, total)
         } finally {
-            val fell = remote.fallbackFaces.get()
-            if (fell > 0) _backendLabel.value = "NVIDIA PC · $workers photos at once · $fell faces done on the phone " +
-                "because the PC failed (${remote.lastError?.take(80)})"
+            val fell = onPhone.get()
+            if (fell > 0) _backendLabel.value = "NVIDIA PC · $fell photos done on the phone because the PC failed " +
+                "(${lastError.get()?.take(80)})"
         }
     }
 
@@ -316,9 +363,6 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         val decoded = Channel<Decoded>(2)
         val results = Channel<ScannedFile>(64)
         val next = AtomicInteger(0)
-        val startNs = System.nanoTime()
-        var scanned = 0
-        var facesFound = 0
         _status.value = ScanStatus.Scanning(0, total, 0, if (total > 0) "Starting…" else "Everything is already indexed")
 
         val decoders = List(decoderCount) {
@@ -346,7 +390,14 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         }
         launch { decoders.joinAll(); decoded.close() }
         launch { workers.joinAll(); results.close() }
+        saveResults(results, total)
+    }
 
+    /** Batched writer: saves what [results] delivers (up to 32 photos per transaction) and publishes progress. */
+    private suspend fun saveResults(results: ReceiveChannel<ScannedFile>, total: Int): Pair<Int, Int> {
+        val startNs = System.nanoTime()
+        var scanned = 0
+        var facesFound = 0
         val batch = ArrayList<ScannedFile>()
         while (true) {
             val first = results.receiveCatching().getOrNull() ?: break
@@ -365,7 +416,7 @@ class FaceScannerManager private constructor(private val appContext: Context) {
             else ScanStatus.Scanning(scanned, total, facesFound, File(batch.last().path).name, scanned / seconds)
             batch.clear()
         }
-        Pair(scanned, facesFound)
+        return Pair(scanned, facesFound)
     }
 
     /**
@@ -507,6 +558,40 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         database.deletePerson(personId)
     }
 
+    // ---- stored data (Settings > Face scan data) -------------------------------------------------------------------
+
+    /** Bytes used on disk: the SQLite file (+ WAL) and the cover thumbnails. */
+    fun storageBytes(): Pair<Long, Long> {
+        val db = appContext.getDatabasePath(FaceDatabase.DB_NAME)
+        val dbBytes = listOf(db, File(db.path + "-wal"), File(db.path + "-shm")).sumOf { it.length() }
+        val thumbBytes = thumbDir.listFiles()?.sumOf { it.length() } ?: 0L
+        return dbBytes to thumbBytes
+    }
+
+    /** Forgets the photos directly in [folderPath]. Refused (false) while a scan or regrouping runs. */
+    suspend fun deleteFolderData(folderPath: String): Boolean = withContext(Dispatchers.IO) {
+        if (isScanning()) return@withContext false
+        ensureStoreLoaded()
+        val gone = database.deleteFolder(folderPath)
+        for (p in gone.paths) store.removeFile(p)
+        for (t in gone.thumbnails) File(t).delete()
+        for (pid in gone.people) refreshCover(pid)
+        database.vacuum()
+        true
+    }
+
+    /** Forgets everything face scan stored, names included. Refused (false) while a scan or regrouping runs. */
+    suspend fun deleteAllData(): Boolean = withContext(Dispatchers.IO) {
+        if (isScanning()) return@withContext false
+        ensureStoreLoaded()
+        database.clearAll()
+        store.clear()
+        thumbDir.listFiles()?.forEach { it.delete() }
+        database.vacuum()
+        _status.value = ScanStatus.Idle(FaceDbStats(0, 0, 0))
+        true
+    }
+
     /** Picks a new cover if the old one left the person, keeping the stored face count in sync. */
     private fun refreshCover(personId: Long) {
         val rows = store.rowsOfPerson(personId)
@@ -590,7 +675,10 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         private const val KEY_PROBE = "gpu_probe"
         private const val KEY_GPU_CRASHED = "gpu_crashed"
         private const val KEY_PC_URL = "pc_endpoint"
-        private const val KEY_PC_TOKEN = "pc_token"
+        private const val KEY_PC_TOKEN = "pc_token"        // old servers' token; removed when the endpoint is edited
+        /** Photos on their way to / being analysed by the PC at once; enough to hide Wi-Fi round trips. */
+        private const val PC_IN_FLIGHT = 24
+        private const val PC_RETRY_MS = 15_000L
         @Volatile private var INSTANCE: FaceScannerManager? = null
         fun getInstance(context: Context): FaceScannerManager =
             INSTANCE ?: synchronized(this) { INSTANCE ?: FaceScannerManager(context.applicationContext).also { INSTANCE = it } }
