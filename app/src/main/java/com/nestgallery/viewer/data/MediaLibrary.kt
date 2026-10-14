@@ -182,6 +182,18 @@ class MediaLibrary private constructor(private val appContext: Context) {
         deleted
     }
 
+    /** Hides the items at [paths] (files, or folders and everything in them) right away, after a delete or move. */
+    fun dropPaths(paths: Collection<String>) {
+        if (paths.isEmpty()) return
+        val exact = paths.toHashSet()
+        val prefixes = paths.map { it.trimEnd('/') + "/" }
+        _items.value = _items.value?.filter { item ->
+            val p = item.entry.file.path
+            p !in exact && prefixes.none { p.startsWith(it) }
+        }
+        if (_items.value != null) reload(debounceMs = 1500)
+    }
+
     /**
      * [item]'s file no longer exists although MediaStore still lists it (deleted behind its back): hide it now and
      * have MediaStore rescan the path, which removes the stale row.

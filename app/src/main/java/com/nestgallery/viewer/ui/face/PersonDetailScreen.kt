@@ -84,6 +84,17 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import com.nestgallery.viewer.ui.ScreenInsets
 import com.nestgallery.viewer.ui.TopBarInsets
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
+import androidx.compose.material.icons.filled.FileCopy
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableIntStateOf
+import com.nestgallery.viewer.data.FileOps
+import com.nestgallery.viewer.ui.AppOverflowMenu
+import com.nestgallery.viewer.ui.MenuAction
+import com.nestgallery.viewer.ui.files.FileSelectionActions
+import com.nestgallery.viewer.ui.files.FolderPickerDialog
+import com.nestgallery.viewer.ui.files.SelectionTopBar
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -110,6 +121,7 @@ fun PersonDetailScreen(
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var showRemoveDialog by remember { mutableStateOf(false) }
+    var transferAll by remember { mutableStateOf<Boolean?>(null) }   // all of this person's photos: true = move
     // Kept across opening a photo and coming back (header + photos; grid and list remember their own position)
     val scrollKey = ScrollKeys.person(personId, folderPath)
     val gridState = rememberKeptGridState(scrollKey + "grid", mediaEntries.size + 1)
@@ -135,29 +147,34 @@ fun PersonDetailScreen(
     LaunchedEffect(personId) {
         loadData()
     }
+    // photos moved / deleted (the face index follows moves, so they stay this person's)
+    val ops = remember { FileOps.getInstance(context) }
+    val fileRevision by ops.revision.collectAsState()
+    var seenRevision by remember { mutableIntStateOf(fileRevision) }
+    LaunchedEffect(fileRevision) {
+        if (fileRevision != seenRevision) { seenRevision = fileRevision; loadData() }
+    }
+    fun endSelection() { selecting = false; selected = emptySet() }
+    BackHandler(enabled = selecting) { endSelection() }
 
     val currentPerson = person
-    var showMenu by remember { mutableStateOf(false) }
 
     Scaffold(
         contentWindowInsets = ScreenInsets,
         topBar = {
-            if (selecting) TopAppBar(
-                windowInsets = TopBarInsets,
-                title = { Text(if (selected.isEmpty()) "Select photos" else "${selected.size} selected") },
-                navigationIcon = {
-                    IconButton(onClick = { selecting = false; selected = emptySet() }) {
-                        Icon(Icons.Default.Close, contentDescription = "Done selecting")
-                    }
-                },
-                actions = {
-                    TextButton(onClick = { showRemoveDialog = true }, enabled = selected.isNotEmpty()) {
-                        Icon(Icons.Default.PersonRemove, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Not this person")
-                    }
+            if (selecting) {
+                val files = remember(selected) { selected.map(::File) }
+                SelectionTopBar(count = selected.size, onClose = { endSelection() }) {
+                    FileSelectionActions(
+                        files = files,
+                        onDone = { endSelection() },
+                        onSelectAll = { selected = mediaEntries.mapTo(HashSet()) { it.file.absolutePath } },
+                        extra = listOf(
+                            MenuAction("Not this person", Icons.Default.PersonRemove, enabled = selected.isNotEmpty()) { showRemoveDialog = true }
+                        )
+                    )
                 }
-            ) else TopAppBar(
+            } else TopAppBar(
                 windowInsets = TopBarInsets,
                 title = {
                     Text(
@@ -177,27 +194,18 @@ fun PersonDetailScreen(
                         else Icon(Icons.Default.ViewAgenda, contentDescription = "List view")
                     }
                     TextButton(onClick = { selecting = true }, enabled = mediaEntries.isNotEmpty()) { Text("Select") }
-                    // Rename / remove live in the overflow: four actions squeezed the name down to "Pers...", and a
-                    // bare trash icon read as "delete these photos".
-                    Box {
-                        IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More") }
-                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Rename") },
-                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    renameInput = currentPerson?.name ?: ""
-                                    showRenameDialog = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Remove person") },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                                onClick = { showMenu = false; showDeleteDialog = true }
-                            )
-                        }
-                    }
+                    AppOverflowMenu(
+                        listOf(
+                            MenuAction("Select photos", Icons.Default.CheckCircle, enabled = mediaEntries.isNotEmpty()) { selecting = true },
+                            MenuAction("Move all photos to…", Icons.AutoMirrored.Filled.DriveFileMove, enabled = mediaEntries.isNotEmpty()) { transferAll = true },
+                            MenuAction("Copy all photos to…", Icons.Default.FileCopy, enabled = mediaEntries.isNotEmpty()) { transferAll = false },
+                            MenuAction("Rename person", Icons.Default.Edit) {
+                                renameInput = currentPerson?.name ?: ""
+                                showRenameDialog = true
+                            },
+                            MenuAction("Remove person", Icons.Default.Delete) { showDeleteDialog = true }
+                        )
+                    )
                 }
             )
         }
@@ -333,6 +341,20 @@ fun PersonDetailScreen(
         }
     }
 
+    transferAll?.let { move ->
+        val files = mediaEntries.map { it.file }
+        FolderPickerDialog(
+            title = "${if (move) "Move" else "Copy"} ${files.size} photos of ${currentPerson?.name ?: "this person"} to…",
+            confirmLabel = if (move) "Move here" else "Copy here",
+            start = null,
+            onDismiss = { transferAll = null },
+            onPick = { dest ->
+                transferAll = null
+                if (move) ops.move(files, dest) else ops.copy(files, dest)
+            }
+        )
+    }
+
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
@@ -405,7 +427,7 @@ fun PersonDetailScreen(
                     val paths = selected.toList()
                     scope.launch {
                         scanner.removePhotosFromPerson(personId, paths)
-                        selected = emptySet(); selecting = false
+                        endSelection()
                         loadData()
                     }
                 }) { Text("Remove") }

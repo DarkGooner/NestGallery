@@ -163,6 +163,28 @@ class FaceStore(val dim: Int = FaceMath.EMBED_DIM) {
         for (rows in fileRows) rows.clear()
     }
 
+    /** Moved / renamed files: every path [rename] maps to a new one takes it (the faces themselves are unchanged). */
+    fun renamePaths(rename: (String) -> String?) = lock.write {
+        for (i in paths.indices) {
+            val to = rename(paths[i]) ?: continue
+            pathIndex.remove(paths[i])
+            // a stale entry under the new name (a file that was there before) loses its index entry to the moved one
+            paths[i] = to
+            pathIndex[to] = i
+        }
+    }
+
+    /** Tombstones the faces of every file whose path matches [gone] (deleted files and folders). */
+    fun removeFilesWhere(gone: (String) -> Boolean): Set<Long> = lock.write {
+        val persons = HashSet<Long>()
+        for (fi in paths.indices) {
+            if (!gone(paths[fi])) continue
+            for (r in fileRows[fi]) { if (alive[r] && personIds[r] > 0) persons.add(personIds[r]); alive[r] = false; matrix.clearRow(r) }
+            fileRows[fi].clear()
+        }
+        persons
+    }
+
     fun maxPersonId(): Long = lock.read { var m = 0L; for (r in 0 until matrix.rows) if (alive[r] && personIds[r] > m) m = personIds[r]; m }
     /** Sets person_id back to 0 for every live face whose person is not in [keep] (dismissed faces stay dismissed). */
     fun unassignExcept(keep: Set<Long>) = lock.write {

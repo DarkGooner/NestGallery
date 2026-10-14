@@ -153,7 +153,19 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 
 #### [`app/src/main/java/com/nestgallery/viewer/data/UiPrefs.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/UiPrefs.kt)
 - **Role**: singleton; whether the app opens in the gallery view (default) or the file explorer, the gallery's photos
-  per row, and the NSFW scan switch (`nsfwEnabled` StateFlow, off by default; hides the feature everywhere).
+  per row, and the NSFW scan switch (`nsfwEnabled` StateFlow, off by default; hides the feature everywhere). Also the
+  explorer's hidden items / filenames / list-or-grid / sort order, and the folder picker's recent destinations.
+
+#### [`app/src/main/java/com/nestgallery/viewer/data/FileOps.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/FileOps.kt)
+- **Role**: singleton for every change to files the app makes: new folder, rename, copy, move, delete, and the
+  Cut / Copy clipboard pasted in the explorer. Long operations run one at a time on its own scope (`progress`
+  StateFlow, cancellable); results arrive as `messages` (toasts, shown by `ui/files/FileOpsHost`).
+- **Rules**: never overwrites (taken names get " (1)" ...), keeps copies' modified time, moves are a rename when on
+  the same volume, else copy + delete. Afterwards: MediaStore rescans old and new paths (`MediaLibrary.dropPaths`
+  hides moved / deleted rows at once), `GalleryCache.clearListings()` and `revision`++ (open listings reload), and the
+  face index follows: `FaceScannerManager.onPathsMoved` / `onPathsDeleted` update SQLite and the in-memory
+  `FaceStore` together, so a moved photo keeps its person. NSFW results are keyed by path and are not moved (a moved
+  photo is scanned again).
 
 #### [`app/src/main/java/com/nestgallery/viewer/data/VlcPlayerController.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/VlcPlayerController.kt)
 - **Role**: LibVLC lifecycle controller and playback coordinator.
@@ -219,8 +231,13 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 - **Functionality**:
   - Displays contents of current folder in a grid or staggered layout.
   - Supports navigation into subfolders and navigating up the directory stack.
-  - Uses `NestTopBar` (see below). Pinned dock: search pill, recursive-explorer button, grid/list switch. Header tier: back, title, path chips, Home, overflow (filenames / hidden items).
-  - Long-press preview: Renders animated live preview using `MediaImageTile`.
+  - Uses `NestTopBar` (see below). Pinned dock: search pill, recursive-explorer button, grid/list switch. Header tier: back, title, path chips, Home, three-dot menu.
+  - Three-dot menu (this screen's part): New folder, Select, Paste here (while the clipboard holds something), Sort by
+    (name / date / size, ascending or descending; folders first), Folder properties, Rename / Delete this folder.
+  - ZArchiver-style selection: long-press a list row or a folder tile (or "Select"), tap more; the bar offers
+    Move to / Copy to (folder picker), Delete, and Select all / Share / Rename / Cut / Copy / Properties. A paste bar
+    sits at the bottom while something is cut or copied.
+  - Long-press preview: Renders animated live preview using `MediaImageTile` (grid photos keep it; select them via "Select").
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/NestTopBar.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/NestTopBar.kt)
 - **Role**: Shared floating, two-tier "glass capsule" top bar for the browser, recursive explorer and search.
@@ -228,13 +245,27 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 - **Dock tier** (always visible): `SearchPill` (or the typeable `SearchField` on the search screen), `RecursiveAction` button (tinted when recursive mode is active, progress ring while scanning), animated sliding grid/list switch.
 - **Usage**: host the content and bar in one `Box` with `Modifier.nestedScroll(bar.connection)`; give lists `contentPadding(top = bar.contentTopPadding())` so they scroll underneath the capsule.
 
+#### [`app/src/main/java/com/nestgallery/viewer/ui/AppMenu.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/AppMenu.kt)
+- **Role**: the one three-dot menu (`AppOverflowMenu`) every screen uses: the screen's own `MenuAction`s first, then a
+  divider and the app-wide entries from `LocalAppMenu` (provided by `MainActivity`): Gallery view / File explorer
+  view, Show / hide hidden items, Show / hide filenames, Settings. Same entries, same order, on every screen.
+  Selection bars pass `withGlobal = false` (their overflow holds actions on the selected items).
+
+#### Files UI: [`ui/files/FileDialogs.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/files/FileDialogs.kt)
+- `FileSelectionActions` (the actions of every "N selected" bar: explorer, recursive view, gallery, a person's photos,
+  face search results) and `SelectionTopBar`; `FolderPickerDialog` (browse from storage root, recent destinations,
+  new folder, "Move here" / "Copy here"); `NameDialog`, `DeleteDialog`, `PropertiesDialog`; `FileOpsHost` (progress
+  dialog + toasts, once in `MainActivity`); `PasteBar`; `shareFiles` (FileProvider `${applicationId}.files`).
+
 #### [`app/src/main/java/com/nestgallery/viewer/ui/ExploreScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/ExploreScreen.kt)
 - **Role**: Recursive flattened explorer interface.
 - **Functionality**:
   - Recursively discovers all media nested in subdirectories using `exploreMediaFlow`.
   - Displays media in a unified grid with sub-labels indicating relative folder paths.
-  - `NestTopBar`: the recursive button doubles as **rescan** (active tint + progress ring while walking the tree); **Faces in folder** sits in the header tier; filenames / hidden items in the overflow menu.
-  - **NSFW** (shield icon) next to Faces opens `FolderNsfwScreen`; **Settings** in the overflow menu. See the NSFW section below.
+  - `NestTopBar`: the recursive button doubles as **rescan** (active tint + progress ring while walking the tree); **Faces in folder** sits in the header tier; the three-dot menu has Select and Rescan.
+  - Selection like the browser (long-press in the list, "Select" for the grid). After a move / delete elsewhere,
+    missing files are dropped without a new walk; files copied into the tree appear after a pull to refresh.
+  - **NSFW** (shield icon) next to Faces opens `FolderNsfwScreen`. See the NSFW section below.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/ImageViewerScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/ImageViewerScreen.kt)
 - **Role**: Fullscreen photo viewer and video player.
@@ -364,9 +395,9 @@ in-memory map (current model) -> per-folder counts -> range filter. Checked agai
 - **Role**: Scoped facial recognition hub for the active recursive exploration.
 - **Functionality**:
   - **Tabs**:
-    1. **People**: Detected people with photo counts and circular cover thumbnails. Long-press to multi-select, then **Merge**. A **"Same person?"** card on top asks about borderline pairs (see the face section above).
-    2. **Find by Face**: Reverse image search. Pick a photo, choose one of its faces; shows "Looks like" people suggestions and ranked matching photos in the folder, badges coloured by confidence band (strong / likely / possible).
-  - **Control Bar**: Real-time progress bar, item counters, Pause/Resume, and Rescan buttons. Overflow menu: **Regroup people**.
+    1. **People**: Detected people with photo counts and circular cover thumbnails. Long-press (or "Select people") to multi-select, then **Merge**, or **Move / Copy their photos** to a folder (folder picker). A **"Same person?"** card on top asks about borderline pairs (see the face section above).
+    2. **Find by Face**: Reverse image search. Pick a photo, choose one of its faces; shows "Looks like" people suggestions and ranked matching photos in the folder, badges coloured by confidence band (strong / likely / possible). "Select photos" in the menu selects results for the shared file actions (move / copy to, delete, share ...).
+  - **Control Bar**: Real-time progress bar, item counters, Pause/Resume, and Rescan buttons. Three-dot menu: Scan, Select people / photos, **Regroup people**.
   - **Dialogs**: rename, merge confirmation, regroup confirmation.
 
 #### [`app/src/main/java/com/nestgallery/viewer/ui/face/PersonDetailScreen.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/face/PersonDetailScreen.kt)
@@ -375,8 +406,8 @@ in-memory map (current model) -> per-folder counts -> range filter. Checked agai
   - Displays circular hero cover and cluster statistics (first item of the list / grid, so it scrolls away with the photos).
   - All photos in which this person's face was identified, as a square grid or a full-width list (toggle in the top
     bar; the choice is held in `MainActivity` so it sticks across people), with the shared `FastScrollbar`.
-  - **Select** -> **Not this person**: removes the selected photos from the person and remembers it (they are never grouped back into this person).
-  - Rename and hide-person actions (all routed through `FaceScannerManager` so the in-memory index stays in sync).
+  - **Select** -> the shared file actions (move / copy to a folder, delete, share ...) plus **Not this person**: removes the selected photos from the person and remembers it (they are never grouped back into this person).
+  - Three-dot menu: Select photos, Move / Copy all photos to a folder, Rename person, Remove person (all face changes routed through `FaceScannerManager` so the in-memory index stays in sync; moved photos stay with the person).
 
 ---
 

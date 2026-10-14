@@ -19,8 +19,13 @@ data class DocEntry(
     val name: String,
     val isDirectory: Boolean,
     val size: Long,
-    val isVideo: Boolean
+    val isVideo: Boolean,
+    /** Last-modified time (ms); only filled in by [listFolderFast], 0 elsewhere. */
+    val modified: Long = 0L
 )
+
+/** How the file explorer orders a folder (folders always come first). */
+enum class SortBy(val label: String) { NAME("Name"), DATE("Date modified"), SIZE("Size") }
 
 private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic")
 /**
@@ -45,6 +50,7 @@ private val videoExtensions = setOf(
 private fun String.extension(): String = substringAfterLast('.', "").lowercase()
 private fun isMediaName(name: String) = name.extension() in imageExtensions || name.extension() in videoExtensions
 private fun isVideoName(name: String) = name.extension() in videoExtensions
+fun isMediaPath(path: String) = isMediaName(path.substringAfterLast('/'))
 
 /** True for dotfiles/dotfolders - the standard Unix/Android "hidden" convention. */
 private fun isHiddenName(name: String) = name.startsWith(".")
@@ -92,11 +98,11 @@ fun naturalCompare(a: String, b: String): Int {
 private val byNaturalName = Comparator<DocEntry> { a, b -> naturalCompare(a.name, b.name) }
 
 /**
- * Lists the folders and media files directly inside [dir], folders first,
- * alphabetically. When [hideHidden] is true, dotfiles/dotfolders are
- * skipped (the standard "hidden item" convention).
+ * Lists the folders and media files directly inside [dir], folders first, then by [sort] (natural name order by
+ * default; folders have no size, so a size sort orders them by name). When [hideHidden] is true, dotfiles/dotfolders
+ * are skipped (the standard "hidden item" convention).
  */
-fun listFolderFast(dir: File, hideHidden: Boolean): List<DocEntry> {
+fun listFolderFast(dir: File, hideHidden: Boolean, sort: SortBy = SortBy.NAME, descending: Boolean = false): List<DocEntry> {
     val children = dir.listFiles() ?: return emptyList()
     val result = ArrayList<DocEntry>(children.size)
 
@@ -105,11 +111,17 @@ fun listFolderFast(dir: File, hideHidden: Boolean): List<DocEntry> {
         val isDir = f.isDirectory
         if (hideHidden && isHiddenName(name)) continue
         if (!isDir && !isMediaName(name)) continue
-        result.add(DocEntry(f, name, isDir, if (isDir) 0L else f.length(), isVideoName(name)))
+        val modified = if (sort == SortBy.DATE) f.lastModified() else 0L
+        result.add(DocEntry(f, name, isDir, if (isDir) 0L else f.length(), isVideoName(name), modified))
     }
 
+    val order: Comparator<DocEntry> = when (sort) {
+        SortBy.NAME -> byNaturalName
+        SortBy.DATE -> compareBy<DocEntry> { it.modified }.then(byNaturalName)
+        SortBy.SIZE -> compareBy<DocEntry> { it.size }.then(byNaturalName)
+    }
     return result.sortedWith(
-        compareByDescending<DocEntry> { it.isDirectory }.then(byNaturalName)
+        compareByDescending<DocEntry> { it.isDirectory }.then(if (descending) order.reversed() else order)
     )
 }
 

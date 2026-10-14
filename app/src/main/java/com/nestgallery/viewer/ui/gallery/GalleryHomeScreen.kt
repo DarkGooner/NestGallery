@@ -86,6 +86,9 @@ import com.nestgallery.viewer.data.storageRootEntry
 import com.nestgallery.viewer.ui.ScreenInsets
 import com.nestgallery.viewer.ui.TopBarInsets
 import com.nestgallery.viewer.ui.rememberKeptGridState
+import com.nestgallery.viewer.ui.AppOverflowMenu
+import com.nestgallery.viewer.ui.MenuAction
+import com.nestgallery.viewer.ui.files.FileSelectionActions
 import kotlinx.coroutines.launch
 
 enum class GalleryTab { PHOTOS, ALBUMS }
@@ -96,9 +99,7 @@ class GalleryActions(
     val onSearch: () -> Unit,
     val onOpenFaces: (DocEntry, List<DocEntry>) -> Unit,
     /** Null while NSFW scan is switched off in Settings (then it isn't offered). */
-    val onOpenNsfw: ((DocEntry, List<DocEntry>) -> Unit)?,
-    val onOpenSettings: () -> Unit,
-    val onSwitchToExplorer: () -> Unit
+    val onOpenNsfw: ((DocEntry, List<DocEntry>) -> Unit)?
 )
 
 /**
@@ -163,17 +164,15 @@ fun GalleryHomeScreen(
                     },
                     actions = {
                         IconButton(onClick = actions.onSearch) { Icon(Icons.Default.Search, contentDescription = "Search") }
-                        GalleryMenu(
+                        AppOverflowMenu(
                             buildList {
                                 if (tab == GalleryTab.PHOTOS && all.isNotEmpty()) {
-                                    add(MenuEntry("Select", Icons.Default.CheckCircle) { selectMode = true })
+                                    add(MenuAction("Select", Icons.Default.CheckCircle) { selectMode = true })
                                 }
                                 if (allPhotos.isNotEmpty()) {
-                                    add(MenuEntry("People", Icons.Default.Face) { actions.onOpenFaces(libraryRoot, allPhotos) })
-                                    actions.onOpenNsfw?.let { open -> add(MenuEntry("NSFW scan", Icons.Default.Shield) { open(libraryRoot, allPhotos) }) }
+                                    add(MenuAction("People", Icons.Default.Face) { actions.onOpenFaces(libraryRoot, allPhotos) })
+                                    actions.onOpenNsfw?.let { open -> add(MenuAction("NSFW scan", Icons.Default.Shield) { open(libraryRoot, allPhotos) }) }
                                 }
-                                add(MenuEntry("File explorer view", Icons.Default.FolderOpen, actions.onSwitchToExplorer))
-                                add(MenuEntry("Settings", Icons.Default.Settings, actions.onOpenSettings))
                             }
                         )
                     }
@@ -374,17 +373,15 @@ fun AlbumScreen(
                         }
                     },
                     actions = {
-                        if (items.isNotEmpty()) {
-                            GalleryMenu(
-                                buildList {
-                                    add(MenuEntry("Select", Icons.Default.CheckCircle) { selectMode = true })
-                                    if (photos.isNotEmpty() && albumId != MediaLibrary.VIDEOS_ALBUM) {
-                                        add(MenuEntry("People", Icons.Default.Face) { actions.onOpenFaces(root, photos) })
-                                        actions.onOpenNsfw?.let { open -> add(MenuEntry("NSFW scan", Icons.Default.Shield) { open(root, photos) }) }
-                                    }
+                        AppOverflowMenu(
+                            buildList {
+                                if (items.isNotEmpty()) add(MenuAction("Select", Icons.Default.CheckCircle) { selectMode = true })
+                                if (photos.isNotEmpty() && albumId != MediaLibrary.VIDEOS_ALBUM) {
+                                    add(MenuAction("People", Icons.Default.Face) { actions.onOpenFaces(root, photos) })
+                                    actions.onOpenNsfw?.let { open -> add(MenuAction("NSFW scan", Icons.Default.Shield) { open(root, photos) }) }
                                 }
-                            )
-                        }
+                            }
+                        )
                     }
                 )
             }
@@ -422,7 +419,7 @@ fun albumScrollKey(albumId: String) = "gallery:album:$albumId|"
  */
 private fun timelineCellBound(items: Int) = 2 * items + 1
 
-/** Replaces the title bar while selecting: count, select all, share, delete. */
+/** Replaces the title bar while selecting: the same file actions as everywhere else (move / copy to, delete, share ...). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SelectionTopBar(
@@ -430,96 +427,14 @@ private fun SelectionTopBar(
     selected: Set<Long>,
     onSelectedChange: (Set<Long>) -> Unit,
     onClose: () -> Unit,
-    scrollBehavior: TopAppBarScrollBehavior
+    @Suppress("UNUSED_PARAMETER") scrollBehavior: TopAppBarScrollBehavior
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var confirmDelete by remember { mutableStateOf(false) }
-    val chosen = remember(items, selected) { items.filter { it.id in selected } }
-
-    TopAppBar(
-        windowInsets = TopBarInsets,
-        scrollBehavior = scrollBehavior,
-        colors = TopAppBarDefaults.topAppBarColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-            scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer
-        ),
-        navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Cancel selection") } },
-        title = { Text(if (selected.isEmpty()) "Select items" else "${selected.size} selected", fontWeight = FontWeight.SemiBold) },
-        actions = {
-            if (selected.size < items.size) {
-                IconButton(onClick = { onSelectedChange(items.mapTo(HashSet()) { it.id }) }) { Icon(Icons.Default.SelectAll, contentDescription = "Select all") }
-            }
-            IconButton(onClick = { shareMedia(context, chosen) }, enabled = chosen.isNotEmpty()) { Icon(Icons.Default.Share, contentDescription = "Share") }
-            IconButton(onClick = { confirmDelete = true }, enabled = chosen.isNotEmpty()) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
-        }
-    )
-
-    if (confirmDelete) {
-        val n = chosen.size
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text(if (n == 1) "Delete this item?" else "Delete $n items?") },
-            text = { Text("${if (n == 1) "It" else "They"} will be permanently deleted from this phone. This can't be undone.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    scope.launch {
-                        val deleted = MediaLibrary.getInstance(context).delete(chosen)
-                        onClose()
-                        val failed = n - deleted
-                        Toast.makeText(
-                            context,
-                            if (failed == 0) (if (deleted == 1) "Deleted 1 item" else "Deleted $deleted items") else "Deleted $deleted, couldn't delete $failed",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }
+    val chosen = remember(items, selected) { items.filter { it.id in selected }.map { it.entry.file } }
+    com.nestgallery.viewer.ui.files.SelectionTopBar(count = selected.size, onClose = onClose) {
+        FileSelectionActions(
+            files = chosen,
+            onDone = onClose,
+            onSelectAll = if (selected.size < items.size) ({ onSelectedChange(items.mapTo(HashSet()) { it.id }) }) else null
         )
-    }
-}
-
-/** Opens the system share sheet for [items] (their MediaStore URIs, readable by the receiving app). */
-private fun shareMedia(context: Context, items: List<MediaItem>) {
-    if (items.isEmpty()) return
-    val uris = ArrayList(items.map { it.uri })
-    val type = when {
-        items.all { it.entry.isVideo } -> "video/*"
-        items.none { it.entry.isVideo } -> "image/*"
-        else -> "*/*"
-    }
-    val send = if (uris.size == 1) {
-        Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
-    } else {
-        Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-    }
-    send.type = type
-    send.clipData = ClipData.newRawUri(null, uris[0]).apply { uris.drop(1).forEach { addItem(ClipData.Item(it)) } }
-    send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    try {
-        context.startActivity(Intent.createChooser(send, null))
-    } catch (e: Exception) {
-        Toast.makeText(context, "No app to share with", Toast.LENGTH_SHORT).show()
-    }
-}
-
-private class MenuEntry(val label: String, val icon: ImageVector, val onClick: () -> Unit)
-
-@Composable
-private fun GalleryMenu(entries: List<MenuEntry>) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { open = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More options") }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (e in entries) {
-                DropdownMenuItem(
-                    text = { Text(e.label) },
-                    leadingIcon = { Icon(e.icon, contentDescription = null) },
-                    onClick = { open = false; e.onClick() }
-                )
-            }
-        }
     }
 }

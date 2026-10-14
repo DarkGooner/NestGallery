@@ -123,8 +123,6 @@ fun CollapsingBarState.contentTopPadding(): Dp {
     return if (totalHeightPx > 0f) with(density) { totalHeightPx.toDp() } + 4.dp else 148.dp
 }
 
-class TopBarMenuItem(val label: String, val icon: ImageVector, val onClick: () -> Unit)
-
 /** The "recursive scan" control. [busy] draws a progress ring around it, [active] tints it. */
 class RecursiveAction(
     val icon: ImageVector = Icons.Default.AccountTree,
@@ -154,7 +152,8 @@ fun NestTopBar(
     pathChips: List<String>? = null,
     onPathClick: ((Int) -> Unit)? = null,
     headerActions: @Composable RowScope.() -> Unit = {},
-    menu: List<TopBarMenuItem> = emptyList(),
+    /** This screen's own entries of the three-dot menu (the app-wide entries are always added after them). */
+    menu: List<MenuAction> = emptyList(),
     showHeader: Boolean = true
 ) {
     val colors = MaterialTheme.colorScheme
@@ -203,7 +202,7 @@ private fun HeaderRow(
     subtitle: String?,
     onBack: (() -> Unit)?,
     actions: @Composable RowScope.() -> Unit,
-    menu: List<TopBarMenuItem>
+    menu: List<MenuAction>
 ) {
     Row(Modifier.padding(start = 6.dp, end = 2.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) {
@@ -225,24 +224,7 @@ private fun HeaderRow(
             }
         }
         actions()
-        if (menu.isNotEmpty()) OverflowMenu(menu)
-    }
-}
-
-@Composable
-private fun OverflowMenu(items: List<TopBarMenuItem>) {
-    var open by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { open = true }, modifier = Modifier.size(44.dp)) { Icon(Icons.Default.MoreVert, contentDescription = "More options") }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (item in items) {
-                DropdownMenuItem(
-                    text = { Text(item.label) },
-                    leadingIcon = { Icon(item.icon, contentDescription = null) },
-                    onClick = { open = false; item.onClick() }
-                )
-            }
-        }
+        AppOverflowMenu(menu, buttonSize = 44.dp)
     }
 }
 

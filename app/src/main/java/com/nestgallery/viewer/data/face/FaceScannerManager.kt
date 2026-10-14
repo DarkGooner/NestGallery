@@ -592,6 +592,35 @@ class FaceScannerManager private constructor(private val appContext: Context) {
         true
     }
 
+    // ---- files moved / deleted in the app (FileOps) ---------------------------------------------------------------
+
+    /** Photos or folders were moved / renamed: their faces and people follow them (DB and in-memory index). */
+    suspend fun onPathsMoved(moves: List<Pair<String, String>>) = withContext(Dispatchers.IO) {
+        if (moves.isEmpty()) return@withContext
+        storeMutex.withLock {
+            database.movePaths(moves)
+            if (storeLoaded) store.renamePaths { path ->
+                moves.firstNotNullOfOrNull { (from, to) ->
+                    when {
+                        path == from -> to
+                        path.startsWith("$from/") -> to + path.substring(from.length)
+                        else -> null
+                    }
+                }
+            }
+        }
+    }
+
+    /** Photos or folders were deleted: their faces are forgotten; people who lost their cover get a new one. */
+    suspend fun onPathsDeleted(paths: List<String>) = withContext(Dispatchers.IO) {
+        if (paths.isEmpty()) return@withContext
+        val affected = storeMutex.withLock {
+            database.forgetPaths(paths)
+            if (storeLoaded) store.removeFilesWhere { p -> paths.any { p == it || p.startsWith("$it/") } } else emptySet()
+        }
+        for (person in affected) refreshCover(person)
+    }
+
     /** Picks a new cover if the old one left the person, keeping the stored face count in sync. */
     private fun refreshCover(personId: Long) {
         val rows = store.rowsOfPerson(personId)

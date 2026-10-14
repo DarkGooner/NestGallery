@@ -82,6 +82,8 @@ import com.nestgallery.viewer.ui.ScreenInsets
 import com.nestgallery.viewer.ui.ScrollKeys
 import com.nestgallery.viewer.ui.rememberKeptGridState
 import com.nestgallery.viewer.ui.TopBarInsets
+import com.nestgallery.viewer.ui.AppOverflowMenu
+import com.nestgallery.viewer.ui.MenuAction
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 
@@ -115,7 +117,6 @@ fun FolderNsfwScreen(
     var sheetFocus by remember { mutableStateOf<Int?>(null) }
     val scrollKey = ScrollKeys.nsfw(rootPath)
     val photos = remember(files) { files.filter { !it.isVideo && NsfwScannerManager.isScannable(it.file) } }
-    var showMenu by remember { mutableStateOf(false) }
     var confirmForget by remember { mutableStateOf(false) }
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
 
@@ -169,22 +170,14 @@ fun FolderNsfwScreen(
                         if (scanningHere) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                         else Icon(Icons.Default.Refresh, contentDescription = "Scan new and changed photos")
                     }
-                    Box {
-                        IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More") }
-                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Settings") },
-                                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                                onClick = { showMenu = false; onOpenSettings() }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Forget results for this folder") },
-                                leadingIcon = { Icon(Icons.Default.Close, contentDescription = null) },
-                                enabled = status.activeFolder == null && index.scanned > 0,
-                                onClick = { showMenu = false; confirmForget = true }
-                            )
-                        }
-                    }
+                    AppOverflowMenu(
+                        listOf(
+                            MenuAction("Filters", Icons.Default.FilterAlt, enabled = index.scanned > 0) { sheetFocus = null; showSheet = true },
+                            MenuAction("Forget results for this folder", Icons.Default.Close, enabled = status.activeFolder == null && index.scanned > 0) {
+                                confirmForget = true
+                            }
+                        )
+                    )
                 }
             )
         }
