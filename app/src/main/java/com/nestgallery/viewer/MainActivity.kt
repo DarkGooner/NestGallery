@@ -25,6 +25,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +57,9 @@ import com.nestgallery.viewer.ui.nsfw.FolderNsfwScreen
 import com.nestgallery.viewer.ui.face.FolderFaceScreen
 import com.nestgallery.viewer.ui.face.PersonDetailScreen
 import com.nestgallery.viewer.ui.theme.NestGalleryTheme
+import com.nestgallery.viewer.ui.AppMenuState
+import com.nestgallery.viewer.ui.LocalAppMenu
+import com.nestgallery.viewer.ui.files.FileOpsHost
 import com.nestgallery.viewer.data.UiPrefs
 import com.nestgallery.viewer.ui.gallery.AlbumScreen
 import com.nestgallery.viewer.ui.gallery.GalleryActions
@@ -165,10 +169,23 @@ private fun NestGalleryApp() {
     fun setGalleryColumns(n: Int) { galleryColumns = n; uiPrefs.galleryColumns = n }
     fun switchToGallery() { uiPrefs.galleryMode = true; screen = Screen.Library }
     fun switchToExplorer() { uiPrefs.galleryMode = false; screen = Screen.Browser }
-    var hideHidden by remember { mutableStateOf(true) }
-    var listMode by remember { mutableStateOf(true) }
+    var hideHidden by remember { mutableStateOf(uiPrefs.hideHidden) }
+    var listMode by remember { mutableStateOf(uiPrefs.listMode) }
     var personListMode by remember { mutableStateOf(false) } // a person's photos: grid by default, own toggle
-    var showNames by remember { mutableStateOf(true) }
+    var showNames by remember { mutableStateOf(uiPrefs.showNames) }
+    fun toggleListMode() { listMode = !listMode; uiPrefs.listMode = listMode }
+    var galleryMode by remember { mutableStateOf(uiPrefs.galleryMode) }
+
+    // The app-wide entries of every screen's three-dot menu (AppOverflowMenu): identical everywhere.
+    val appMenu = AppMenuState(
+        galleryMode = galleryMode,
+        onSwitchView = { if (galleryMode) switchToExplorer() else switchToGallery(); galleryMode = uiPrefs.galleryMode },
+        hideHidden = hideHidden,
+        onToggleHidden = { hideHidden = !hideHidden; uiPrefs.hideHidden = hideHidden },
+        showNames = showNames,
+        onToggleNames = { showNames = !showNames; uiPrefs.showNames = showNames },
+        onOpenSettings = { if (screen !is Screen.Settings) screen = Screen.Settings(returnTo = screen) }
+    )
 
     fun onAccessGranted() {
         granted = true
@@ -235,6 +252,7 @@ private fun NestGalleryApp() {
         }
     }
 
+    CompositionLocalProvider(LocalAppMenu provides appMenu) {
     Crossfade(targetState = screen, label = "screen") { s ->
         when (s) {
             is Screen.NeedsPermission -> PermissionPrompt(onGrant = { requestAccess() })
@@ -245,19 +263,16 @@ private fun NestGalleryApp() {
                     hideHidden = hideHidden,
                     listMode = listMode,
                     showNames = showNames,
-                    onToggleViewMode = { listMode = !listMode },
-                    onToggleHideHidden = { hideHidden = !hideHidden },
-                    onToggleShowNames = { showNames = !showNames },
+                    onToggleViewMode = { toggleListMode() },
                     onOpenFolder = { folder -> pathStack = pathStack + folder },
                     onBreadcrumbClick = { index -> pathStack = pathStack.subList(0, index + 1) },
                     onGoHome = { pathStack = listOf(storageRootEntry()) },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onExploreFolder = { folder -> screen = Screen.Explore(folder) },
-                    onOpenSettings = { screen = Screen.Settings(returnTo = s) },
-                    onSwitchToGallery = { switchToGallery() },
                     onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
                     onBack = { if (pathStack.size > 1) pathStack = pathStack.dropLast(1) },
-                    canGoBack = pathStack.size > 1
+                    canGoBack = pathStack.size > 1,
+                    onRenamedCurrent = { dir -> pathStack = pathStack.dropLast(1) + DocEntry(dir, dir.name, true, 0L, false) }
                 )
             }
             is Screen.Explore -> {
@@ -266,9 +281,7 @@ private fun NestGalleryApp() {
                     hideHidden = hideHidden,
                     showNames = showNames,
                     listMode = listMode,
-                    onToggleViewMode = { listMode = !listMode },
-                    onToggleHideHidden = { hideHidden = !hideHidden },
-                    onToggleShowNames = { showNames = !showNames },
+                    onToggleViewMode = { toggleListMode() },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onSearch = { folder -> screen = Screen.Search(root = folder, returnTo = s) },
                     // opened afresh: start at the top (returns from a person / the viewer keep their position)
@@ -280,8 +293,6 @@ private fun NestGalleryApp() {
                         GalleryCache.forgetScrolls(ScrollKeys.nsfw(root.file.absolutePath))
                         screen = Screen.FolderNsfw(root = root, files = files, returnTo = s)
                     },
-                    onOpenSettings = { screen = Screen.Settings(returnTo = s) },
-                    onSwitchToGallery = { switchToGallery() },
                     onBack = { screen = Screen.Browser }
                 )
             }
@@ -291,7 +302,7 @@ private fun NestGalleryApp() {
                     hideHidden = hideHidden,
                     showNames = showNames,
                     listMode = listMode,
-                    onToggleViewMode = { listMode = !listMode },
+                    onToggleViewMode = { toggleListMode() },
                     onOpenImage = { images, index -> screen = Screen.Viewer(images, index, returnTo = s) },
                     onBack = { screen = s.returnTo }
                 )
@@ -346,9 +357,7 @@ private fun NestGalleryApp() {
                     onOpenNsfw = if (!nsfwEnabled) null else { root, files ->
                         GalleryCache.forgetScrolls(ScrollKeys.nsfw(root.file.absolutePath))
                         screen = Screen.FolderNsfw(root = root, files = files, returnTo = s)
-                    },
-                    onOpenSettings = { screen = Screen.Settings(returnTo = s) },
-                    onSwitchToExplorer = { switchToExplorer() }
+                    }
                 )
                 if (s is Screen.Album) {
                     AlbumScreen(
@@ -386,6 +395,9 @@ private fun NestGalleryApp() {
             }
         }
     }
+    }
+    // copy / move / delete progress and results, over whichever screen is showing
+    FileOpsHost()
 }
 
 @Composable

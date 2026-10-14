@@ -357,6 +357,45 @@ class FaceDatabase private constructor(context: Context) :
         db.execSQL("DELETE FROM person_not_same WHERE a NOT IN (SELECT id FROM people) OR b NOT IN (SELECT id FROM people)")
     }
 
+    // ---- files moved / deleted in the app's file manager -----------------------------------------------------------
+
+    /**
+     * Files or folders were moved / renamed (old path -> new path): their faces, people and corrections stay as they
+     * are, only the paths change (a folder's change applies to everything under it).
+     */
+    fun movePaths(moves: List<Pair<String, String>>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for ((from, to) in moves) {
+                val (eq, lo, hi) = range(from)
+                val tail = eq.length + 1   // SQL substr is 1-based: the "/rest" after the old folder
+                db.execSQL("UPDATE faces SET file_path = ? WHERE file_path = ?", arrayOf(to, eq))
+                db.execSQL("UPDATE faces SET file_path = ? || substr(file_path, ?) WHERE file_path >= ? AND file_path < ?", arrayOf<Any>(to, tail, lo, hi))
+                db.execSQL("UPDATE OR REPLACE indexed_files SET path = ? WHERE path = ?", arrayOf(to, eq))
+                db.execSQL("UPDATE OR REPLACE indexed_files SET path = ? || substr(path, ?) WHERE path >= ? AND path < ?", arrayOf<Any>(to, tail, lo, hi))
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
+    /** Files or folders were deleted: their faces go (people left without faces are dropped unless named). */
+    fun forgetPaths(paths: Collection<String>) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (path in paths) {
+                val (eq, lo, hi) = range(path)
+                val where = "file_path = ? OR (file_path >= ? AND file_path < ?)"
+                db.execSQL("DELETE FROM face_rejections WHERE face_id IN (SELECT id FROM faces WHERE $where)", arrayOf(eq, lo, hi))
+                db.execSQL("DELETE FROM faces WHERE $where", arrayOf(eq, lo, hi))
+                db.execSQL("DELETE FROM indexed_files WHERE path = ? OR (path >= ? AND path < ?)", arrayOf(eq, lo, hi))
+            }
+            refreshPersonCounts(db)
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+
     fun getFaceLocation(faceId: Long): FaceLocation? =
         readableDatabase.rawQuery("SELECT file_path, landmarks FROM faces WHERE id = ?", arrayOf(faceId.toString())).use {
             if (it.moveToFirst() && !it.isNull(1)) FaceLocation(it.getString(0), bytesToFloats(it.getBlob(1))) else null

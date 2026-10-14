@@ -19,6 +19,36 @@ class UiPrefs private constructor(context: Context) {
         get() = prefs.getInt("gallery_columns", 4)
         set(v) { prefs.edit().putInt("gallery_columns", v).apply() }
 
+    /** File explorer: skip dotfiles / dotfolders. */
+    var hideHidden: Boolean
+        get() = prefs.getBoolean("hide_hidden", true)
+        set(v) { prefs.edit().putBoolean("hide_hidden", v).apply() }
+
+    /** File explorer: filenames under thumbnails. */
+    var showNames: Boolean
+        get() = prefs.getBoolean("show_names", true)
+        set(v) { prefs.edit().putBoolean("show_names", v).apply() }
+
+    /** File explorer: list (true) or grid. */
+    var listMode: Boolean
+        get() = prefs.getBoolean("list_mode", true)
+        set(v) { prefs.edit().putBoolean("list_mode", v).apply() }
+
+    var sortBy: SortBy
+        get() = SortBy.entries.firstOrNull { it.name == prefs.getString("sort_by", null) } ?: SortBy.NAME
+        set(v) { prefs.edit().putString("sort_by", v.name).apply() }
+
+    var sortDescending: Boolean
+        get() = prefs.getBoolean("sort_desc", false)
+        set(v) { prefs.edit().putBoolean("sort_desc", v).apply() }
+
+    /** Folders recently copied / moved to, newest first, offered at the top of the folder picker. */
+    var recentFolders: List<String>
+        get() = prefs.getString("recent_folders", null)?.split('\n')?.filter { it.isNotEmpty() } ?: emptyList()
+        set(v) { prefs.edit().putString("recent_folders", v.take(MAX_RECENT).joinToString("\n")).apply() }
+
+    fun addRecentFolder(path: String) { recentFolders = listOf(path) + recentFolders.filter { it != path } }
+
     private val _nsfwEnabled = MutableStateFlow(prefs.getBoolean("nsfw_enabled", false))
     /**
      * Settings switch, off by default: while off, NSFW scan appears nowhere (no menu entries, no shield button, no
@@ -32,6 +62,7 @@ class UiPrefs private constructor(context: Context) {
     }
 
     companion object {
+        private const val MAX_RECENT = 6
         @Volatile private var instance: UiPrefs? = null
         fun getInstance(context: Context): UiPrefs =
             instance ?: synchronized(this) { instance ?: UiPrefs(context).also { instance = it } }

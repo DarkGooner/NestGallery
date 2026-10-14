@@ -119,6 +119,17 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.roundToInt
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
+import androidx.compose.material.icons.filled.FileCopy
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.SelectAll
+import com.nestgallery.viewer.data.FileOps
+import com.nestgallery.viewer.ui.AppOverflowMenu
+import com.nestgallery.viewer.ui.MenuAction
+import com.nestgallery.viewer.ui.SelectMark
+import com.nestgallery.viewer.ui.files.FileSelectionActions
+import com.nestgallery.viewer.ui.files.FolderPickerDialog
+import com.nestgallery.viewer.ui.files.SelectionTopBar
 import com.nestgallery.viewer.ui.ScreenInsets
 import com.nestgallery.viewer.ui.TopBarInsets
 import androidx.compose.foundation.layout.FlowRow
@@ -172,12 +183,23 @@ fun FolderFaceScreen(
 
     // People-tab selection (long-press) for merging, and the overflow menu
     var selectedPeople by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var selectingPeople by remember { mutableStateOf(false) }   // "Select people" in the menu (a long-press also selects)
+    val peopleSelection = selectingPeople || selectedPeople.isNotEmpty()
+    fun endPeopleSelection() { selectedPeople = emptySet(); selectingPeople = false }
     var showMergeDialog by remember { mutableStateOf(false) }
-    var showMenu by remember { mutableStateOf(false) }
     var showRebuildDialog by remember { mutableStateOf(false) }
     var isSearching by remember { mutableStateOf(false) }
     var matchResults by remember { mutableStateOf<List<FaceMatch>>(emptyList()) }
     var matchedDocEntries by remember { mutableStateOf<List<DocEntry>>(emptyList()) }
+
+    // Find by Face results: "Select" in the menu, then tap results to pick them for move / copy / delete
+    var selectingResults by remember { mutableStateOf(false) }
+    var selectedResults by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // Move / copy every photo of the selected people: true = move, false = copy (their photos are loaded first)
+    var peopleTransfer by remember { mutableStateOf<Boolean?>(null) }
+    var peopleFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    val ops = remember { FileOps.getInstance(context) }
+    val fileRevision by ops.revision.collectAsState()
 
     // "Same person?" questions (best first); skipped ones stay hidden until the user leaves this folder's face screen
     var suggestions by remember { mutableStateOf<List<MergeSuggestion>>(emptyList()) }
@@ -203,7 +225,13 @@ fun FolderFaceScreen(
         reviewSession = null
         onBack()
     }
-    BackHandler { leave() }
+    BackHandler {
+        when {
+            peopleSelection -> endPeopleSelection()
+            selectingResults -> { selectingResults = false; selectedResults = emptySet() }
+            else -> leave()
+        }
+    }
 
     LaunchedEffect(root.file.absolutePath) {
         refreshPeople()
@@ -247,6 +275,27 @@ fun FolderFaceScreen(
         }
     }
 
+    // Photos moved / deleted from here or elsewhere: people and search results follow (the face index already did)
+    var seenRevision by remember { mutableIntStateOf(fileRevision) }
+    LaunchedEffect(fileRevision) {
+        if (fileRevision == seenRevision) return@LaunchedEffect
+        seenRevision = fileRevision
+        refreshPeople()
+        detectedFacesInQuery.getOrNull(activeFaceIndex)?.let { runFaceSearch(it.embedding, similarityThreshold) }
+        selectedResults = emptySet(); selectingResults = false
+    }
+
+    fun transferPeoplePhotos(move: Boolean) {
+        val ids = selectedPeople.toList()
+        scope.launch {
+            peopleFiles = withContext(Dispatchers.IO) {
+                ids.flatMap { db.getImagePathsForPerson(it, root.file.absolutePath) }.distinct().map(::File).filter { it.exists() }
+            }
+            if (peopleFiles.isEmpty()) android.widget.Toast.makeText(context, "No photos to ${if (move) "move" else "copy"}", android.widget.Toast.LENGTH_SHORT).show()
+            else peopleTransfer = move
+        }
+    }
+
     // Android 13+: the foreground-service progress notification needs this permission. Scanning works either way;
     // without it the progress just isn't shown in the notification shade.
     fun beginScan() = scanner.startScanForFiles(files.map { it.file }, root.file.absolutePath)
@@ -273,22 +322,36 @@ fun FolderFaceScreen(
     Scaffold(
         contentWindowInsets = ScreenInsets,
         topBar = {
-            if (selectedPeople.isNotEmpty()) TopAppBar(
-                windowInsets = TopBarInsets,
-                title = { Text("${selectedPeople.size} selected") },
-                navigationIcon = {
-                    IconButton(onClick = { selectedPeople = emptySet() }) {
-                        Icon(Icons.Default.Close, contentDescription = "Clear selection")
-                    }
-                },
-                actions = {
-                    TextButton(onClick = { showMergeDialog = true }, enabled = selectedPeople.size >= 2) {
-                        Icon(Icons.Default.CallMerge, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Merge")
-                    }
+            if (peopleSelection && selectedTab == 0) SelectionTopBar(count = selectedPeople.size, onClose = { endPeopleSelection() }) {
+                TextButton(onClick = { showMergeDialog = true }, enabled = selectedPeople.size >= 2) {
+                    Icon(Icons.Default.CallMerge, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Merge")
                 }
-            ) else TopAppBar(
+                IconButton(onClick = { transferPeoplePhotos(move = true) }, enabled = selectedPeople.isNotEmpty()) {
+                    Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "Move their photos to a folder")
+                }
+                IconButton(onClick = { transferPeoplePhotos(move = false) }, enabled = selectedPeople.isNotEmpty()) {
+                    Icon(Icons.Default.FileCopy, contentDescription = "Copy their photos to a folder")
+                }
+                AppOverflowMenu(
+                    listOf(
+                        MenuAction("Select all", Icons.Default.SelectAll) { selectedPeople = people.mapTo(HashSet()) { it.id } },
+                        MenuAction("Move their photos to…", Icons.AutoMirrored.Filled.DriveFileMove, enabled = selectedPeople.isNotEmpty()) { transferPeoplePhotos(move = true) },
+                        MenuAction("Copy their photos to…", Icons.Default.FileCopy, enabled = selectedPeople.isNotEmpty()) { transferPeoplePhotos(move = false) }
+                    ),
+                    withGlobal = false
+                )
+            } else if (selectingResults && selectedTab == 1) {
+                val files = remember(selectedResults) { selectedResults.map(::File) }
+                SelectionTopBar(count = selectedResults.size, onClose = { selectingResults = false; selectedResults = emptySet() }) {
+                    FileSelectionActions(
+                        files = files,
+                        onDone = { selectingResults = false; selectedResults = emptySet() },
+                        onSelectAll = { selectedResults = matchedDocEntries.mapTo(HashSet()) { it.file.absolutePath } }
+                    )
+                }
+            } else TopAppBar(
                 windowInsets = TopBarInsets,
                 title = {
                     Column {
@@ -325,18 +388,18 @@ fun FolderFaceScreen(
                             Icon(Icons.Default.Refresh, contentDescription = "Scan / Rescan Faces")
                         }
                     }
-                    Box {
-                        IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                    val idle = scanStatus is ScanStatus.Idle || scanStatus is ScanStatus.Completed
+                    AppOverflowMenu(
+                        buildList {
+                            add(MenuAction(if (people.isEmpty()) "Scan faces" else "Scan new photos", Icons.Default.Refresh, enabled = idle) { startScan() })
+                            if (selectedTab == 0) {
+                                add(MenuAction("Select people", Icons.Default.CheckCircle, enabled = people.isNotEmpty()) { selectingPeople = true })
+                            } else {
+                                add(MenuAction("Select photos", Icons.Default.CheckCircle, enabled = matchedDocEntries.isNotEmpty()) { selectingResults = true })
+                            }
+                            add(MenuAction("Regroup people", Icons.Default.Groups, enabled = idle) { showRebuildDialog = true })
                         }
-                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Regroup people") },
-                                onClick = { showMenu = false; showRebuildDialog = true },
-                                enabled = scanStatus is ScanStatus.Idle || scanStatus is ScanStatus.Completed
-                            )
-                        }
-                    }
+                    )
                 }
             )
         }
@@ -420,7 +483,7 @@ fun FolderFaceScreen(
                 } else {
                     val idle = scanStatus is ScanStatus.Idle || scanStatus is ScanStatus.Completed
                     val question = suggestions.firstOrNull()
-                    val showQuestion = question != null && idle && selectedPeople.isEmpty()
+                    val showQuestion = question != null && idle && !peopleSelection
                     // the card is inserted above the people; if the grid was at the top, keep it at the top so the card shows
                     LaunchedEffect(showQuestion) {
                         if (showQuestion && peopleGrid.firstVisibleItemIndex == 0) peopleGrid.scrollToItem(0)
@@ -459,7 +522,7 @@ fun FolderFaceScreen(
                                 person = person,
                                 selected = selected,
                                 onClick = {
-                                    if (selectedPeople.isNotEmpty()) {
+                                    if (peopleSelection) {
                                         selectedPeople = if (selected) selectedPeople - person.id else selectedPeople + person.id
                                     } else onOpenPerson(person.id)
                                 },
@@ -667,16 +730,22 @@ fun FolderFaceScreen(
                                 val sim = match?.similarity ?: 0f
                                 val matchPercent = (FaceMath.matchProbability(sim) * 100).roundToInt()
 
+                                val isSel = entry.file.absolutePath in selectedResults
                                 Box(
                                     modifier = Modifier
                                         .aspectRatio(1f)
                                         .clip(RoundedCornerShape(4.dp))
                                         .background(MaterialTheme.colorScheme.surfaceVariant)
-                                        .holdPreviewGestures(
-                                            key = entry.file,
-                                            onClick = { onOpenImage(matchedDocEntries, index) },
-                                            onHoldStart = { previewEntry = entry },
-                                            onHoldEnd = { previewEntry = null }
+                                        .then(
+                                            if (selectingResults) Modifier.clickable {
+                                                val p = entry.file.absolutePath
+                                                selectedResults = if (isSel) selectedResults - p else selectedResults + p
+                                            } else Modifier.holdPreviewGestures(
+                                                key = entry.file,
+                                                onClick = { onOpenImage(matchedDocEntries, index) },
+                                                onHoldStart = { previewEntry = entry },
+                                                onHoldEnd = { previewEntry = null }
+                                            )
                                         )
                                 ) {
                                     AsyncImage(
@@ -706,6 +775,10 @@ fun FolderFaceScreen(
                                             fontWeight = FontWeight.Bold
                                         )
                                     }
+                                    if (selectingResults) {
+                                        if (isSel) Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)))
+                                        SelectMark(isSel, onDark = true, modifier = Modifier.align(Alignment.TopStart).padding(4.dp))
+                                    }
                                 }
                             }
                     }
@@ -714,6 +787,21 @@ fun FolderFaceScreen(
         }
         previewEntry?.let { HoldPreviewOverlay(entry = it) }
         }
+    }
+
+    peopleTransfer?.let { move ->
+        val names = people.filter { it.id in selectedPeople }.joinToString { it.name }
+        FolderPickerDialog(
+            title = "${if (move) "Move" else "Copy"} ${peopleFiles.size} photos of $names to…",
+            confirmLabel = if (move) "Move here" else "Copy here",
+            start = null,
+            onDismiss = { peopleTransfer = null },
+            onPick = { dest ->
+                peopleTransfer = null
+                if (move) ops.move(peopleFiles, dest) else ops.copy(peopleFiles, dest)
+                endPeopleSelection()
+            }
+        )
     }
 
     // Rename dialog
@@ -765,7 +853,7 @@ fun FolderFaceScreen(
                     showMergeDialog = false
                     if (target != null) scope.launch {
                         scanner.mergePeople(target.id, chosen.map { it.id })
-                        selectedPeople = emptySet()
+                        endPeopleSelection()
                         refreshPeople()
                     }
                 }) { Text("Merge") }

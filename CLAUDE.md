@@ -112,6 +112,16 @@ the font load at startup (~350 ms with a saved cache; per-media `:vout=dummy` is
 `Event.Vout`, and uses FILL scale (no black flash). The app lives in a secondary user ("Vault Profile", user 14):
 `adb install -r -t --user 14`.
 
+**File management + global menu (2026-10-14):** every screen's three-dot menu is `AppOverflowMenu` (`ui/AppMenu.kt`):
+screen entries, then the same app-wide entries everywhere (view switch, hidden items, filenames, Settings; provided by
+`MainActivity` via `LocalAppMenu`). `data/FileOps.kt` does new folder / rename / copy / move / delete / Cut-Copy-Paste
+(never overwrites, progress dialog, MediaStore rescan, `revision` for reloads) and keeps the face index on moved /
+deleted photos (`FaceScannerManager.onPathsMoved` / `onPathsDeleted`). Shared selection actions + folder picker in
+`ui/files/FileDialogs.kt`, used by the explorer, recursive view, gallery, person photos, face search results, and
+"Move / Copy their photos" for selected people. Explorer sort / hidden / filenames / list mode are now persisted.
+Built and unit-tested in a Linux cloud container (Android SDK installed there; ORT Java works on Linux, so
+`OnnxKnnTest` passed there). **Not tried on a phone.**
+
 **Pull to refresh** (`ui/NestPullToRefresh.kt`): folder view, recursive view (background rescan, swaps the list
 when done), gallery Albums / Photos (`MediaLibrary.refresh`: requery, drop missing files, media-scan album folders).
 

@@ -50,6 +50,12 @@ object GalleryCache {
         }
     }
 
+    /** Drops every cached listing and count (files changed on disk); scroll positions are kept. */
+    fun clearListings() {
+        entries.clear()
+        counts.clear()
+    }
+
     fun clearAll() {
         entries.clear()
         counts.clear()

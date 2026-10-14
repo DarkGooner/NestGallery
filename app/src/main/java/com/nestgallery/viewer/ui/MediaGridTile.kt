@@ -19,6 +19,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.outlined.Circle
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -90,6 +93,8 @@ fun MediaImageTile(
     entry: DocEntry,
     showNames: Boolean,
     subtitle: String? = null,
+    /** Null when not selecting; then a tap is [onClick] (which toggles) and holding doesn't preview. */
+    selected: Boolean? = null,
     onClick: () -> Unit,
     onHoldStart: () -> Unit,
     onHoldEnd: () -> Unit
@@ -99,7 +104,10 @@ fun MediaImageTile(
             .padding(2.dp)
             .aspectRatio(1f)
             .clip(RoundedCornerShape(4.dp))
-            .holdPreviewGestures(entry.file, onClick, onHoldStart, onHoldEnd)
+            .then(
+                if (selected != null) Modifier.clickable(onClick = onClick)
+                else Modifier.holdPreviewGestures(entry.file, onClick, onHoldStart, onHoldEnd)
+            )
     ) {
         if (entry.isVideo) {
             // Behind the thumbnail: what shows when Android can't make one (WMV, FLV, RMVB, VOB ... still play in VLC)
@@ -168,7 +176,26 @@ fun MediaImageTile(
                 }
             }
         }
+        if (selected != null) {
+            if (selected) Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)))
+            SelectMark(selected, onDark = true, modifier = Modifier.align(Alignment.TopStart).padding(4.dp))
+        }
     }
+}
+
+/** The round check of a selectable item: filled when selected, an empty ring otherwise. */
+@Composable
+fun SelectMark(selected: Boolean, onDark: Boolean, modifier: Modifier = Modifier) {
+    Icon(
+        if (selected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+        contentDescription = if (selected) "Selected" else "Not selected",
+        tint = when {
+            selected -> MaterialTheme.colorScheme.primary
+            onDark -> Color.White
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = modifier.size(22.dp)
+    )
 }
 
 /**

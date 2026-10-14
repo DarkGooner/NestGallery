@@ -72,6 +72,18 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.platform.LocalContext
+import com.nestgallery.viewer.data.FileOps
+import com.nestgallery.viewer.ui.files.FileSelectionActions
+import com.nestgallery.viewer.ui.files.SelectionTopBar
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,17 +93,14 @@ fun ExploreScreen(
     showNames: Boolean,
     listMode: Boolean,
     onToggleViewMode: () -> Unit,
-    onToggleHideHidden: () -> Unit,
-    onToggleShowNames: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onSearch: (DocEntry) -> Unit,
     onOpenFaces: (DocEntry, List<DocEntry>) -> Unit,
     /** Null while NSFW scan is switched off in Settings (then its button is hidden). */
     onOpenNsfw: ((DocEntry, List<DocEntry>) -> Unit)?,
-    onOpenSettings: () -> Unit,
-    onSwitchToGallery: () -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     // A plain (non-Compose-state-backed) cache key. GalleryCache is a
     // process-lifetime singleton, unlike `remember`, so a scan already in
     // progress or finished survives leaving for the image viewer and coming
@@ -129,7 +138,31 @@ fun ExploreScreen(
     val gridState = rememberLazyGridState()
     val coroutineScope = rememberCoroutineScope()
     var previewEntry by remember { mutableStateOf<DocEntry?>(null) }
-    var menuExpanded by remember { mutableStateOf(false) }
+
+    // Files moved / deleted (here or elsewhere in the app): drop what is gone without walking the whole tree again.
+    // New files (a copy into this tree) show up after a pull to refresh.
+    val ops = remember { FileOps.getInstance(context) }
+    val revision by ops.revision.collectAsState()
+    var seenRevision by remember { mutableIntStateOf(revision) }
+    LaunchedEffect(revision, scanning) {
+        if (revision == seenRevision || scanning) return@LaunchedEffect
+        seenRevision = revision
+        val kept = withContext(Dispatchers.IO) { items.filter { it.file.exists() } }
+        if (kept.size != items.size) { items.clear(); items.addAll(kept) }
+        GalleryCache.putEntries(exploreKey, items.toList())
+    }
+
+    // Selection: "Select" in the menu, or a long-press in the list (holding a grid tile still previews it)
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(emptySet<String>()) }
+    val inSelection = selecting || selected.isNotEmpty()
+    fun toggle(entry: DocEntry) {
+        val p = entry.file.absolutePath
+        selected = if (p in selected) selected - p else selected + p
+        if (selected.isEmpty()) selecting = false
+    }
+    fun endSelection() { selected = emptySet(); selecting = false }
+    BackHandler(enabled = inSelection) { endSelection() }
 
     // Scroll position, same pattern as the regular browser: saved on dispose
     // (leaving for the viewer or navigating away), restored on return.
@@ -221,7 +254,9 @@ fun ExploreScreen(
                             entry = entry,
                             root = root,
                             showNames = showNames,
-                            onClick = { onOpenImage(items, index) }
+                            selected = if (inSelection) entry.file.absolutePath in selected else null,
+                            onClick = { if (inSelection) toggle(entry) else onOpenImage(items, index) },
+                            onLongClick = { toggle(entry) }
                         )
                     }
                 }
@@ -250,7 +285,8 @@ fun ExploreScreen(
                             entry = entry,
                             showNames = showNames,
                             subtitle = relDir,
-                            onClick = { onOpenImage(items, index) },
+                            selected = if (inSelection) entry.file.absolutePath in selected else null,
+                            onClick = { if (inSelection) toggle(entry) else onOpenImage(items, index) },
                             onHoldStart = { previewEntry = entry },
                             onHoldEnd = { previewEntry = null }
                         )
@@ -288,7 +324,16 @@ fun ExploreScreen(
                 HoldPreviewOverlay(entry = entry)
             }
 
-            NestTopBar(
+            if (inSelection) {
+                val files = remember(selected) { selected.map(::File) }
+                SelectionTopBar(count = selected.size, onClose = { endSelection() }, insets = false, modifier = Modifier.align(Alignment.TopCenter)) {
+                    FileSelectionActions(
+                        files = files,
+                        onDone = { endSelection() },
+                        onSelectAll = { selected = items.mapTo(HashSet()) { it.file.absolutePath } }
+                    )
+                }
+            } else NestTopBar(
                 state = bar,
                 title = root.name,
                 subtitle = when {
@@ -320,12 +365,11 @@ fun ExploreScreen(
                     }
                 },
                 menu = listOf(
-                    TopBarMenuItem(if (showNames) "Hide filenames" else "Show filenames",
-                        if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, onToggleShowNames),
-                    TopBarMenuItem(if (hideHidden) "Show hidden items" else "Hide hidden items",
-                        if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onToggleHideHidden),
-                    TopBarMenuItem("Gallery view", Icons.Default.PhotoLibrary, onSwitchToGallery),
-                    TopBarMenuItem("Settings", Icons.Default.Settings, onOpenSettings)
+                    MenuAction("Select", Icons.Default.CheckCircle, enabled = items.isNotEmpty()) { selecting = true },
+                    MenuAction("Rescan all subfolders", Icons.Default.Refresh, enabled = !scanning) {
+                        GalleryCache.invalidate(exploreKey)
+                        rescanTrigger++
+                    }
                 ),
                 modifier = Modifier.align(Alignment.TopCenter).alpha(if (previewEntry == null) 1f else 0f)
             )
@@ -333,12 +377,13 @@ fun ExploreScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ExploreImageRow(entry: DocEntry, root: DocEntry, showNames: Boolean, onClick: () -> Unit) {
+private fun ExploreImageRow(entry: DocEntry, root: DocEntry, showNames: Boolean, selected: Boolean?, onClick: () -> Unit, onLongClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(bottom = 12.dp)
     ) {
         Box(Modifier.fillMaxWidth()) {
@@ -355,6 +400,10 @@ private fun ExploreImageRow(entry: DocEntry, root: DocEntry, showNames: Boolean,
                     tint = Color.White,
                     modifier = Modifier.align(Alignment.Center).size(56.dp)
                 )
+            }
+            if (selected != null) {
+                if (selected) Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)))
+                SelectMark(selected, onDark = true, modifier = Modifier.align(Alignment.TopEnd).padding(10.dp))
             }
         }
         if (showNames) {

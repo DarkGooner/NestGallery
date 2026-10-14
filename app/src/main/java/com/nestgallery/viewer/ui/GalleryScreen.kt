@@ -74,8 +74,34 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 import androidx.compose.material.icons.filled.Face
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.platform.LocalContext
+import com.nestgallery.viewer.data.FileOps
+import com.nestgallery.viewer.data.SortBy
+import com.nestgallery.viewer.data.UiPrefs
+import com.nestgallery.viewer.ui.files.DeleteDialog
+import com.nestgallery.viewer.ui.files.FileSelectionActions
+import com.nestgallery.viewer.ui.files.NameDialog
+import com.nestgallery.viewer.ui.files.PasteBar
+import com.nestgallery.viewer.ui.files.PropertiesDialog
+import com.nestgallery.viewer.ui.files.SelectionTopBar
+import java.io.File
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun GalleryScreen(
     pathStack: List<DocEntry>,
@@ -83,33 +109,63 @@ fun GalleryScreen(
     listMode: Boolean,
     showNames: Boolean,
     onToggleViewMode: () -> Unit,
-    onToggleHideHidden: () -> Unit,
-    onToggleShowNames: () -> Unit,
     onOpenFolder: (DocEntry) -> Unit,
     onBreadcrumbClick: (Int) -> Unit,
     onGoHome: () -> Unit,
     onOpenImage: (List<DocEntry>, Int) -> Unit,
     onExploreFolder: (DocEntry) -> Unit,
-    onOpenSettings: () -> Unit,
-    onSwitchToGallery: () -> Unit,
     onSearch: (DocEntry) -> Unit,
     onBack: () -> Unit,
-    canGoBack: Boolean
+    canGoBack: Boolean,
+    /** The open folder itself was renamed: replace it in the path. */
+    onRenamedCurrent: (File) -> Unit
 ) {
+    val context = LocalContext.current
+    val prefs = remember { UiPrefs.getInstance(context) }
+    val ops = remember { FileOps.getInstance(context) }
+    val revision by ops.revision.collectAsState()
+    val clip by ops.clip.collectAsState()
+    var sortBy by remember { mutableStateOf(prefs.sortBy) }
+    var sortDesc by remember { mutableStateOf(prefs.sortDescending) }
     val current = pathStack.last()
-    val cacheKey = remember(current.file.absolutePath, hideHidden) { "${current.file.absolutePath}|hidden=$hideHidden" }
+    val cacheKey = remember(current.file.absolutePath, hideHidden, sortBy, sortDesc) {
+        "${current.file.absolutePath}|hidden=$hideHidden|sort=$sortBy$sortDesc"
+    }
 
     // Seed straight from cache so revisiting a folder (e.g. backing out of the
     // image viewer) never shows a spinner or re-lists the directory.
     var entries by remember(cacheKey) { mutableStateOf(GalleryCache.getEntries(cacheKey)) }
 
-    LaunchedEffect(cacheKey) {
+    // revision: a copy / move / delete / new folder dropped the cached listings, so list again
+    LaunchedEffect(cacheKey, revision) {
         if (GalleryCache.getEntries(cacheKey) == null) {
-            val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden) }
+            val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden, sortBy, sortDesc) }
             GalleryCache.putEntries(cacheKey, loaded)
             entries = loaded
         }
     }
+
+    // ZArchiver-style selection: long-press a row (or a folder tile, or "Select" in the menu), then tap to add more
+    var selecting by remember(current.file.absolutePath) { mutableStateOf(false) }
+    var selected by remember(current.file.absolutePath) { mutableStateOf(emptySet<String>()) }
+    val inSelection = selecting || selected.isNotEmpty()
+    fun toggle(entry: DocEntry) {
+        val p = entry.file.absolutePath
+        selected = if (p in selected) selected - p else selected + p
+        if (selected.isEmpty()) selecting = false
+    }
+    fun endSelection() { selected = emptySet(); selecting = false }
+    BackHandler(enabled = inSelection) { endSelection() }
+    LaunchedEffect(entries) {
+        val present = entries.orEmpty().mapTo(HashSet()) { it.file.absolutePath }
+        if (selected.any { it !in present }) selected = selected.filterTo(HashSet()) { it in present }
+    }
+
+    var newFolder by remember { mutableStateOf(false) }
+    var renameFolder by remember { mutableStateOf(false) }
+    var deleteFolder by remember { mutableStateOf(false) }
+    var folderInfo by remember { mutableStateOf(false) }
+    var sortDialog by remember { mutableStateOf(false) }
 
     val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
 
@@ -182,14 +238,21 @@ fun GalleryScreen(
                     contentPadding = PaddingValues(top = topPad, bottom = 24.dp)
                 ) {
                     items(currentEntries, key = { it.file.absolutePath }) { entry ->
+                        val isSel = if (inSelection) entry.file.absolutePath in selected else null
                         if (entry.isDirectory) {
                             FolderRow(
                                 entry = entry,
-                                onClick = { onOpenFolder(entry) }
+                                selected = isSel,
+                                onClick = { if (inSelection) toggle(entry) else onOpenFolder(entry) },
+                                onLongClick = { toggle(entry) }
                             )
                         } else {
                             val index = imagesOnly.indexOf(entry)
-                            ImageRow(entry = entry, showNames = showNames, onClick = { onOpenImage(imagesOnly, index) })
+                            ImageRow(
+                                entry = entry, showNames = showNames, selected = isSel,
+                                onClick = { if (inSelection) toggle(entry) else onOpenImage(imagesOnly, index) },
+                                onLongClick = { toggle(entry) }
+                            )
                         }
                     }
                 }
@@ -211,17 +274,22 @@ fun GalleryScreen(
                     contentPadding = PaddingValues(start = 4.dp, end = 4.dp, bottom = 4.dp, top = topPad)
                 ) {
                     gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
+                        val isSel = if (inSelection) entry.file.absolutePath in selected else null
                         if (entry.isDirectory) {
                             FolderTile(
                                 entry = entry,
-                                onClick = { onOpenFolder(entry) }
+                                selected = isSel,
+                                onClick = { if (inSelection) toggle(entry) else onOpenFolder(entry) },
+                                onLongClick = { toggle(entry) }
                             )
                         } else {
                             val index = imagesOnly.indexOf(entry)
+                            // holding a photo still previews it; "Select" in the menu (or a long-press in the list) selects
                             MediaImageTile(
                                 entry = entry,
                                 showNames = showNames,
-                                onClick = { onOpenImage(imagesOnly, index) },
+                                selected = isSel,
+                                onClick = { if (inSelection) toggle(entry) else onOpenImage(imagesOnly, index) },
                                 onHoldStart = { previewEntry = entry },
                                 onHoldEnd = { previewEntry = null }
                             )
@@ -248,7 +316,17 @@ fun GalleryScreen(
 
         val folderCount = currentEntries?.count { it.isDirectory } ?: 0
         val mediaCount = currentEntries?.count { !it.isDirectory } ?: 0
-        NestTopBar(
+        val isRoot = !canGoBack
+        if (inSelection) {
+            val files = remember(selected) { selected.map(::File) }
+            SelectionTopBar(count = selected.size, onClose = { endSelection() }, insets = false, modifier = Modifier.align(Alignment.TopCenter)) {
+                FileSelectionActions(
+                    files = files,
+                    onDone = { endSelection() },
+                    onSelectAll = { selected = currentEntries.orEmpty().mapTo(HashSet()) { it.file.absolutePath } }
+                )
+            }
+        } else NestTopBar(
             state = bar,
             title = current.name,
             subtitle = if (currentEntries == null) null else "$folderCount folders · $mediaCount items",
@@ -267,22 +345,102 @@ fun GalleryScreen(
                     Icon(Icons.Default.Home, contentDescription = "Go to storage root")
                 }
             },
-            menu = listOf(
-                TopBarMenuItem(if (showNames) "Hide filenames" else "Show filenames",
-                    if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, onToggleShowNames),
-                TopBarMenuItem(if (hideHidden) "Show hidden items" else "Hide hidden items",
-                    if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onToggleHideHidden),
-                TopBarMenuItem("Gallery view", Icons.Default.PhotoLibrary, onSwitchToGallery),
-                    TopBarMenuItem("Settings", Icons.Default.Settings, onOpenSettings)
-            ),
+            menu = buildList {
+                add(MenuAction("New folder", Icons.Default.CreateNewFolder) { newFolder = true })
+                add(MenuAction("Select", Icons.Default.CheckCircle, enabled = !currentEntries.isNullOrEmpty()) { selecting = true })
+                if (clip != null) add(MenuAction("Paste here", Icons.Default.ContentPaste) { ops.paste(current.file) })
+                add(MenuAction("Sort by: ${sortBy.label.lowercase()}", Icons.AutoMirrored.Filled.Sort) { sortDialog = true })
+                add(MenuAction("Folder properties", Icons.Default.Info) { folderInfo = true })
+                if (!isRoot) {
+                    add(MenuAction("Rename this folder", Icons.Default.DriveFileRenameOutline) { renameFolder = true })
+                    add(MenuAction("Delete this folder", Icons.Default.Delete) { deleteFolder = true })
+                }
+            },
             modifier = Modifier.align(Alignment.TopCenter).alpha(if (previewEntry == null) 1f else 0f)
         )
+        if (!inSelection) PasteBar(current.file, Modifier.align(Alignment.BottomCenter))
+        }
+    }
+
+    if (newFolder) {
+        NameDialog(
+            title = "New folder",
+            initial = "",
+            confirmLabel = "Create",
+            onDismiss = { newFolder = false },
+            onConfirm = { name -> ops.createFolder(current.file, name) }
+        )
+    }
+    if (renameFolder) {
+        NameDialog(
+            title = "Rename folder",
+            initial = current.name,
+            confirmLabel = "Rename",
+            onDismiss = { renameFolder = false },
+            onConfirm = { name ->
+                ops.rename(current.file, name).also { if (it == null) onRenamedCurrent(File(current.file.parentFile, name.trim())) }
+            }
+        )
+    }
+    if (deleteFolder) {
+        DeleteDialog(listOf(current.file), onDismiss = { deleteFolder = false }, onConfirm = {
+            deleteFolder = false
+            ops.delete(listOf(current.file))
+            onBack()
+        })
+    }
+    if (folderInfo) PropertiesDialog(listOf(current.file), onDismiss = { folderInfo = false })
+    if (sortDialog) {
+        SortDialog(sortBy, sortDesc, onDismiss = { sortDialog = false }) { by, desc ->
+            sortDialog = false
+            sortBy = by; sortDesc = desc
+            prefs.sortBy = by; prefs.sortDescending = desc
         }
     }
 }
 
 @Composable
-private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
+private fun SortDialog(by: SortBy, descending: Boolean, onDismiss: () -> Unit, onApply: (SortBy, Boolean) -> Unit) {
+    var choice by remember { mutableStateOf(by) }
+    var desc by remember { mutableStateOf(descending) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Sort by") },
+        text = {
+            Column {
+                for (option in SortBy.entries) {
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { choice = option }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = choice == option, onClick = { choice = option })
+                        Text(option.label)
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { desc = !desc }.padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = desc, onCheckedChange = { desc = it })
+                    Text(
+                        when (choice) {
+                            SortBy.NAME -> "Descending (Z to A)"
+                            SortBy.DATE -> "Newest first"
+                            SortBy.SIZE -> "Largest first"
+                        }
+                    )
+                }
+                Text("Folders always come first.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = { onApply(choice, desc) }) { Text("Apply") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FolderRow(entry: DocEntry, selected: Boolean?, onClick: () -> Unit, onLongClick: () -> Unit) {
     val cacheKey = remember(entry.file.absolutePath) { entry.file.absolutePath }
     var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
 
@@ -297,7 +455,8 @@ private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .background(if (selected == true) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -321,15 +480,17 @@ private fun FolderRow(entry: DocEntry, onClick: () -> Unit) {
                 modifier = Modifier.alpha(if (c != null && c > 0) 1f else 0f)
             )
         }
+        if (selected != null) SelectMark(selected, onDark = false)
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ImageRow(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) {
+private fun ImageRow(entry: DocEntry, showNames: Boolean, selected: Boolean?, onClick: () -> Unit, onLongClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(bottom = 12.dp)
     ) {
         Box(Modifier.fillMaxWidth()) {
@@ -351,6 +512,10 @@ private fun ImageRow(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) {
                         .size(56.dp)
                 )
             }
+            if (selected != null) {
+                if (selected) Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)))
+                Box(Modifier.align(Alignment.TopEnd).padding(10.dp)) { SelectMark(selected, onDark = true) }
+            }
         }
         if (showNames) {
             Text(
@@ -365,12 +530,13 @@ private fun ImageRow(entry: DocEntry, showNames: Boolean, onClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
+private fun FolderTile(entry: DocEntry, selected: Boolean?, onClick: () -> Unit, onLongClick: () -> Unit) {
     Column(
         modifier = Modifier
             .padding(4.dp)
-            .clickable(onClick = onClick),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(
@@ -382,6 +548,10 @@ private fun FolderTile(entry: DocEntry, onClick: () -> Unit) {
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            if (selected != null) {
+                if (selected) Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)))
+                Box(Modifier.align(Alignment.TopEnd).padding(6.dp)) { SelectMark(selected, onDark = false) }
+            }
         }
         Text(
             entry.name,
