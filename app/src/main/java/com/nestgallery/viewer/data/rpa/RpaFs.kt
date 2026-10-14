@@ -21,13 +21,19 @@ object RpaFs {
     private class Opened(val archive: File, val dir: File, val members: Map<String, RpaMember>, val tree: Map<String, List<Pair<String, RpaMember?>>>)
 
     @Volatile private var root: File? = null
+
+    /**
+     * Three-dot menu "Open .rpa archives as folders" (off by default). While off, an .rpa is an ordinary file
+     * (listed with "Show non-media files"); Extract works either way.
+     */
+    @Volatile var enabled: Boolean = false
     private val opened = ConcurrentHashMap<String, Opened>()
     private val locks = ConcurrentHashMap<String, Any>()
 
     fun init(context: Context) { if (root == null) root = File(context.cacheDir, "rpa") }
 
     /** For tests: where virtual paths live. */
-    fun initForTest(cacheRoot: File) { root = cacheRoot; opened.clear() }
+    fun initForTest(cacheRoot: File) { root = cacheRoot; opened.clear(); enabled = true }
 
     fun isArchiveName(name: String) = name.endsWith(".rpa", ignoreCase = true)
 
@@ -115,7 +121,7 @@ object RpaFs {
             val o = opened[id] ?: File(r, "$id.src").takeIf { it.isFile }?.readText()?.let { open(File(it)) }?.takeIf { it.dir.name == id }
             return o to rel.trimEnd('/')
         }
-        if (isArchiveName(f.name) && f.isFile) return open(f) to ""
+        if (enabled && isArchiveName(f.name) && f.isFile) return open(f) to ""
         return null
     }
 

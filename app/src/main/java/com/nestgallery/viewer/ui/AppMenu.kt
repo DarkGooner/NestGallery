@@ -9,6 +9,7 @@ import androidx.compose.material.icons.automirrored.filled.LabelOff
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -58,6 +59,9 @@ class AppMenuState(
     /** File explorer: list every file, not only photos and videos. */
     val showAllFiles: Boolean,
     val onToggleAllFiles: () -> Unit,
+    /** File explorer: open Ren'Py archives (.rpa) as folders. */
+    val openArchives: Boolean,
+    val onToggleArchives: () -> Unit,
     val onOpenSettings: () -> Unit
 ) {
     fun actions(): List<MenuAction> = listOf(
@@ -66,6 +70,7 @@ class AppMenuState(
         MenuAction("Show hidden items", if (hideHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
             checked = !hideHidden, onClick = onToggleHidden),
         MenuAction("Show non-media files", Icons.AutoMirrored.Filled.InsertDriveFile, checked = showAllFiles, onClick = onToggleAllFiles),
+        MenuAction("Open .rpa archives as folders", Icons.Default.FolderZip, checked = openArchives, onClick = onToggleArchives),
         MenuAction("Show filenames", if (showNames) Icons.AutoMirrored.Filled.Label else Icons.AutoMirrored.Filled.LabelOff,
             checked = showNames, onClick = onToggleNames),
         MenuAction("Settings", Icons.Default.Settings, onClick = onOpenSettings)

@@ -120,4 +120,36 @@ class RpaArchiveTest {
         assertTrue(File(images, "char/eileen happy.jpg").isFile)
         assertNull(RpaFs.list(games))   // a real folder isn't the archive layer's business
     }
+
+    @Test
+    fun extractKeepsFoldersAndStaysInside() {
+        val f = fixture("v3_p2_prefix.rpa")
+        val index = RpaArchive.readIndex(f)
+        val folder = tmp.newFolder("out", "v3_p2_prefix")
+        // a hostile member path must not escape the folder
+        val evil = com.nestgallery.viewer.data.rpa.RpaMember("../../escaped.png", index.getValue("images/bg/room.png").offset,
+            index.getValue("images/bg/room.png").length, index.getValue("images/bg/room.png").prefix)
+        val failed = FileOps.extractArchive(f, index.values + evil, folder)
+        assertEquals(0, failed)  // "../.." is dropped from the path, so it lands inside as escaped.png
+        assertFalse(File(tmp.root, "escaped.png").exists())
+        assertArrayEquals(roomPng, File(folder, "escaped.png").readBytes())
+        for ((path, size) in manifest) assertEquals(path, size, File(folder, path).length())
+        assertArrayEquals(roomPng, File(folder, "images/bg/room.png").readBytes())
+        assertEquals(f.lastModified() / 1000, File(folder, "script.rpyc").lastModified() / 1000)
+    }
+
+    @Test
+    fun archivesAreFilesWhileTheToggleIsOff() {
+        RpaFs.initForTest(tmp.newFolder("cache2"))
+        RpaFs.enabled = false
+        try {
+            val dir = tmp.newFolder("g2")
+            fixture("v3_p2.rpa").copyTo(File(dir, "a.rpa"))
+            assertEquals(emptyList<String>(), listFolderFast(dir, hideHidden = true).map { it.name })
+            val all = listFolderFast(dir, hideHidden = true, showAll = true)
+            assertEquals(listOf("a.rpa"), all.map { it.name })
+            assertFalse(all[0].isDirectory || all[0].isArchive || all[0].isMedia)
+            assertNull(RpaFs.list(File(dir, "a.rpa")))
+        } finally { RpaFs.enabled = true }
+    }
 }

@@ -3,6 +3,8 @@ package com.nestgallery.viewer.data
 import android.content.Context
 import android.media.MediaScannerConnection
 import com.nestgallery.viewer.data.face.FaceScannerManager
+import com.nestgallery.viewer.data.rpa.RpaArchive
+import com.nestgallery.viewer.data.rpa.RpaMember
 import com.nestgallery.viewer.data.rpa.RpaFs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -108,6 +110,12 @@ class FileOps private constructor(private val appContext: Context) {
 
     fun delete(files: List<File>) = launch("Deleting") { runDelete(files) }
 
+    /**
+     * Extracts every file of each Ren'Py archive in [archives] into a new folder named after it ("game.rpa" ->
+     * "game/", or "game (1)/" if taken) inside [dest], or next to the archive when [dest] is null ("Extract here").
+     */
+    fun extract(archives: List<File>, dest: File?) = launch("Extracting") { runExtract(archives, dest) }
+
     /** Pastes the clipboard into [dest]: copies, or moves when it was cut (the clipboard is then emptied). */
     fun paste(dest: File) {
         val c = _clip.value ?: return
@@ -191,6 +199,41 @@ class FileOps private constructor(private val appContext: Context) {
         }
     }
 
+    private fun runExtract(archives: List<File>, dest: File?): String {
+        if (dest != null && insideArchive(dest)) return "Can't extract into an archive"
+        _progress.value = FileOpProgress("Extracting", 0, 0, "Reading archive index…")
+        val opened = archives.distinctBy { it.absolutePath }.map { a -> a to try { RpaArchive.readIndex(a) } catch (e: Exception) { null } }
+        val unreadable = opened.count { it.second == null }
+        val total = opened.sumOf { it.second?.size ?: 0 }
+        var done = 0
+        var failed = 0
+        val folders = ArrayList<File>()
+        for ((archive, index) in opened) {
+            if (index == null || cancelled) continue
+            val parent = dest ?: archive.parentFile ?: continue
+            val folder = freeName(parent, archive.nameWithoutExtension.ifEmpty { archive.name + "_files" })
+            if (!folder.mkdirs()) { failed += index.size; continue }
+            folders += folder
+            val start = done
+            failed += extractArchive(archive, index.values, folder, isCancelled = { cancelled }) { i, name ->
+                done = start + i
+                _progress.value = FileOpProgress("Extracting", done, total, name)
+            }
+            if (!cancelled) done = start + index.size
+        }
+        val ok = done - failed
+        scan(folders.flatMap { walk(it) }.map { it.path })
+        changed()
+        val where = dest?.name ?: "the archive's folder"
+        return when {
+            cancelled -> "Extracting cancelled after $ok files"
+            folders.isEmpty() -> if (unreadable > 0) "Not a Ren'Py archive (or an unsupported version)" else "Nothing extracted"
+            failed > 0 || unreadable > 0 -> "Extracted $ok files to $where; ${failed + unreadable} failed"
+            else -> "Extracted ${if (ok == 1) "1 file" else "$ok files"} to " +
+                (if (folders.size == 1) "${folders[0].name} in $where" else "${folders.size} folders in $where")
+        }
+    }
+
     private suspend fun runDelete(files: List<File>): String {
         if (files.any { RpaFs.isReadOnly(it) }) return ARCHIVE_READ_ONLY
         val sources = files.filter { it.exists() }.distinctBy { it.absolutePath }
@@ -263,6 +306,36 @@ class FileOps private constructor(private val appContext: Context) {
                 n.toByteArray().size > 255 -> "That name is too long"
                 else -> null
             }
+        }
+
+        /**
+         * Writes [members] of [archive] under [folder] (which must exist), keeping their folders. A member path that
+         * would land outside [folder] ("../", absolute paths) is skipped. Returns how many failed.
+         */
+        fun extractArchive(
+            archive: File,
+            members: Collection<RpaMember>,
+            folder: File,
+            isCancelled: () -> Boolean = { false },
+            onFile: (index: Int, name: String) -> Unit = { _, _ -> }
+        ): Int {
+            val base = folder.canonicalPath + "/"
+            var failed = 0
+            for ((i, member) in members.withIndex()) {
+                if (isCancelled()) break
+                onFile(i, member.path.substringAfterLast('/'))
+                val rel = member.path.split('/', '\\').filter { it.isNotEmpty() && it != "." && it != ".." }.joinToString("/")
+                val out = File(folder, rel)
+                if (rel.isEmpty() || !out.canonicalPath.startsWith(base)) { failed++; continue }
+                try {
+                    out.parentFile?.mkdirs()
+                    RpaArchive.extract(archive, member, out)
+                    out.setLastModified(archive.lastModified())
+                } catch (e: Exception) {
+                    out.delete(); failed++
+                }
+            }
+            return failed
         }
 
         /** [name] in [dir], or "name (1).ext", "name (2).ext" ... if it is taken. */

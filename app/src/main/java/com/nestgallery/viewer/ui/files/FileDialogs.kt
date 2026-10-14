@@ -39,10 +39,10 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FileCopy
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -114,7 +114,10 @@ fun RowScope.FileSelectionActions(
     var confirmDelete by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
+    var extractPicker by remember { mutableStateOf(false) }
     val any = files.isNotEmpty()
+    // only Ren'Py archives selected (on disk, not inside another archive): offer to extract them
+    val archives = any && files.all { RpaFs.isArchiveName(it.name) && !RpaFs.isVirtual(it) }
     // files inside a Ren'Py archive can be copied out, shared and inspected, not moved, renamed or deleted
     val writable = any && files.none { RpaFs.isReadOnly(it) }
     val scope = rememberCoroutineScope()
@@ -126,6 +129,10 @@ fun RowScope.FileSelectionActions(
         buildList {
             addAll(extra)
             if (onSelectAll != null) add(MenuAction("Select all", Icons.Default.SelectAll, onClick = onSelectAll))
+            if (archives) {
+                add(MenuAction("Extract here", Icons.Default.Unarchive) { ops.extract(files, dest = null); onDone() })
+                add(MenuAction("Extract to…", Icons.Default.Unarchive) { extractPicker = true })
+            }
             add(MenuAction("Share", Icons.Default.Share, enabled = any) { scope.launch { shareFiles(context, onDisk(files)) } })
             add(MenuAction("Rename", Icons.Default.DriveFileRenameOutline, enabled = writable && files.size == 1) { renaming = true })
             add(MenuAction("Cut", Icons.Default.ContentCut, enabled = writable) { ops.setClip(files, cut = true); onDone() })
@@ -144,6 +151,19 @@ fun RowScope.FileSelectionActions(
             onPick = { dest ->
                 picker = null
                 if (move) ops.move(files, dest) else ops.copy(files, dest)
+                onDone()
+            }
+        )
+    }
+    if (extractPicker) {
+        FolderPickerDialog(
+            title = "Extract ${if (files.size == 1) files[0].name else "${files.size} archives"} to…",
+            confirmLabel = "Extract here",
+            start = files.firstOrNull()?.parentFile,
+            onDismiss = { extractPicker = false },
+            onPick = { dest ->
+                extractPicker = false
+                ops.extract(files, dest)
                 onDone()
             }
         )
@@ -361,8 +381,8 @@ private fun InfoLine(label: String, value: String) {
 }
 
 /**
- * Full-screen folder chooser for Copy to / Move to: recent destinations, then browse from the storage root, make a new
- * folder on the way, and confirm with [confirmLabel] ("Move here"). The chosen folder is remembered as recent.
+ * Full-screen folder chooser for Copy to / Move to / Extract to: browse from the storage root (or [start]), make a new
+ * folder on the way, and confirm with [confirmLabel] ("Move here"). Nothing about the choice is remembered.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -377,7 +397,6 @@ fun FolderPickerDialog(
     val prefs = remember { UiPrefs.getInstance(context) }
     val ops = remember { FileOps.getInstance(context) }
     val root = remember { storageRootEntry().file }
-    val recents = remember { prefs.recentFolders.map(::File).filter { it.isDirectory } }
     var current by remember { mutableStateOf(start?.takeIf { it.isDirectory && it.path.startsWith(root.path) } ?: root) }
     var reload by remember { mutableIntStateOf(0) }
     var creating by remember { mutableStateOf(false) }
@@ -393,7 +412,7 @@ fun FolderPickerDialog(
             .takeWhile { it.path.startsWith(root.path) }
             .toList().reversed()
     }
-    fun pick(dir: File) { prefs.addRecentFolder(dir.path); onPick(dir) }
+    fun pick(dir: File) = onPick(dir)
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -426,25 +445,6 @@ fun FolderPickerDialog(
                             )
                         }
                         if (!last) Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                }
-                // folders copied / moved to lately, one tap away wherever the browsing is
-                if (recents.isNotEmpty()) {
-                    Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.History, contentDescription = "Recent folders", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                        for (f in recents) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (f.path == current.path) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else MaterialTheme.colorScheme.secondaryContainer,
-                                modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { current = f }
-                            ) {
-                                Text(f.name, style = MaterialTheme.typography.labelMedium, maxLines = 1, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
-                            }
-                        }
                     }
                 }
                 HorizontalDivider()

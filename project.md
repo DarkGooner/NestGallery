@@ -154,10 +154,13 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
 #### [`app/src/main/java/com/nestgallery/viewer/data/UiPrefs.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/UiPrefs.kt)
 - **Role**: singleton; whether the app opens in the gallery view (default) or the file explorer, the gallery's photos
   per row, and the NSFW scan switch (`nsfwEnabled` StateFlow, off by default; hides the feature everywhere). Also the
-  explorer's hidden items / filenames / list-or-grid / sort order, and the folder picker's recent destinations.
+  explorer's hidden items / filenames / list-or-grid / sort order.
 
 #### Ren'Py archives: [`data/rpa/RpaArchive.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/rpa/RpaArchive.kt), [`RpaFs.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/rpa/RpaFs.kt), [`RpaFetcher.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/rpa/RpaFetcher.kt)
-- **Role**: `.rpa` files open as read-only folders in the explorer, the recursive view and search.
+- **Role**: with the three-dot menu's "Open .rpa archives as folders" (off by default; `UiPrefs.openArchives` ->
+  `RpaFs.enabled`), `.rpa` files open as read-only folders in the explorer, the recursive view and search. Selecting
+  .rpa files offers **Extract here / Extract to…** either way (`FileOps.extract`: one folder per archive, member paths
+  kept inside it).
 - `RpaArchive`: Kotlin reader for RPA-2.0 / 3.0 / 3.2 (the formats Rentool's rpatool reads): header, zlib index, a
   small pickle reader (protocols 0-5, incl. Python 3 bytes pickled at protocol 2 as `_codecs.encode`), XOR key,
   member prefixes. RPA-1.0 (.rpi) is not supported.
@@ -265,7 +268,7 @@ Every grouping run regroups all people the user has not curated (that costs a ne
 
 #### Files UI: [`ui/files/FileDialogs.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/ui/files/FileDialogs.kt)
 - `FileSelectionActions` (the actions of every "N selected" bar: explorer, recursive view, gallery, a person's photos,
-  face search results) and `SelectionTopBar`; `FolderPickerDialog` (browse from storage root, recent destinations,
+  face search results) and `SelectionTopBar`; `FolderPickerDialog` (browse from storage root (no history kept),
   new folder, "Move here" / "Copy here"); `NameDialog`, `DeleteDialog`, `PropertiesDialog`; `FileOpsHost` (progress
   dialog + toasts, once in `MainActivity`); `PasteBar`; `shareFiles` (FileProvider `${applicationId}.files`).
 

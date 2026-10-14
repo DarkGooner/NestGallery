@@ -108,8 +108,10 @@ fun ExploreScreen(
     // straight back - without it, every trip to the viewer restarted the
     // entire recursive scan from scratch.
     var rescanTrigger by remember { mutableIntStateOf(0) }
-    val exploreKey = remember(root.file.absolutePath, hideHidden, rescanTrigger) {
-        "explore:${root.file.absolutePath}|hidden=$hideHidden|r=$rescanTrigger"
+    // the menu's "Open .rpa archives as folders" changes what the walk finds
+    val archivesOn = LocalAppMenu.current?.openArchives ?: RpaFs.enabled
+    val exploreKey = remember(root.file.absolutePath, hideHidden, archivesOn, rescanTrigger) {
+        "explore:${root.file.absolutePath}|hidden=$hideHidden|rpa=$archivesOn|r=$rescanTrigger"
     }
 
     val items = remember(exploreKey) {

@@ -137,6 +137,7 @@ class MainActivity : ComponentActivity() {
         // builds VLC's font cache in the background so the first video preview doesn't wait ~20 s for it
         com.nestgallery.viewer.data.VlcEngine.warmUp(applicationContext)
         com.nestgallery.viewer.data.rpa.RpaFs.init(applicationContext)
+        com.nestgallery.viewer.data.rpa.RpaFs.enabled = UiPrefs.getInstance(applicationContext).openArchives
 
         setContent {
             NestGalleryTheme {
@@ -177,6 +178,7 @@ private fun NestGalleryApp() {
     var personListMode by remember { mutableStateOf(false) } // a person's photos: grid by default, own toggle
     var showNames by remember { mutableStateOf(uiPrefs.showNames) }
     var showAllFiles by remember { mutableStateOf(uiPrefs.showAllFiles) }
+    var openArchives by remember { mutableStateOf(uiPrefs.openArchives) }
     fun toggleListMode() { listMode = !listMode; uiPrefs.listMode = listMode }
     var galleryMode by remember { mutableStateOf(uiPrefs.galleryMode) }
 
@@ -190,6 +192,19 @@ private fun NestGalleryApp() {
         onToggleNames = { showNames = !showNames; uiPrefs.showNames = showNames },
         showAllFiles = showAllFiles,
         onToggleAllFiles = { showAllFiles = !showAllFiles; uiPrefs.showAllFiles = showAllFiles },
+        openArchives = openArchives,
+        onToggleArchives = {
+            openArchives = !openArchives
+            uiPrefs.openArchives = openArchives
+            com.nestgallery.viewer.data.rpa.RpaFs.enabled = openArchives
+            GalleryCache.clearListings()            // listings made with the other setting
+            if (!openArchives) {
+                // switched off while browsing inside an archive: back to the folder that holds it
+                val inside = { e: DocEntry -> com.nestgallery.viewer.data.FileOps.insideArchive(e.file) }
+                if (pathStack.any(inside)) pathStack = pathStack.takeWhile { !inside(it) }.ifEmpty { listOf(storageRootEntry()) }
+                (screen as? Screen.Explore)?.let { if (inside(it.root)) screen = Screen.Browser }
+            }
+        },
         onOpenSettings = { if (screen !is Screen.Settings) screen = Screen.Settings(returnTo = screen) }
     )
 
@@ -275,6 +290,7 @@ private fun NestGalleryApp() {
                     pathStack = pathStack,
                     hideHidden = hideHidden,
                     showAllFiles = showAllFiles,
+                    openArchives = openArchives,
                     listMode = listMode,
                     showNames = showNames,
                     onToggleViewMode = { toggleListMode() },

@@ -146,9 +146,10 @@ deleted photos (`FaceScannerManager.onPathsMoved` / `onPathsDeleted`). Shared se
 Built and unit-tested in a Linux cloud container (Android SDK installed there; ORT Java works on Linux, so
 `OnnxKnnTest` passed there). **Not tried on a phone.**
 
-**Ren'Py archives + non-media files (2026-10-14):** `.rpa` files list as read-only folders (`data/rpa/`, Kotlin
+**Ren'Py archives + non-media files (2026-10-14):** with the menu toggle "Open .rpa archives as folders" (off by
+default) `.rpa` files list as read-only folders; selected .rpa files offer Extract here / Extract to… (`data/rpa/`, Kotlin
 port of what Rentool's rpatool reads: RPA-2.0/3.0/3.2; members extracted to `<cache>/rpa/` on first use). Global
-three-dot menu has check-box toggles "Show hidden items", "Show non-media files" (explorer lists every file; others
+three-dot menu has check-box toggles "Show hidden items", "Show non-media files", "Open .rpa archives" (explorer lists every file; others
 open in another app via FileProvider), "Show filenames". Unit-tested on generated archives; **not tried on a phone or
 on a real game's archive.**
 

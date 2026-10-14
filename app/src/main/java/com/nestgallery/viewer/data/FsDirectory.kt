@@ -111,7 +111,7 @@ private fun childrenOf(dir: File, withModified: Boolean): List<RpaFs.Node>? {
     val files = dir.listFiles() ?: return null
     return files.map { f ->
         val isDir = f.isDirectory
-        val archive = !isDir && RpaFs.isArchiveName(f.name) && RpaFs.isArchive(f)
+        val archive = !isDir && RpaFs.enabled && RpaFs.isArchiveName(f.name) && RpaFs.isArchive(f)
         RpaFs.Node(f, f.name, isDir || archive, if (isDir) 0L else f.length(), if (withModified) f.lastModified() else 0L, archive)
     }
 }

@@ -9,6 +9,11 @@ import kotlinx.coroutines.flow.asStateFlow
 class UiPrefs private constructor(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences("ui", Context.MODE_PRIVATE)
 
+    init {
+        // the folder picker no longer keeps a history of destinations: forget the one older versions saved
+        if (prefs.contains("recent_folders")) prefs.edit().remove("recent_folders").apply()
+    }
+
     /** True (the default): open in the gallery view (Albums / Photos) instead of the file explorer. */
     var galleryMode: Boolean
         get() = prefs.getBoolean("gallery_mode", true)
@@ -29,6 +34,11 @@ class UiPrefs private constructor(context: Context) {
         get() = prefs.getBoolean("show_all_files", false)
         set(v) { prefs.edit().putBoolean("show_all_files", v).apply() }
 
+    /** File explorer: open Ren'Py archives (.rpa) as folders. Off by default. */
+    var openArchives: Boolean
+        get() = prefs.getBoolean("open_archives", false)
+        set(v) { prefs.edit().putBoolean("open_archives", v).apply() }
+
     /** File explorer: filenames under thumbnails. */
     var showNames: Boolean
         get() = prefs.getBoolean("show_names", true)
@@ -47,13 +57,6 @@ class UiPrefs private constructor(context: Context) {
         get() = prefs.getBoolean("sort_desc", false)
         set(v) { prefs.edit().putBoolean("sort_desc", v).apply() }
 
-    /** Folders recently copied / moved to, newest first, offered at the top of the folder picker. */
-    var recentFolders: List<String>
-        get() = prefs.getString("recent_folders", null)?.split('\n')?.filter { it.isNotEmpty() } ?: emptyList()
-        set(v) { prefs.edit().putString("recent_folders", v.take(MAX_RECENT).joinToString("\n")).apply() }
-
-    fun addRecentFolder(path: String) { recentFolders = listOf(path) + recentFolders.filter { it != path } }
-
     private val _nsfwEnabled = MutableStateFlow(prefs.getBoolean("nsfw_enabled", false))
     /**
      * Settings switch, off by default: while off, NSFW scan appears nowhere (no menu entries, no shield button, no
@@ -67,7 +70,6 @@ class UiPrefs private constructor(context: Context) {
     }
 
     companion object {
-        private const val MAX_RECENT = 6
         @Volatile private var instance: UiPrefs? = null
         fun getInstance(context: Context): UiPrefs =
             instance ?: synchronized(this) { instance ?: UiPrefs(context).also { instance = it } }

@@ -115,6 +115,8 @@ fun GalleryScreen(
     hideHidden: Boolean,
     /** List every file, not only photos and videos (three-dot menu "Show non-media files"). */
     showAllFiles: Boolean,
+    /** Three-dot menu "Open .rpa archives as folders" (only part of the cache key: [RpaFs.enabled] does the work). */
+    openArchives: Boolean,
     listMode: Boolean,
     showNames: Boolean,
     onToggleViewMode: () -> Unit,
@@ -137,8 +139,8 @@ fun GalleryScreen(
     var sortBy by remember { mutableStateOf(prefs.sortBy) }
     var sortDesc by remember { mutableStateOf(prefs.sortDescending) }
     val current = pathStack.last()
-    val cacheKey = remember(current.file.absolutePath, hideHidden, sortBy, sortDesc, showAllFiles) {
-        "${current.file.absolutePath}|hidden=$hideHidden|sort=$sortBy$sortDesc|all=$showAllFiles"
+    val cacheKey = remember(current.file.absolutePath, hideHidden, sortBy, sortDesc, showAllFiles, openArchives) {
+        "${current.file.absolutePath}|hidden=$hideHidden|sort=$sortBy$sortDesc|all=$showAllFiles|rpa=$openArchives"
     }
 
     // Seed straight from cache so revisiting a folder (e.g. backing out of the
