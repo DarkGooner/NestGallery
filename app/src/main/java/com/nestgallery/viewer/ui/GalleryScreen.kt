@@ -100,12 +100,21 @@ import com.nestgallery.viewer.ui.files.PasteBar
 import com.nestgallery.viewer.ui.files.PropertiesDialog
 import com.nestgallery.viewer.ui.files.SelectionTopBar
 import java.io.File
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FolderZip
+import com.nestgallery.viewer.data.rpa.RpaFs
+import com.nestgallery.viewer.ui.files.openExternally
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun GalleryScreen(
     pathStack: List<DocEntry>,
     hideHidden: Boolean,
+    /** List every file, not only photos and videos (three-dot menu "Show non-media files"). */
+    showAllFiles: Boolean,
     listMode: Boolean,
     showNames: Boolean,
     onToggleViewMode: () -> Unit,
@@ -128,8 +137,8 @@ fun GalleryScreen(
     var sortBy by remember { mutableStateOf(prefs.sortBy) }
     var sortDesc by remember { mutableStateOf(prefs.sortDescending) }
     val current = pathStack.last()
-    val cacheKey = remember(current.file.absolutePath, hideHidden, sortBy, sortDesc) {
-        "${current.file.absolutePath}|hidden=$hideHidden|sort=$sortBy$sortDesc"
+    val cacheKey = remember(current.file.absolutePath, hideHidden, sortBy, sortDesc, showAllFiles) {
+        "${current.file.absolutePath}|hidden=$hideHidden|sort=$sortBy$sortDesc|all=$showAllFiles"
     }
 
     // Seed straight from cache so revisiting a folder (e.g. backing out of the
@@ -139,7 +148,7 @@ fun GalleryScreen(
     // revision: a copy / move / delete / new folder dropped the cached listings, so list again
     LaunchedEffect(cacheKey, revision) {
         if (GalleryCache.getEntries(cacheKey) == null) {
-            val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden, sortBy, sortDesc) }
+            val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden, sortBy, sortDesc, showAllFiles) }
             GalleryCache.putEntries(cacheKey, loaded)
             entries = loaded
         }
@@ -167,7 +176,10 @@ fun GalleryScreen(
     var folderInfo by remember { mutableStateOf(false) }
     var sortDialog by remember { mutableStateOf(false) }
 
-    val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory } }
+    // what the viewer pages through: photos and videos (other files open in another app)
+    val imagesOnly = remember(entries) { entries.orEmpty().filter { !it.isDirectory && it.isMedia } }
+    val scope = rememberCoroutineScope()
+    fun openOther(entry: DocEntry) { scope.launch { openExternally(context, entry.file) } }
 
     // Scroll position survives navigating to the image viewer and back, or
     // between folders, the same way the entries themselves do above.
@@ -209,7 +221,7 @@ fun GalleryScreen(
             onRefresh = {
                 coroutineScope.launch {
                     refreshing = true
-                    val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden) }
+                    val loaded = withContext(Dispatchers.IO) { listFolderFast(current.file, hideHidden, sortBy, sortDesc, showAllFiles) }
                     GalleryCache.putEntries(cacheKey, loaded)
                     // Also clear cached item counts for the folders shown here, so
                     // a pull-to-refresh picks up any changes inside them too.
@@ -239,11 +251,11 @@ fun GalleryScreen(
                 ) {
                     items(currentEntries, key = { it.file.absolutePath }) { entry ->
                         val isSel = if (inSelection) entry.file.absolutePath in selected else null
-                        if (entry.isDirectory) {
+                        if (entry.isDirectory || !entry.isMedia) {
                             FolderRow(
                                 entry = entry,
                                 selected = isSel,
-                                onClick = { if (inSelection) toggle(entry) else onOpenFolder(entry) },
+                                onClick = { if (inSelection) toggle(entry) else if (entry.isDirectory) onOpenFolder(entry) else openOther(entry) },
                                 onLongClick = { toggle(entry) }
                             )
                         } else {
@@ -275,11 +287,11 @@ fun GalleryScreen(
                 ) {
                     gridItems(currentEntries, key = { it.file.absolutePath }) { entry ->
                         val isSel = if (inSelection) entry.file.absolutePath in selected else null
-                        if (entry.isDirectory) {
+                        if (entry.isDirectory || !entry.isMedia) {
                             FolderTile(
                                 entry = entry,
                                 selected = isSel,
-                                onClick = { if (inSelection) toggle(entry) else onOpenFolder(entry) },
+                                onClick = { if (inSelection) toggle(entry) else if (entry.isDirectory) onOpenFolder(entry) else openOther(entry) },
                                 onLongClick = { toggle(entry) }
                             )
                         } else {
@@ -317,6 +329,10 @@ fun GalleryScreen(
         val folderCount = currentEntries?.count { it.isDirectory } ?: 0
         val mediaCount = currentEntries?.count { !it.isDirectory } ?: 0
         val isRoot = !canGoBack
+        // a Ren'Py archive opened as a folder (or a folder inside one) is read-only; the archive itself can still be
+        // renamed or deleted as a file
+        val inArchive = FileOps.insideArchive(current.file)
+        val archiveRoot = inArchive && !RpaFs.isVirtual(current.file)
         if (inSelection) {
             val files = remember(selected) { selected.map(::File) }
             SelectionTopBar(count = selected.size, onClose = { endSelection() }, insets = false, modifier = Modifier.align(Alignment.TopCenter)) {
@@ -346,14 +362,15 @@ fun GalleryScreen(
                 }
             },
             menu = buildList {
-                add(MenuAction("New folder", Icons.Default.CreateNewFolder) { newFolder = true })
+                if (!inArchive) add(MenuAction("New folder", Icons.Default.CreateNewFolder) { newFolder = true })
                 add(MenuAction("Select", Icons.Default.CheckCircle, enabled = !currentEntries.isNullOrEmpty()) { selecting = true })
-                if (clip != null) add(MenuAction("Paste here", Icons.Default.ContentPaste) { ops.paste(current.file) })
+                if (clip != null && !inArchive) add(MenuAction("Paste here", Icons.Default.ContentPaste) { ops.paste(current.file) })
                 add(MenuAction("Sort by: ${sortBy.label.lowercase()}", Icons.AutoMirrored.Filled.Sort) { sortDialog = true })
                 add(MenuAction("Folder properties", Icons.Default.Info) { folderInfo = true })
-                if (!isRoot) {
-                    add(MenuAction("Rename this folder", Icons.Default.DriveFileRenameOutline) { renameFolder = true })
-                    add(MenuAction("Delete this folder", Icons.Default.Delete) { deleteFolder = true })
+                if (!isRoot && (!inArchive || archiveRoot)) {
+                    val what = if (archiveRoot) "archive" else "folder"
+                    add(MenuAction("Rename this $what", Icons.Default.DriveFileRenameOutline) { renameFolder = true })
+                    add(MenuAction("Delete this $what", Icons.Default.Delete) { deleteFolder = true })
                 }
             },
             modifier = Modifier.align(Alignment.TopCenter).alpha(if (previewEntry == null) 1f else 0f)
@@ -445,7 +462,7 @@ private fun FolderRow(entry: DocEntry, selected: Boolean?, onClick: () -> Unit, 
     var count by remember(cacheKey) { mutableStateOf(GalleryCache.getCount(cacheKey)) }
 
     LaunchedEffect(cacheKey) {
-        if (GalleryCache.getCount(cacheKey) == null) {
+        if (entry.isDirectory && GalleryCache.getCount(cacheKey) == null) {
             val computed = withContext(Dispatchers.IO) { countMediaFast(entry.file) }
             GalleryCache.putCount(cacheKey, computed)
             count = computed
@@ -460,7 +477,7 @@ private fun FolderRow(entry: DocEntry, selected: Boolean?, onClick: () -> Unit, 
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Icon(entryIcon(entry), contentDescription = null, tint = entryTint(entry))
         Spacer(Modifier.width(16.dp))
         // Every row is two lines tall (an invisible placeholder reserves them) so a row's height never jumps once
         // its async count resolves - that jump was throwing off the spacing of everything below it. Without a count
@@ -478,8 +495,15 @@ private fun FolderRow(entry: DocEntry, selected: Boolean?, onClick: () -> Unit, 
                     overflow = TextOverflow.Ellipsis
                 )
                 val c = count
-                if (c != null && c > 0) Text(
-                    if (c == 1) "1 item" else "$c items",
+                val context = LocalContext.current
+                val detail = when {
+                    !entry.isDirectory -> android.text.format.Formatter.formatShortFileSize(context, entry.size)
+                    c != null && c > 0 -> (if (c == 1) "1 item" else "$c items") + if (entry.isArchive) " · archive" else ""
+                    entry.isArchive -> "Ren'Py archive"
+                    else -> null
+                }
+                if (detail != null) Text(
+                    detail,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -552,7 +576,7 @@ private fun FolderTile(entry: DocEntry, selected: Boolean?, onClick: () -> Unit,
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Default.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Icon(entryIcon(entry), contentDescription = null, tint = entryTint(entry))
             if (selected != null) {
                 if (selected) Box(Modifier.matchParentSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)))
                 Box(Modifier.align(Alignment.TopEnd).padding(6.dp)) { SelectMark(selected, onDark = false) }
@@ -568,5 +592,22 @@ private fun FolderTile(entry: DocEntry, selected: Boolean?, onClick: () -> Unit,
     }
 }
 
+
+/** Folder, Ren'Py archive (opens like a folder), or another kind of file. */
+private fun entryIcon(entry: DocEntry): androidx.compose.ui.graphics.vector.ImageVector = when {
+    entry.isArchive -> Icons.Default.FolderZip
+    entry.isDirectory -> Icons.Default.Folder
+    else -> when (entry.file.extension.lowercase()) {
+        "mp3", "ogg", "opus", "wav", "flac", "m4a", "aac" -> Icons.Default.AudioFile
+        "txt", "rpy", "py", "json", "xml", "md", "log", "ini", "cfg" -> Icons.Default.Description
+        "zip", "rar", "7z", "tar", "gz", "rpi" -> Icons.Default.FolderZip
+        "apk" -> Icons.Default.Android
+        else -> Icons.AutoMirrored.Filled.InsertDriveFile
+    }
+}
+
+@Composable
+private fun entryTint(entry: DocEntry) =
+    if (entry.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
 
 private fun countLabel(n: Int, one: String) = if (n == 1) "1 $one" else "$n ${one}s"

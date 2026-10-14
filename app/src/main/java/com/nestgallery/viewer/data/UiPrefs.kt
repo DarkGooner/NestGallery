@@ -24,6 +24,11 @@ class UiPrefs private constructor(context: Context) {
         get() = prefs.getBoolean("hide_hidden", true)
         set(v) { prefs.edit().putBoolean("hide_hidden", v).apply() }
 
+    /** File explorer: list every file, not only photos and videos. */
+    var showAllFiles: Boolean
+        get() = prefs.getBoolean("show_all_files", false)
+        set(v) { prefs.edit().putBoolean("show_all_files", v).apply() }
+
     /** File explorer: filenames under thumbnails. */
     var showNames: Boolean
         get() = prefs.getBoolean("show_names", true)

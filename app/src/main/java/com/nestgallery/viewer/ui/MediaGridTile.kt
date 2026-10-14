@@ -275,7 +275,10 @@ fun HoldPreviewOverlay(entry: DocEntry) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             if (entry.isVideo) {
-                HoldPreviewVideo(entry = entry, maxW = maxW, maxH = maxH)
+                // a video inside a Ren'Py archive is extracted first (VLC opens the path itself)
+                com.nestgallery.viewer.ui.files.WhenOnDisk(entry.file, Modifier.previewCardSize(16f / 9f, maxW, maxH)) {
+                    HoldPreviewVideo(entry = entry, maxW = maxW, maxH = maxH)
+                }
             } else {
                 var aspect by remember(entry.file) { mutableFloatStateOf(0f) }
                 AsyncImage(

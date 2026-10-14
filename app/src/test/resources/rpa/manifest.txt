@@ -1,0 +1,5 @@
+images/bg/room.png	776
+images/char/eileen happy.jpg	508
+video/intro.webm	1004
+script.rpyc	60
+.hidden/secret.png	10

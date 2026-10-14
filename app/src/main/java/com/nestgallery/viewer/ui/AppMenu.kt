@@ -7,6 +7,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.LabelOff
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
@@ -32,8 +35,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/** One entry of a three-dot menu. */
-class MenuAction(val label: String, val icon: ImageVector, val enabled: Boolean = true, val onClick: () -> Unit)
+/** One entry of a three-dot menu; with [checked] set it is an on / off switch with a check box. */
+class MenuAction(
+    val label: String,
+    val icon: ImageVector,
+    val enabled: Boolean = true,
+    val checked: Boolean? = null,
+    val onClick: () -> Unit
+)
 
 /**
  * The app-wide half of every three-dot menu, provided once by MainActivity through [LocalAppMenu]: the same entries, in
@@ -46,15 +55,19 @@ class AppMenuState(
     val onToggleHidden: () -> Unit,
     val showNames: Boolean,
     val onToggleNames: () -> Unit,
+    /** File explorer: list every file, not only photos and videos. */
+    val showAllFiles: Boolean,
+    val onToggleAllFiles: () -> Unit,
     val onOpenSettings: () -> Unit
 ) {
     fun actions(): List<MenuAction> = listOf(
         if (galleryMode) MenuAction("File explorer view", Icons.Default.FolderOpen, onClick = onSwitchView)
         else MenuAction("Gallery view", Icons.Default.PhotoLibrary, onClick = onSwitchView),
-        MenuAction(if (hideHidden) "Show hidden items" else "Hide hidden items",
-            if (hideHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff, onClick = onToggleHidden),
-        MenuAction(if (showNames) "Hide filenames" else "Show filenames",
-            if (showNames) Icons.AutoMirrored.Filled.LabelOff else Icons.AutoMirrored.Filled.Label, onClick = onToggleNames),
+        MenuAction("Show hidden items", if (hideHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+            checked = !hideHidden, onClick = onToggleHidden),
+        MenuAction("Show non-media files", Icons.AutoMirrored.Filled.InsertDriveFile, checked = showAllFiles, onClick = onToggleAllFiles),
+        MenuAction("Show filenames", if (showNames) Icons.AutoMirrored.Filled.Label else Icons.AutoMirrored.Filled.LabelOff,
+            checked = showNames, onClick = onToggleNames),
         MenuAction("Settings", Icons.Default.Settings, onClick = onOpenSettings)
     )
 }
@@ -92,6 +105,15 @@ private fun MenuRow(item: MenuAction, close: () -> Unit) {
     DropdownMenuItem(
         text = { Text(item.label) },
         leadingIcon = { Icon(item.icon, contentDescription = null, tint = if (item.enabled) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)) },
+        trailingIcon = item.checked?.let { on ->
+            {
+                Icon(
+                    if (on) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                    contentDescription = if (on) "On" else "Off",
+                    tint = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
         enabled = item.enabled,
         onClick = { close(); item.onClick() }
     )

@@ -128,12 +128,15 @@ class MainActivity : ComponentActivity() {
                     // the gallery view's grid thumbnails: MediaStore's cached ones instead of decoding originals
                     add(com.nestgallery.viewer.data.MediaThumbKeyer())
                     add(com.nestgallery.viewer.data.MediaThumbFetcher.Factory())
+                    // photos / videos inside Ren'Py archives: extracted to the cache the first time they are drawn
+                    add(com.nestgallery.viewer.data.rpa.RpaFetcher.Factory())
                 }
                 .build()
         )
 
         // builds VLC's font cache in the background so the first video preview doesn't wait ~20 s for it
         com.nestgallery.viewer.data.VlcEngine.warmUp(applicationContext)
+        com.nestgallery.viewer.data.rpa.RpaFs.init(applicationContext)
 
         setContent {
             NestGalleryTheme {
@@ -173,6 +176,7 @@ private fun NestGalleryApp() {
     var listMode by remember { mutableStateOf(uiPrefs.listMode) }
     var personListMode by remember { mutableStateOf(false) } // a person's photos: grid by default, own toggle
     var showNames by remember { mutableStateOf(uiPrefs.showNames) }
+    var showAllFiles by remember { mutableStateOf(uiPrefs.showAllFiles) }
     fun toggleListMode() { listMode = !listMode; uiPrefs.listMode = listMode }
     var galleryMode by remember { mutableStateOf(uiPrefs.galleryMode) }
 
@@ -184,6 +188,8 @@ private fun NestGalleryApp() {
         onToggleHidden = { hideHidden = !hideHidden; uiPrefs.hideHidden = hideHidden },
         showNames = showNames,
         onToggleNames = { showNames = !showNames; uiPrefs.showNames = showNames },
+        showAllFiles = showAllFiles,
+        onToggleAllFiles = { showAllFiles = !showAllFiles; uiPrefs.showAllFiles = showAllFiles },
         onOpenSettings = { if (screen !is Screen.Settings) screen = Screen.Settings(returnTo = screen) }
     )
 
@@ -268,6 +274,7 @@ private fun NestGalleryApp() {
                 GalleryScreen(
                     pathStack = pathStack,
                     hideHidden = hideHidden,
+                    showAllFiles = showAllFiles,
                     listMode = listMode,
                     showNames = showNames,
                     onToggleViewMode = { toggleListMode() },

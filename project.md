@@ -156,6 +156,18 @@ NestGallery is a high-performance, privacy-focused, offline-first media gallery 
   per row, and the NSFW scan switch (`nsfwEnabled` StateFlow, off by default; hides the feature everywhere). Also the
   explorer's hidden items / filenames / list-or-grid / sort order, and the folder picker's recent destinations.
 
+#### Ren'Py archives: [`data/rpa/RpaArchive.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/rpa/RpaArchive.kt), [`RpaFs.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/rpa/RpaFs.kt), [`RpaFetcher.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/rpa/RpaFetcher.kt)
+- **Role**: `.rpa` files open as read-only folders in the explorer, the recursive view and search.
+- `RpaArchive`: Kotlin reader for RPA-2.0 / 3.0 / 3.2 (the formats Rentool's rpatool reads): header, zlib index, a
+  small pickle reader (protocols 0-5, incl. Python 3 bytes pickled at protocol 2 as `_codecs.encode`), XOR key,
+  member prefixes. RPA-1.0 (.rpi) is not supported.
+- `RpaFs`: members get paths `<cache>/rpa/<id>/<path in archive>` (id from the archive's path, size and mtime;
+  `<id>.src` maps back after a restart). Listings come from the index; a member is extracted only when its bytes
+  are needed (`ensure`): `RpaFetcher` (Coil: thumbnails, viewer), `ui/files/WhenOnDisk` (VLC), copy / share / open.
+  Moving, renaming or deleting inside an archive, or adding to one, is refused (`FileOps.ARCHIVE_READ_ONLY`); the
+  archive file itself can be renamed / deleted. Face and NSFW scans skip archive members (would extract them all).
+- Fixtures: `app/src/test/resources/rpa`, written by `tools/rpa-fixtures/make_rpa.py` (checked with rpatool).
+
 #### [`app/src/main/java/com/nestgallery/viewer/data/FileOps.kt`](file:///d:/Projects/NestGallery/app/src/main/java/com/nestgallery/viewer/data/FileOps.kt)
 - **Role**: singleton for every change to files the app makes: new folder, rename, copy, move, delete, and the
   Cut / Copy clipboard pasted in the explorer. Long operations run one at a time on its own scope (`progress`

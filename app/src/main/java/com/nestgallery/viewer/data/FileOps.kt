@@ -3,6 +3,7 @@ package com.nestgallery.viewer.data
 import android.content.Context
 import android.media.MediaScannerConnection
 import com.nestgallery.viewer.data.face.FaceScannerManager
+import com.nestgallery.viewer.data.rpa.RpaFs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -73,6 +74,7 @@ class FileOps private constructor(private val appContext: Context) {
     /** @return null on success, else why it failed */
     suspend fun createFolder(parent: File, name: String): String? = withContext(Dispatchers.IO) {
         nameError(name)?.let { return@withContext it }
+        if (insideArchive(parent)) return@withContext ARCHIVE_READ_ONLY
         val dir = File(parent, name.trim())
         when {
             dir.exists() -> "\"${dir.name}\" already exists"
@@ -84,6 +86,7 @@ class FileOps private constructor(private val appContext: Context) {
     /** @return null on success, else why it failed */
     suspend fun rename(file: File, newName: String): String? = withContext(Dispatchers.IO) {
         nameError(newName)?.let { return@withContext it }
+        if (RpaFs.isReadOnly(file)) return@withContext ARCHIVE_READ_ONLY
         val target = File(file.parentFile, newName.trim())
         when {
             target.name == file.name -> null
@@ -124,6 +127,13 @@ class FileOps private constructor(private val appContext: Context) {
 
     private suspend fun runTransfer(files: List<File>, dest: File, move: Boolean): String {
         val verb = if (move) "Moving" else "Copying"
+        if (insideArchive(dest)) return "Can't add files to an archive"
+        if (move && files.any { RpaFs.isReadOnly(it) }) return "$ARCHIVE_READ_ONLY: copy the files instead"
+        // files inside a Ren'Py archive are extracted first, then copied like any other file
+        for (f in files) if (RpaFs.isVirtual(f)) {
+            _progress.value = FileOpProgress("Extracting", 0, 0, f.name)
+            RpaFs.ensureTree(f)
+        }
         val sources = files.filter { it.exists() }.distinctBy { it.absolutePath }
         val destCanon = dest.canonicalPath
         // a folder can't go into itself or one of its own subfolders
@@ -182,6 +192,7 @@ class FileOps private constructor(private val appContext: Context) {
     }
 
     private suspend fun runDelete(files: List<File>): String {
+        if (files.any { RpaFs.isReadOnly(it) }) return ARCHIVE_READ_ONLY
         val sources = files.filter { it.exists() }.distinctBy { it.absolutePath }
         val total = sources.size
         var done = 0
@@ -236,6 +247,11 @@ class FileOps private constructor(private val appContext: Context) {
         @Volatile private var instance: FileOps? = null
         fun getInstance(context: Context): FileOps =
             instance ?: synchronized(this) { instance ?: FileOps(context.applicationContext).also { instance = it } }
+
+        const val ARCHIVE_READ_ONLY = "Files inside an archive can't be changed"
+
+        /** A Ren'Py archive opened as a folder, or a folder inside one: nothing can be added there. */
+        fun insideArchive(dir: File) = RpaFs.isVirtual(dir) || (RpaFs.isArchiveName(dir.name) && dir.isFile)
 
         /** Why [name] can't be a file or folder name, or null if it can. */
         fun nameError(name: String): String? {

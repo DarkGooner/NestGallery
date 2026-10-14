@@ -448,7 +448,9 @@ class NsfwScannerManager private constructor(private val appContext: Context) {
         private val imageExtensions = setOf("jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif")
 
         /** Photos the scan looks at (videos and other files are skipped). */
-        fun isScannable(file: File): Boolean = file.extension.lowercase() in imageExtensions
+        /** Photos inside Ren'Py archives are not scanned (that would extract every one of them). */
+        fun isScannable(file: File): Boolean = file.extension.lowercase() in imageExtensions &&
+            !com.nestgallery.viewer.data.rpa.RpaFs.isVirtual(file)
 
         @Volatile private var INSTANCE: NsfwScannerManager? = null
         fun getInstance(context: Context): NsfwScannerManager =

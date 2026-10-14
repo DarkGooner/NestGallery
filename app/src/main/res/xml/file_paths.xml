@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Sharing from the file explorer: any file on shared storage, handed out as content:// URIs (read-only grants). -->
+<!-- Sharing / opening from the file explorer: any file on shared storage, and files extracted from Ren'Py archives
+     (app cache, rpa/), handed out as content:// URIs (read-only grants). -->
 <paths>
     <external-path name="storage" path="." />
+    <cache-path name="rpa" path="rpa/" />
 </paths>

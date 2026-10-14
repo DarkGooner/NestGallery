@@ -147,7 +147,7 @@ fun ImageViewerScreen(
             userScrollEnabled = !playerLocked
         ) { page ->
             val entry = images[page]
-            if (entry.isVideo) {
+            if (entry.isVideo) com.nestgallery.viewer.ui.files.WhenOnDisk(entry.file) {
                 VideoPlayer(
                     entry = entry,
                     isCurrentPage = pagerState.settledPage == page,

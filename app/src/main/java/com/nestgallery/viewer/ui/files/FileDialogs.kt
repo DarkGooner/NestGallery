@@ -81,6 +81,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import com.nestgallery.viewer.data.FileOps
 import com.nestgallery.viewer.data.UiPrefs
+import com.nestgallery.viewer.data.rpa.RpaFs
 import com.nestgallery.viewer.data.naturalCompare
 import com.nestgallery.viewer.data.storageRootEntry
 import com.nestgallery.viewer.ui.AppOverflowMenu
@@ -114,17 +115,20 @@ fun RowScope.FileSelectionActions(
     var renaming by remember { mutableStateOf(false) }
     var showInfo by remember { mutableStateOf(false) }
     val any = files.isNotEmpty()
+    // files inside a Ren'Py archive can be copied out, shared and inspected, not moved, renamed or deleted
+    val writable = any && files.none { RpaFs.isReadOnly(it) }
+    val scope = rememberCoroutineScope()
 
-    IconButton(onClick = { picker = true }, enabled = any) { Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "Move to folder") }
+    IconButton(onClick = { picker = true }, enabled = writable) { Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "Move to folder") }
     IconButton(onClick = { picker = false }, enabled = any) { Icon(Icons.Default.FileCopy, contentDescription = "Copy to folder") }
-    IconButton(onClick = { confirmDelete = true }, enabled = any) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+    IconButton(onClick = { confirmDelete = true }, enabled = writable) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
     AppOverflowMenu(
         buildList {
             addAll(extra)
             if (onSelectAll != null) add(MenuAction("Select all", Icons.Default.SelectAll, onClick = onSelectAll))
-            add(MenuAction("Share", Icons.Default.Share, enabled = any) { shareFiles(context, files) })
-            add(MenuAction("Rename", Icons.Default.DriveFileRenameOutline, enabled = files.size == 1) { renaming = true })
-            add(MenuAction("Cut", Icons.Default.ContentCut, enabled = any) { ops.setClip(files, cut = true); onDone() })
+            add(MenuAction("Share", Icons.Default.Share, enabled = any) { scope.launch { shareFiles(context, onDisk(files)) } })
+            add(MenuAction("Rename", Icons.Default.DriveFileRenameOutline, enabled = writable && files.size == 1) { renaming = true })
+            add(MenuAction("Cut", Icons.Default.ContentCut, enabled = writable) { ops.setClip(files, cut = true); onDone() })
             add(MenuAction("Copy", Icons.Default.ContentCopy, enabled = any) { ops.setClip(files, cut = false); onDone() })
             add(MenuAction("Properties", Icons.Default.Info, enabled = any) { showInfo = true })
         },
@@ -320,7 +324,12 @@ fun PropertiesDialog(files: List<File>, onDismiss: () -> Unit) {
     val stats by produceState<Pair<Long, Int>?>(null, files) {
         value = withContext(Dispatchers.IO) {
             var bytes = 0L; var count = 0
-            for (f in files) for (x in FileOps.walk(f)) { bytes += x.length(); count++ }
+            for (f in files) {
+                // inside an archive: sizes from its index, nothing is extracted
+                val archived = RpaFs.sizeOf(f)
+                if (archived != null) { bytes += archived.first; count += archived.second; continue }
+                for (x in FileOps.walk(f)) { bytes += x.length(); count++ }
+            }
             bytes to count
         }
     }

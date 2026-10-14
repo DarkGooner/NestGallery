@@ -79,6 +79,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.platform.LocalContext
 import com.nestgallery.viewer.data.FileOps
+import com.nestgallery.viewer.data.rpa.RpaFs
 import com.nestgallery.viewer.ui.files.FileSelectionActions
 import com.nestgallery.viewer.ui.files.SelectionTopBar
 import kotlinx.coroutines.Dispatchers
@@ -147,7 +148,8 @@ fun ExploreScreen(
     LaunchedEffect(revision, scanning) {
         if (revision == seenRevision || scanning) return@LaunchedEffect
         seenRevision = revision
-        val kept = withContext(Dispatchers.IO) { items.filter { it.file.exists() } }
+        // (files inside archives exist only once extracted: those are kept)
+        val kept = withContext(Dispatchers.IO) { items.filter { it.file.exists() || RpaFs.isVirtual(it.file) } }
         if (kept.size != items.size) { items.clear(); items.addAll(kept) }
         GalleryCache.putEntries(exploreKey, items.toList())
     }

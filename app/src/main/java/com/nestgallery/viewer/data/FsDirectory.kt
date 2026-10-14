@@ -1,6 +1,7 @@
 package com.nestgallery.viewer.data
 
 import android.os.Environment
+import com.nestgallery.viewer.data.rpa.RpaFs
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -21,7 +22,11 @@ data class DocEntry(
     val size: Long,
     val isVideo: Boolean,
     /** Last-modified time (ms); only filled in by [listFolderFast], 0 elsewhere. */
-    val modified: Long = 0L
+    val modified: Long = 0L,
+    /** False for other files, listed only when "Show non-media files" is on. */
+    val isMedia: Boolean = true,
+    /** A Ren'Py archive (.rpa) shown as a folder ([isDirectory] is true; [file] is the archive itself). */
+    val isArchive: Boolean = false
 )
 
 /** How the file explorer orders a folder (folders always come first). */
@@ -98,21 +103,42 @@ fun naturalCompare(a: String, b: String): Int {
 private val byNaturalName = Comparator<DocEntry> { a, b -> naturalCompare(a.name, b.name) }
 
 /**
+ * What is directly inside [dir]: a folder on disk, a Ren'Py archive (.rpa, read as a folder through [RpaFs]) or a
+ * folder inside one. A valid .rpa on disk comes back as a folder. Null if [dir] can't be listed.
+ */
+private fun childrenOf(dir: File, withModified: Boolean): List<RpaFs.Node>? {
+    RpaFs.list(dir)?.let { return it }
+    val files = dir.listFiles() ?: return null
+    return files.map { f ->
+        val isDir = f.isDirectory
+        val archive = !isDir && RpaFs.isArchiveName(f.name) && RpaFs.isArchive(f)
+        RpaFs.Node(f, f.name, isDir || archive, if (isDir) 0L else f.length(), if (withModified) f.lastModified() else 0L, archive)
+    }
+}
+
+/**
  * Lists the folders and media files directly inside [dir], folders first, then by [sort] (natural name order by
  * default; folders have no size, so a size sort orders them by name). When [hideHidden] is true, dotfiles/dotfolders
- * are skipped (the standard "hidden item" convention).
+ * are skipped (the standard "hidden item" convention); with [showAll], files that are not photos or videos are listed
+ * too ([DocEntry.isMedia] false). Ren'Py archives list as folders, and so do the folders inside them.
  */
-fun listFolderFast(dir: File, hideHidden: Boolean, sort: SortBy = SortBy.NAME, descending: Boolean = false): List<DocEntry> {
-    val children = dir.listFiles() ?: return emptyList()
+fun listFolderFast(
+    dir: File,
+    hideHidden: Boolean,
+    sort: SortBy = SortBy.NAME,
+    descending: Boolean = false,
+    showAll: Boolean = false
+): List<DocEntry> {
+    val children = childrenOf(dir, withModified = sort == SortBy.DATE) ?: return emptyList()
     val result = ArrayList<DocEntry>(children.size)
 
-    for (f in children) {
-        val name = f.name
-        val isDir = f.isDirectory
+    for (c in children) {
+        val name = c.name
         if (hideHidden && isHiddenName(name)) continue
-        if (!isDir && !isMediaName(name)) continue
-        val modified = if (sort == SortBy.DATE) f.lastModified() else 0L
-        result.add(DocEntry(f, name, isDir, if (isDir) 0L else f.length(), isVideoName(name), modified))
+        val media = !c.isDirectory && isMediaName(name)
+        if (!c.isDirectory && !media && !showAll) continue
+        result.add(DocEntry(c.file, name, c.isDirectory, if (c.isDirectory && !c.isArchive) 0L else c.size,
+            media && isVideoName(name), c.modified, isMedia = c.isDirectory || media, isArchive = c.isArchive))
     }
 
     val order: Comparator<DocEntry> = when (sort) {
@@ -125,8 +151,9 @@ fun listFolderFast(dir: File, hideHidden: Boolean, sort: SortBy = SortBy.NAME, d
     )
 }
 
-/** Counts media files directly inside [dir] (not recursive). */
+/** Counts media files directly inside [dir] (not recursive; an archive or a folder in one counts its own). */
 fun countMediaFast(dir: File): Int {
+    RpaFs.list(dir)?.let { nodes -> return nodes.count { !it.isDirectory && isMediaName(it.name) } }
     val children = dir.listFiles() ?: return 0
     var count = 0
     for (f in children) {
@@ -158,17 +185,18 @@ fun exploreMediaFlow(root: File, hideHidden: Boolean): Flow<List<DocEntry>> = fl
     while (queue.isNotEmpty()) {
         currentCoroutineContext().ensureActive()
         val dir = queue.removeFirst()
-        val children = (dir.listFiles() ?: continue).sortedWith { x, y -> naturalCompare(x.name, y.name) }
+        // archives are walked like folders (their members are listed from the index, nothing is extracted)
+        val children = (childrenOf(dir, withModified = false) ?: continue).sortedWith { x, y -> naturalCompare(x.name, y.name) }
 
-        for (f in children) {
+        for (c in children) {
             currentCoroutineContext().ensureActive()
-            val name = f.name
+            val name = c.name
             if (hideHidden && isHiddenName(name)) continue
 
-            if (f.isDirectory) {
-                queue.addLast(f)
+            if (c.isDirectory) {
+                queue.addLast(c.file)
             } else if (isMediaName(name)) {
-                batch.add(DocEntry(f, name, false, f.length(), isVideoName(name)))
+                batch.add(DocEntry(c.file, name, false, c.size, isVideoName(name)))
                 if (batch.size >= EXPLORE_BATCH_SIZE) {
                     emit(ArrayList(batch))
                     batch.clear()

@@ -27,6 +27,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.nestgallery.viewer.data.rpa.RpaFs
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -155,7 +156,8 @@ class FaceScannerManager private constructor(private val appContext: Context) {
                 ensureStoreLoaded()
                 val indexed = withContext(Dispatchers.IO) { database.loadIndexedFiles(folderPath) }
                 val todo = withContext(Dispatchers.IO) {
-                    files.filter { it.extension.lowercase() in imageExtensions }.filter { f ->
+                    // photos inside Ren'Py archives are browse-only: scanning would extract every one of them
+                    files.filter { it.extension.lowercase() in imageExtensions && !RpaFs.isVirtual(it) }.filter { f ->
                         val s = indexed[f.absolutePath]
                         s == null || s.first != f.lastModified() || s.second != f.length()
                     }
